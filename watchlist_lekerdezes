@@ -1,0 +1,7 @@
+your-repo/
+├─ scripts/
+│  └─ report_runner.py
+├─ requirements.txt
+└─ .github/
+   └─ workflows/
+      └─ run_report.yml
