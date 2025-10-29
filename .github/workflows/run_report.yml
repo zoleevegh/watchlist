@@ -1,12 +1,26 @@
 name: Run Report
 
 on:
+  # kézi indítás – megmarad
   workflow_dispatch:
     inputs:
       report:
         description: "Melyik jelentés? (1, 2 vagy 3)"
         required: true
         default: "1"
+  # API indítás (curl / webhook)
+  repository_dispatch:
+    types: [run_report]
+  # AUTOMATA ütemezés (UTC! — lefedi a CET/CEST váltást is)
+  schedule:
+    # CEST (BUD = UTC+2): 10:10 / 11:00 / 15:10
+    - cron: '10 8 * * 1-5'
+    - cron: '0 9 * * 1-5'
+    - cron: '10 13 * * 1-5'
+    # CET (BUD = UTC+1): 10:10 / 11:00 / 15:10
+    - cron: '10 9 * * 1-5'
+    - cron: '0 10 * * 1-5'
+    - cron: '10 14 * * 1-5'
 
 permissions:
   contents: write
@@ -44,12 +58,33 @@ jobs:
           set -euxo pipefail
           python -m pip install --upgrade pip setuptools wheel
           pip install -r requirements.txt
-          # egyszerű check – NINCS heredoc, nincs YAML para
           python -c "import pandas,requests,feedparser,yfinance; print('deps ok:', pandas.__version__, requests.__version__, feedparser.__version__, yfinance.__version__)"
+
+      - name: Resolve REPORT param (dispatch/schedule)
+        id: resolve
+        shell: bash
+        run: |
+          REPORT_IN="${{ github.event.inputs.report }}"
+          PAYLOAD_IN="${{ github.event.client_payload.report }}"
+          REPORT=""
+          if [ -n "$REPORT_IN" ]; then
+            REPORT="$REPORT_IN"
+          elif [ -n "$PAYLOAD_IN" ]; then
+            REPORT="$PAYLOAD_IN"
+          else
+            # ütemezett futásoknál a pontos UTC idő alapján választunk
+            NOW_UTC="$(date -u +%H:%M)"
+            case "$NOW_UTC" in
+              "08:10"|"09:10") REPORT="1" ;; # 10:10 BUD (CEST/CET)
+              "09:00"|"10:00") REPORT="2" ;; # 11:00 BUD
+              "13:10"|"14:10") REPORT="3" ;; # 15:10 BUD
+              *) REPORT="1" ;;               # fallback
+            esac
+          fi
+          echo "REPORT=$REPORT" | tee -a $GITHUB_ENV
 
       - name: Run report
         env:
-          REPORT: ${{ github.event.inputs.report }}
           CSV_URL: ${{ secrets.MASTER_CSV_URL }}
         run: python scripts/report_runner.py --report "$REPORT" --csv-url "$CSV_URL"
 
@@ -65,8 +100,6 @@ jobs:
         run: cat out/report_summary.md >> $GITHUB_STEP_SUMMARY
 
       - name: Commit reports into repo
-        env:
-          REPORT: ${{ github.event.inputs.report }}
         run: |
           set -e
           REPORT_DIR="reports/${REPORT}"
