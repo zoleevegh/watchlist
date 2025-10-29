@@ -1,85 +1,448 @@
 # scripts/report_runner.py
-# Teljes, futókész példa:
-# - Beolvassa a publikus CSV-t (pl. Google Sheets -> Publish to CSV)
-# - Készít összefoglalót (Markdown) + gépileg feldolgozható JSON-t
-# - mindkettőt az "out/" mappába menti (a workflow innen commitolja a repo-ba)
+# Részvény-riportok #1 / #2 / #3 a felhasználói szabálykönyv szerint.
+# Időzóna: Europe/Budapest (EU_BUD), árfolyam: yfinance, hírek: Yahoo Finance RSS (+forrás-prioritás),
+# SEC EDGAR 8-K/6-K, elemzői jelek kulcsszavakkal. Kimenet: out/report_summary.md + out/report.json,
+# amit a workflow artifactként feltölt és a repo-ba commitol "reports/" alá. A summary a Job Summary-ba is bekerül.
 
+from __future__ import annotations
 import argparse
 import os
 import json
-from datetime import datetime
+import re
+from datetime import datetime, timedelta, timezone
+from typing import Dict, Any, List, Optional, Tuple
 
 import pandas as pd
+import requests
+import yfinance as yf
+import feedparser  # Yahoo/Reuters/AP/PR wire feedekhez
+
+# --- Időzónák ---
+try:
+    from zoneinfo import ZoneInfo
+    EU_BUD = ZoneInfo("Europe/Budapest")
+    US_EAST = ZoneInfo("America/New_York")
+except Exception:
+    EU_BUD = timezone(timedelta(hours=1))
+    US_EAST = timezone(timedelta(hours=-5))
+
+# --- Időablakok (szabálykönyv) ---
+AFTER_HOURS_CEST = (22, 0, 2, 0)      # #1: 22:00 → 02:00 (köv. nap)
+PREMARKET_CEST    = (10, 0, 15, 30)   # #1: 10:00 → 15:30 (azonos nap)
+
+OPEN_CEST  = (15, 30)
+CLOSE_CEST = (22, 0)
+
+BATCH_SIZE = 30
+THRESHOLD_OTHER = 3.0  # watchlisten: csak ha |pct| >= 3.00%
+NEWS_MAX_SENTENCES = 4
+NEWS_MAX_ITEMS = 3
+REQUEST_TIMEOUT = 12
+
+# Forrás-prioritás a hírekre (host vagy forrásnév részlet)
+NEWS_SOURCE_PRIORITY = [
+    "reuters", "apnews", "associated press", "bloomberg",
+    "businesswire", "prnewswire", "globenewswire",
+    "sec.gov", "investor relations", "ir."
+]
+
+# Elemzői kulcsszavak
+ANALYST_PATTERNS = [
+    r"\b(upgrade[sd]?|downgrade[sd]?|initiates? coverage)\b",
+    r"\b(price target|pt)\b",
+    r"\b(overweight|equal[- ]weight|underweight|buy|hold|sell|outperform|market perform|neutral)\b",
+    r"\braise[sd]? target\b|\blower[sd]? target\b"
+]
 
 
-def run_report(report: str, csv_url: str) -> None:
-    ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
-    os.makedirs("out", exist_ok=True)
+# ---------------------------- Segédek ----------------------------
 
-    payload = {
-        "report": report,
-        "timestamp": ts,
-        "csv_source": csv_url or "",
-        "row_count": 0,
-        "columns": [],
-        "sample": [],
-        "notes": [],
-    }
+def now_bud() -> datetime:
+    return datetime.now(EU_BUD)
 
-    lines = [f"# Report {report}", f"*Run:* {ts}"]
+def to_utc(dt: datetime) -> datetime:
+    return dt.astimezone(timezone.utc)
 
-    # CSV beolvasás
-    if csv_url:
+def fmt_pct(p: Optional[float]) -> str:
+    return "n/a" if p is None else f"{p:+.2f}%"
+
+def safe_upper(x: Any) -> str:
+    return str(x).strip().upper() if pd.notna(x) else ""
+
+def load_csv(csv_url: str) -> pd.DataFrame:
+    df = pd.read_csv(csv_url)
+    df.rename(columns={c: c.strip() for c in df.columns}, inplace=True)
+
+    if "Ticker" not in df.columns:
+        raise ValueError("A CSV-ben nincs 'Ticker' oszlop.")
+
+    # Darabszám több lehetséges néven
+    qty_col = None
+    for cand in ["Darabszám", "Qty", "Quantity", "db", "Darab", "Shares"]:
+        if cand in df.columns:
+            qty_col = cand
+            break
+
+    df["_Ticker"] = df["Ticker"].apply(safe_upper)
+    df["_Qty"] = pd.to_numeric(df[qty_col], errors="coerce").fillna(0).astype(int) if qty_col else 0
+
+    # PKN.WA kihagyása
+    df = df[(df["_Ticker"] != "") & (df["_Ticker"] != "PKN.WA")]
+
+    # Egyedi tickerek
+    df = df.drop_duplicates(subset=["_Ticker"]).reset_index(drop=True)
+    return df
+
+def get_prev_close(ticker: str) -> Optional[float]:
+    try:
+        hist = yf.download(ticker, period="7d", interval="1d", auto_adjust=False, progress=False, prepost=False)
+        if hist is None or hist.empty:
+            return None
+        return float(hist["Close"].iloc[-1])
+    except Exception:
+        return None
+
+def get_last_in_window(ticker: str, start_utc: datetime, end_utc: datetime) -> Optional[float]:
+    try:
+        hist = yf.download(
+            ticker,
+            interval="1m",
+            start=start_utc - timedelta(minutes=2),
+            end=end_utc + timedelta(minutes=2),
+            prepost=True,
+            progress=False,
+        )
+        if hist is None or hist.empty:
+            return None
+        return float(hist["Close"].iloc[-1])
+    except Exception:
+        return None
+
+def get_open_and_last_change(ticker: str, start_utc: datetime, end_utc: datetime) -> Tuple[Optional[float], Optional[float], Optional[float]]:
+    """Open→Last% a megadott ablakban (nyitó = első elérhető gyertya 'Open')."""
+    try:
+        hist = yf.download(
+            ticker,
+            interval="1m",
+            start=start_utc - timedelta(minutes=2),
+            end=end_utc + timedelta(minutes=2),
+            prepost=True,
+            progress=False,
+        )
+        if hist is None or hist.empty:
+            return None, None, None
+        o = float(hist["Open"].iloc[0])
+        l = float(hist["Close"].iloc[-1])
+        if o == 0:
+            return o, l, None
+        return o, l, (l - o) / o * 100.0
+    except Exception:
+        return None, None, None
+
+def compute_windows_for_report(report_id: str, now_local: datetime) -> Dict[str, Tuple[datetime, datetime]]:
+    """Időablakok kiszámítása a szabálykönyv szerint. Visszaad CEST/CET-ben, de a hívó majd UTC-re vált."""
+    today = now_local.date()
+    open_dt  = datetime.combine(today, datetime.min.time(), EU_BUD).replace(hour=OPEN_CEST[0],  minute=OPEN_CEST[1])
+    close_dt = datetime.combine(today, datetime.min.time(), EU_BUD).replace(hour=CLOSE_CEST[0], minute=CLOSE_CEST[1])
+
+    if report_id == "1":
+        ah_start = datetime.combine(today - timedelta(days=1), datetime.min.time(), EU_BUD).replace(hour=AFTER_HOURS_CEST[0], minute=AFTER_HOURS_CEST[1])
+        ah_end   = datetime.combine(today, datetime.min.time(), EU_BUD).replace(hour=AFTER_HOURS_CEST[2], minute=AFTER_HOURS_CEST[3])
+        pm_start = datetime.combine(today, datetime.min.time(), EU_BUD).replace(hour=PREMARKET_CEST[0], minute=PREMARKET_CEST[1])
+        pm_end   = datetime.combine(today, datetime.min.time(), EU_BUD).replace(hour=PREMARKET_CEST[2], minute=PREMARKET_CEST[3])
+        return {"AH": (ah_start, ah_end), "PM": (pm_start, pm_end)}
+
+    elif report_id == "2":
+        prev_day = today - timedelta(days=1)
+        o = datetime.combine(prev_day, datetime.min.time(), EU_BUD).replace(hour=OPEN_CEST[0],  minute=OPEN_CEST[1])
+        c = datetime.combine(prev_day, datetime.min.time(), EU_BUD).replace(hour=CLOSE_CEST[0], minute=CLOSE_CEST[1])
+        return {"OC": (o, c)}
+
+    elif report_id == "3":
+        o = open_dt
+        n = now_local
+        if n < o:
+            o = n
+        return {"ON": (o, n)}
+
+    else:
+        raise ValueError("Ismeretlen report azonosító (1/2/3).")
+
+# ---------------------------- Hírek ----------------------------
+
+def _prefer_sources(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Előresorolja a preferált forrásokat (Reuters/AP/PR stb.)."""
+    def score(entry):
+        src = (entry.get("source", "") + " " + entry.get("link", "")).lower()
+        for i, key in enumerate(NEWS_SOURCE_PRIORITY):
+            if key in src:
+                return i
+        return 999
+    return sorted(entries, key=score)
+
+def fetch_yahoo_ticker_news(ticker: str, win_start_utc: datetime, win_end_utc: datetime) -> List[Dict[str, Any]]:
+    """Yahoo Finance per-ticker RSS: szűrés időablakra és gyors meta összeállítás."""
+    url = f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={ticker}&region=US&lang=en-US"
+    out: List[Dict[str, Any]] = []
+    try:
+        feed = feedparser.parse(url)
+        for e in feed.entries:
+            published = None
+            if "published_parsed" in e and e.published_parsed:
+                published = datetime(*e.published_parsed[:6], tzinfo=timezone.utc)
+            elif "updated_parsed" in e and e.updated_parsed:
+                published = datetime(*e.updated_parsed[:6], tzinfo=timezone.utc)
+            if not published or not (win_start_utc <= published <= win_end_utc):
+                continue
+            title = e.get("title", "").strip()
+            link = e.get("link", "").strip()
+            source = e.get("source", {}).get("title", "") if isinstance(e.get("source"), dict) else e.get("source", "")
+            out.append({"title": title, "link": link, "published": published.isoformat(), "source": source or ""})
+    except Exception:
+        pass
+    return _prefer_sources(out)
+
+def fetch_edgar_company_items(ticker: str, win_start_utc: datetime, win_end_utc: datetime) -> List[Dict[str, Any]]:
+    """SEC EDGAR: a cég Atom feedjéből 8-K/6-K találatok az ablakban."""
+    try:
+        map_url = "https://www.sec.gov/files/company_tickers.json"
+        hdrs = {"User-Agent": "Mozilla/5.0 (GitHub Actions script; admin@example.com)"}
+        m = requests.get(map_url, headers=hdrs, timeout=REQUEST_TIMEOUT).json()
+        cik = None
+        for _, rec in m.items():
+            if rec.get("ticker", "").upper() == ticker.upper():
+                cik = str(rec.get("cik_str")).zfill(10)
+                break
+        if not cik:
+            return []
+        feed_url = f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={cik}&type=8-K|6-K&owner=exclude&count=40&output=atom"
+        r = requests.get(feed_url, headers=hdrs, timeout=REQUEST_TIMEOUT)
+        if r.status_code != 200:
+            return []
+        from xml.etree import ElementTree as ET
+        root = ET.fromstring(r.text)
+        ns = {"atom": "http://www.w3.org/2005/Atom"}
+        out: List[Dict[str, Any]] = []
+        for e in root.findall("atom:entry", ns):
+            title = (e.findtext("atom:title", default="", namespaces=ns) or "").strip()
+            link_el = e.find("atom:link", ns)
+            link = link_el.attrib.get("href") if link_el is not None else ""
+            updated_txt = (e.findtext("atom:updated", default="", namespaces=ns) or "").strip()
+            if not updated_txt:
+                continue
+            try:
+                pub = datetime.fromisoformat(updated_txt.replace("Z", "+00:00"))
+            except Exception:
+                continue
+            if win_start_utc <= pub <= win_end_utc:
+                out.append({"title": title, "link": link, "published": pub.isoformat(), "source": "SEC EDGAR"})
+        return out
+    except Exception:
+        return []
+
+def summarize_news(entries: List[Dict[str, Any]], max_items=NEWS_MAX_ITEMS, max_sentences=NEWS_MAX_SENTENCES) -> str:
+    """
+    Összefoglaló max 4 mondatban. HA NINCS releváns hír, térjen vissza üres
+    sztringgel — a formázásnál nem írunk semmit (nincs „– nincs hír”).
+    """
+    if not entries:
+        return ""
+    entries = entries[:max_items]
+    text = ". ".join([e.get("title", "").strip() for e in entries if e.get("title")]).strip()
+    if not text:
+        return ""
+    if not text.endswith("."):
+        text += "."
+    sents = [s.strip() for s in text.split(".") if s.strip()]
+    sents = sents[:max_sentences]
+    return (". ".join(sents) + ".") if sents else ""
+
+def extract_analyst_hits(entries: List[Dict[str, Any]]) -> List[str]:
+    out = []
+    pat = re.compile("|".join(ANALYST_PATTERNS), flags=re.IGNORECASE)
+    for e in entries:
+        title = e.get("title", "")
+        if pat.search(title):
+            out.append(title)
+    norm_seen = set()
+    uniq = []
+    for t in out:
+        n = re.sub(r"[^a-z0-9]+", "", t.lower())
+        if n in norm_seen:
+            continue
+        norm_seen.add(n)
+        uniq.append(t)
+    return uniq
+
+def fetch_macro_headlines(win_start_utc: datetime, win_end_utc: datetime) -> List[str]:
+    """Egyszerű makró/FED/Politika blokk: Reuters + AP top/markets feed – az ablakra szűrve."""
+    feeds = [
+        "https://feeds.reuters.com/reuters/businessNews",
+        "https://feeds.reuters.com/reuters/marketsNews",
+        "https://apnews.com/hub/apf-business?utm_source=rss",
+    ]
+    hits: List[str] = []
+    for url in feeds:
         try:
-            df = pd.read_csv(csv_url)
-            payload["row_count"] = int(len(df))
-            payload["columns"] = [str(c) for c in df.columns.tolist()]
-            payload["sample"] = df.head(min(10, len(df))).to_dict(orient="records")
-            lines += [
-                f"*CSV source:* {csv_url}",
-                f"*Rows:* {len(df)}",
-                f"*Columns:* {', '.join(payload['columns'])}",
-            ]
-        except Exception as e:
-            msg = f"**WARN:** CSV read error: {e}"
-            lines.append(msg)
-            payload["notes"].append(msg)
+            f = feedparser.parse(url)
+            for e in f.entries:
+                pub = None
+                if "published_parsed" in e and e.published_parsed:
+                    pub = datetime(*e.published_parsed[:6], tzinfo=timezone.utc)
+                elif "updated_parsed" in e and e.updated_parsed:
+                    pub = datetime(*e.updated_parsed[:6], tzinfo=timezone.utc)
+                if not pub or not (win_start_utc <= pub <= win_end_utc):
+                    continue
+                title = e.get("title", "").strip()
+                if title:
+                    hits.append(title)
+        except Exception:
+            continue
+    uniq, seen = [], set()
+    for t in hits:
+        n = re.sub(r"[^a-z0-9]+", "", t.lower())
+        if n in seen:
+            continue
+        seen.add(n)
+        uniq.append(t)
+    return uniq[:5]
+
+# ---------------------------- Riportépítés ----------------------------
+
+def build_report(payload_report: str, df: pd.DataFrame, csv_url: str) -> Dict[str, Any]:
+    t0 = now_bud()
+    windows_local = compute_windows_for_report(payload_report, t0)
+
+    # Ticker rendezés: darabszámos elöl
+    df["_IsPos"] = df["_Qty"].astype(int) > 0
+    pos = df[df["_IsPos"]]["_Ticker"].tolist()
+    oth = df[~df["_IsPos"]]["_Ticker"].tolist()
+
+    reported: List[Dict[str, Any]] = []
+    missing: List[str] = []
+    annc_block: List[str] = []  # Bejelentések & fel/lemínősítések
+
+    def process_ticker_1(tk: str, is_pos: bool):
+        # #1: AH (% prev close) + PM (% prev close) + okok (max 4 mondat, ha van)
+        prev = get_prev_close(tk)
+        ah_s, ah_e = windows_local["AH"]
+        pm_s, pm_e = windows_local["PM"]
+        ah = get_last_in_window(tk, to_utc(ah_s), to_utc(ah_e))
+        pm = get_last_in_window(tk, to_utc(pm_s), to_utc(pm_e))
+        ah_pct = ((ah - prev) / prev * 100.0) if (ah is not None and prev) else None
+        pm_pct = ((pm - prev) / prev * 100.0) if (pm is not None and prev) else None
+
+        should = is_pos or (
+            (ah_pct is not None and abs(ah_pct) >= THRESHOLD_OTHER) or
+            (pm_pct is not None and abs(pm_pct) >= THRESHOLD_OTHER)
+        )
+        if not should:
+            return
+
+        # Hírek (preferált forrásokkal)
+        ah_news = fetch_yahoo_ticker_news(tk, to_utc(ah_s), to_utc(ah_e))
+        pm_news = fetch_yahoo_ticker_news(tk, to_utc(pm_s), to_utc(pm_e))
+        # SEC EDGAR 8-K/6-K beemelése
+        ah_news = (fetch_edgar_company_items(tk, to_utc(ah_s), to_utc(ah_e)) or []) + ah_news
+        pm_news = (fetch_edgar_company_items(tk, to_utc(pm_s), to_utc(pm_e)) or []) + pm_news
+
+        ah_reason = summarize_news(ah_news) if ah_pct is not None else ""
+        pm_reason = summarize_news(pm_news) if pm_pct is not None else ""
+
+        # Elemzői találatok a „Bejelentések & fel/lemínősítések” blokkhoz
+        analyst_hits = extract_analyst_hits(ah_news + pm_news)
+        for line in analyst_hits:
+            annc_block.append(f"{tk} — {line}")
+
+        # Nyitáskori várható hatás
+        max_move = max([abs(x) for x in [ah_pct or 0.0, pm_pct or 0.0]])
+        if max_move >= 3.0:
+            effect = "Várható erősebb elmozdulás a nyitás után."
+        elif max_move >= 1.0:
+            effect = "Mérsékelt hatás várható a nyitás után."
+        else:
+            effect = "Érdemi nyitáskori hatás nem valószínű."
+
+        reported.append({
+            "ticker": tk,
+            "is_position": is_pos,
+            "after_hours": {"pct": ah_pct, "reason": ah_reason},
+            "premarket":   {"pct": pm_pct, "reason": pm_reason},
+            "effect_open": effect,
+        })
+
+    def process_ticker_2(tk: str, is_pos: bool):
+        # #2: Előző nap Open→Close %
+        (oc_s, oc_e) = windows_local["OC"]
+        o, l, oc_pct = get_open_and_last_change(tk, to_utc(oc_s), to_utc(oc_e))
+        should = is_pos or (oc_pct is not None and abs(oc_pct) >= THRESHOLD_OTHER)
+        if not should:
+            return
+        news = fetch_yahoo_ticker_news(tk, to_utc(oc_s), to_utc(oc_e))
+        news = (fetch_edgar_company_items(tk, to_utc(oc_s), to_utc(oc_e)) or []) + news
+        reason = summarize_news(news) if oc_pct is not None else ""
+        analyst_hits = extract_analyst_hits(news)
+        for line in analyst_hits:
+            annc_block.append(f"{tk} — {line}")
+        reported.append({
+            "ticker": tk,
+            "is_position": is_pos,
+            "open_close": {"pct": oc_pct, "reason": reason},
+        })
+
+    def process_ticker_3(tk: str, is_pos: bool):
+        # #3: Ma Open→Most %
+        (on_s, on_e) = windows_local["ON"]
+        o, l, on_pct = get_open_and_last_change(tk, to_utc(on_s), to_utc(on_e))
+        should = is_pos or (on_pct is not None and abs(on_pct) >= THRESHOLD_OTHER)
+        if not should:
+            return
+        news = fetch_yahoo_ticker_news(tk, to_utc(on_s), to_utc(on_e))
+        news = (fetch_edgar_company_items(tk, to_utc(on_s), to_utc(on_e)) or []) + news
+        reason = summarize_news(news) if on_pct is not None else ""
+        analyst_hits = extract_analyst_hits(news)
+        for line in analyst_hits:
+            annc_block.append(f"{tk} — {line}")
+        reported.append({
+            "ticker": tk,
+            "is_position": is_pos,
+            "open_now": {"pct": on_pct, "reason": reason},
+        })
+
+    runners = {"1": process_ticker_1, "2": process_ticker_2, "3": process_ticker_3}
+    run_one = runners[payload_report]
+
+    # Először pozíciók
+    for tk in pos:
+        try:
+            run_one(tk, True)
+        except Exception:
+            missing.append(tk)
+
+    # Majd a többiek
+    for tk in oth:
+        try:
+            run_one(tk, False)
+        except Exception:
+            missing.append(tk)
+
+    coverage = "TELJES" if not missing else f"HIÁNYOS – nem elérhető ticker(ek): {', '.join(sorted(set(missing)))}"
+
+    # Makró/FED/politika blokk időzítése
+    if payload_report == "1":
+        mac_s = to_utc(windows_local["AH"][0])
+        mac_e = to_utc(windows_local["PM"][1])
+    elif payload_report == "2":
+        mac_s = to_utc(windows_local["OC"][0])
+        mac_e = to_utc(windows_local["OC"][1])
     else:
-        msg = "**WARN:** No CSV URL provided (empty SECRET or input)."
-        lines.append(msg)
-        payload["notes"].append(msg)
+        mac_s = to_utc(windows_local["ON"][0])
+        mac_e = to_utc(windows_local["ON"][1])
 
-    # Jelentés-specifikus helyőrzők – ide jöhet a valós logika
-    if report == "1":
-        lines += ["", "## Jelentés #1 – placeholder", "Írd ide az AH/premarket logikát…"]
-    elif report == "2":
-        lines += ["", "## Jelentés #2 – placeholder", "Írd ide a nyitás→zárás logikát…"]
-    elif report == "3":
-        lines += ["", "## Jelentés #3 – placeholder", "Írd ide a nyitás→most logikát…"]
-    else:
-        warn = "**WARN:** Ismeretlen report azonosító."
-        lines.append(warn)
-        payload["notes"].append(warn)
+    macro_hits = fetch_macro_headlines(mac_s, mac_e)
+    trump_line = next((h for h in macro_hits if re.search(r"\btrump\b", h, flags=re.I)), None)
 
-    # Kimenetek mentése
-    with open("out/report_summary.md", "w", encoding="utf-8", newline="\n") as f:
-        f.write("\n".join(lines))
-
-    with open("out/report.json", "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
-
-    print("OK: out/report_summary.md")
-    print("OK: out/report.json")
-
-
-def main() -> None:
-    p = argparse.ArgumentParser()
-    p.add_argument("--report", required=True, choices=["1", "2", "3"])
-    p.add_argument("--csv-url", dest="csv_url", default="")
-    args = p.parse_args()
-    run_report(args.report, args.csv_url)
-
-
-if __name__ == "__main__":
-    main()
-
+    # --- Formázott MD ---
+    lines: List[str] = []
+    rep_name = {"1": "Jelentés #1 – After-hours & Premarket",
+                "2": "Jelentés #2 – Open→Close (előző nap)",
