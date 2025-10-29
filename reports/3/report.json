@@ -1,0 +1,151 @@
+{
+  "report": "3",
+  "timestamp_utc": "2025-10-29 15:02:26 UTC",
+  "coverage": "TELJES",
+  "tickers_total": 103,
+  "tickers_reported": 17,
+  "items": [
+    {
+      "ticker": "IREN",
+      "is_position": true,
+      "open_now": {
+        "pct": null,
+        "reason": ""
+      }
+    },
+    {
+      "ticker": "AAPL",
+      "is_position": true,
+      "open_now": {
+        "pct": null,
+        "reason": ""
+      }
+    },
+    {
+      "ticker": "MP",
+      "is_position": true,
+      "open_now": {
+        "pct": null,
+        "reason": ""
+      }
+    },
+    {
+      "ticker": "NVDA",
+      "is_position": true,
+      "open_now": {
+        "pct": null,
+        "reason": ""
+      }
+    },
+    {
+      "ticker": "RGTI",
+      "is_position": true,
+      "open_now": {
+        "pct": null,
+        "reason": ""
+      }
+    },
+    {
+      "ticker": "UBER",
+      "is_position": true,
+      "open_now": {
+        "pct": null,
+        "reason": ""
+      }
+    },
+    {
+      "ticker": "TSM",
+      "is_position": true,
+      "open_now": {
+        "pct": null,
+        "reason": ""
+      }
+    },
+    {
+      "ticker": "AMZN",
+      "is_position": true,
+      "open_now": {
+        "pct": null,
+        "reason": ""
+      }
+    },
+    {
+      "ticker": "GTLB",
+      "is_position": true,
+      "open_now": {
+        "pct": null,
+        "reason": ""
+      }
+    },
+    {
+      "ticker": "META",
+      "is_position": true,
+      "open_now": {
+        "pct": null,
+        "reason": ""
+      }
+    },
+    {
+      "ticker": "MSFT",
+      "is_position": true,
+      "open_now": {
+        "pct": null,
+        "reason": ""
+      }
+    },
+    {
+      "ticker": "AMD",
+      "is_position": true,
+      "open_now": {
+        "pct": null,
+        "reason": ""
+      }
+    },
+    {
+      "ticker": "MSTR",
+      "is_position": true,
+      "open_now": {
+        "pct": null,
+        "reason": ""
+      }
+    },
+    {
+      "ticker": "UEC",
+      "is_position": true,
+      "open_now": {
+        "pct": null,
+        "reason": ""
+      }
+    },
+    {
+      "ticker": "MU",
+      "is_position": true,
+      "open_now": {
+        "pct": null,
+        "reason": ""
+      }
+    },
+    {
+      "ticker": "CRWV",
+      "is_position": true,
+      "open_now": {
+        "pct": null,
+        "reason": ""
+      }
+    },
+    {
+      "ticker": "NBIS",
+      "is_position": true,
+      "open_now": {
+        "pct": null,
+        "reason": ""
+      }
+    }
+  ],
+  "macro": [],
+  "announcements": [
+    "AAPL — Nvidia price target raised by UBS and Melius, Apple gets lift",
+    "NVDA — Nvidia price target raised by UBS and Melius, Apple gets lift"
+  ],
+  "missing": []
+}
