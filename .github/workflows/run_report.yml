@@ -28,5 +28,6 @@ jobs:
       - name: Run report
         run: |
           python scripts/report_runner.py \
-            --report "${{ github.event.inputs.report }}" \
-            --csv-url "${{ secrets.MASTER_CSV_URL }}"
+  --report "${{ github.event.inputs.report }}" \
+  --csv-url "${{ secrets.MASTER_CSV_URL }}"
+
