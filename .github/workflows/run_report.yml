@@ -23,6 +23,13 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Show requirements (debug)
+        run: |
+          echo "PWD: $(pwd)"
+          ls -la
+          echo "---- requirements.txt ----"
+          cat requirements.txt || echo "requirements.txt NOT FOUND"
+
       - name: Cache pip
         uses: actions/cache@v4
         with:
@@ -35,12 +42,16 @@ jobs:
         shell: bash
         run: |
           set -e
-          python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then
-            pip install -r requirements.txt
-          else
-            echo "No requirements.txt found — skipping."
-          fi
+          python -m pip install --upgrade pip setuptools wheel
+          pip install -r requirements.txt
+          # Gyors sanity check – ha bármi hiányzik, itt elhasal és nem a script közben:
+          python - <<'PY'
+import pandas, requests, feedparser, yfinance
+print("OK: pandas", pandas.__version__)
+print("OK: requests", requests.__version__)
+print("OK: feedparser", feedparser.__version__)
+print("OK: yfinance", yfinance.__version__)
+PY
 
       - name: Run report
         env:
