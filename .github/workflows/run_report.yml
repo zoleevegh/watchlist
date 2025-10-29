@@ -32,11 +32,13 @@ jobs:
             ${{ runner.os }}-pip-
 
       - name: Install deps
+        shell: bash
         run: |
+          set -e
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then
             pip install -r requirements.txt
-          else:
+          else
             echo "No requirements.txt found — skipping."
           fi
 
@@ -73,7 +75,7 @@ jobs:
           git add reports/
           if git diff --cached --quiet; then
             echo "No changes to commit."
-          else:
+          else
             git commit -m "report ${REPORT} #${{ github.run_number }}"
             git push
           fi
