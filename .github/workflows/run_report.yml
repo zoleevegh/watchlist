@@ -1,6 +1,5 @@
 name: Run Report
 
-# Csak kézi indítás (Actions > Run workflow)
 on:
   workflow_dispatch:
     inputs:
@@ -9,7 +8,6 @@ on:
         required: true
         default: "1"
 
-# A repo-ba pusholunk, ehhez kell write jogosultság
 permissions:
   contents: write
 
@@ -38,7 +36,7 @@ jobs:
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then
             pip install -r requirements.txt
-          else
+          else:
             echo "No requirements.txt found — skipping."
           fi
 
@@ -56,6 +54,9 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+      - name: Append Job Summary
+        run: cat out/report_summary.md >> $GITHUB_STEP_SUMMARY
+
       - name: Commit reports into repo
         env:
           REPORT: ${{ github.event.inputs.report }}
@@ -64,8 +65,6 @@ jobs:
           REPORT_DIR="reports/${REPORT}"
           mkdir -p "$REPORT_DIR"
           cp -r out/* "$REPORT_DIR/"
-
-          # Stabil "latest" alias a gyors lekéréshez
           cp out/report_summary.md "reports/latest_${REPORT}.md"
           cp out/report.json        "reports/latest_${REPORT}.json"
 
@@ -74,7 +73,7 @@ jobs:
           git add reports/
           if git diff --cached --quiet; then
             echo "No changes to commit."
-          else
+          else:
             git commit -m "report ${REPORT} #${{ github.run_number }}"
             git push
           fi
