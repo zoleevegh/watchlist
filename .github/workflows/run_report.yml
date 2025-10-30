@@ -25,7 +25,7 @@ jobs:
     runs-on: windows-latest
     env:
       # Alapértelmezett MASTER CSV – nyugodtan írd át másik gid-re, ha nem az első lap kell
-      DEFAULT_CSV_URL: https://docs.google.com/spreadsheets/d/13ymDFTRzhPy2yHB3Khvu4bTkdAuKeyYQgKsdIMwGXqM/export?format=csv&gid=0
+      DEFAULT_CSV_URL: https://docs.google.com/spreadsheets/d/e/2PACX-1vTf5h3xx4LWJvI-e7PSyc8g6uGZT-H6pCeuwEqs7NqeCDKuAltTpL_ncPOWMtooRw/pub?output=csv
 
     steps:
       - name: Checkout
