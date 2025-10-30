@@ -1,24 +1,32 @@
-name: Run Report
+name: Run Report (Windows)
 
 on:
-  # kézi indítás GitHub UI-ból vagy API-ból
   workflow_dispatch:
     inputs:
       report:
-        description: "1 = AH+PM | 2 = Open→Close | 3 = Open→Most"
-        required: true
-        default: "1"
-  # telefon/iOS/Windows API hívás (repository_dispatch) támogatása is
+        description: 'Jelentés típusa (1/2/3)'
+        default: '3'
+        required: false
+      csv_url:
+        description: 'MASTER CSV URL (ha üres, defaultot használ)'
+        default: ''
+        required: false
+      diag:
+        description: 'Diagnosztika (true/false) – élő árforrás ellenőrzés'
+        default: 'false'
+        required: false
+
+  # Ha API-ból küldesz repository_dispatch-t (event_type: run_report)
   repository_dispatch:
     types: [run_report]
 
-permissions:
-  contents: write    # hogy a reports/ mappába tudjunk commitolni
-  actions: read
-
 jobs:
   run:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
+    env:
+      # Alapértelmezett MASTER CSV – nyugodtan írd át másik gid-re, ha nem az első lap kell
+      DEFAULT_CSV_URL: https://docs.google.com/spreadsheets/d/13ymDFTRzhPy2yHB3Khvu4bTkdAuKeyYQgKsdIMwGXqM/export?format=csv&gid=0
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -26,41 +34,93 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: '3.11'
 
       - name: Install deps
+        shell: pwsh
         run: |
-          if [ -f requirements.txt ]; then
+          python -m pip install --upgrade pip
+          if (Test-Path "requirements.txt") {
             pip install -r requirements.txt
-          else
-            pip install requests pandas python-dateutil feedparser yfinance
-          fi
+          } else {
+            pip install pandas requests python-dateutil yfinance
+          }
 
-      - name: Resolve REPORT arg
-        id: rep
-        shell: bash
+      - name: Resolve inputs (report, csv)
+        id: vars
+        shell: pwsh
         run: |
-          # workflow_dispatch → github.event.inputs.report
-          # repository_dispatch → github.event.client_payload.report
-          REP="${{ github.event.inputs.report }}"
-          [ -z "$REP" ] && REP="${{ github.event.client_payload.report }}"
-          [ -z "$REP" ] && REP="1"
-          echo "report=$REP" >> $GITHUB_OUTPUT
+          $report = "${{ github.event.inputs.report }}"; if (-not $report) { $report = "${{ github.event.client_payload.report }}" }
+          if (-not $report) { $report = "3" }
 
-      - name: Run report
+          $csv = "${{ github.event.inputs.csv_url }}"; if (-not $csv) { $csv = "${{ env.DEFAULT_CSV_URL }}" }
+
+          echo "report=$report" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          echo "csv=$csv"       | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+          Write-Host "REPORT: $report"
+          Write-Host "CSV URL: $csv"
+
+      - name: Fetch MASTER CSV + preview
+        shell: pwsh
         run: |
-          mkdir -p reports
-          python scripts/report_runner.py --report "${{ steps.rep.outputs.report }}"
+          New-Item -ItemType Directory -Force -Path reports | Out-Null
+          $csvUrl = "${{ steps.vars.outputs.csv }}"
+          Write-Host "Letöltés: $csvUrl"
+          Invoke-WebRequest -Uri $csvUrl -OutFile "reports\master.csv"
+          Write-Host "Első 5 sor (preview):"
+          Get-Content "reports\master.csv" -TotalCount 5 | ForEach-Object { Write-Host "CSV> $_" }
 
-      - name: Auto-commit reports/
-        uses: stefanzweifel/git-auto-commit-action@v5
-        with:
-          commit_message: "ci: update reports (report ${{ steps.rep.outputs.report }})"
-          file_pattern: reports/*.json
+      # Opcionális diagnosztika – élő árfolyam mezők (Open, Price, PrevClose→Most, Open→Most)
+      - name: Diagnosztika (yahoo v7)
+        if: ${{ github.event.inputs.diag == 'true' }}
+        shell: pwsh
+        run: |
+          $py = @"
+          import requests, json, datetime
+          def q(sym):
+              u="https://query1.finance.yahoo.com/v7/finance/quote"
+              j=requests.get(u,params={"symbols":sym},headers={"User-Agent":"Mozilla/5.0"}).json()["quoteResponse"]["result"][0]
+              ts=j.get("regularMarketTime",0)
+              t=datetime.datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S UTC")
+              open_=j.get("regularMarketOpen")
+              price=j.get("regularMarketPrice")
+              oc=None
+              if price is not None and open_:
+                  oc=(price-open_)/open_*100
+              out={
+                "symbol":sym,
+                "marketState":j.get("marketState"),
+                "regularMarketOpen":open_,
+                "regularMarketPrice":price,
+                "regularMarketChangePercent":j.get("regularMarketChangePercent"), # PrevClose→Now
+                "openToNowPercent":oc,
+                "regularMarketTime":t
+              }
+              print(json.dumps(out, ensure_ascii=False, indent=2))
+          for s in ["META","MSTR"]:
+              q(s)
+          "@
+          python - << 'PY'
+          $py
+          PY
 
-      - name: Upload artifact (optional)
+      - name: Run report script (if present)
+        shell: pwsh
+        run: |
+          $report = "${{ steps.vars.outputs.report }}"
+          $csv    = "${{ steps.vars.outputs.csv }}"
+          if (Test-Path "scripts\report_runner.py") {
+            Write-Host "scripts\report_runner.py futtatása..."
+            python "scripts\report_runner.py" --report $report --csv "reports\master.csv"
+          } else {
+            Write-Warning "scripts\report_runner.py nem található – csak CSV ellenőrzés történt."
+          }
+
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: report-${{ steps.rep.outputs.report }}
-          path: reports/*.json
+          name: report-${{ steps.vars.outputs.report }}
+          path: |
+            reports/**
           if-no-files-found: warn
