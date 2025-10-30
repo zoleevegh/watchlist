@@ -1,21 +1,22 @@
 import argparse, sys
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, time as dtime
 import pandas as pd
 import requests
 import yfinance as yf
 import pytz
 
-# UTF-8 kimenet Windows runneren
+# Kimenet UTF-8 a Windows runneren
 try:
     sys.stdout.reconfigure(encoding="utf-8")
 except Exception:
     pass
 
 TZ_NY = pytz.timezone("America/New_York")
-SKIP_TICKERS = {"PKN.WA"}  # PKN.WA alapból kihagyva
+OPEN_T = dtime(9, 30)  # 09:30:00 NY idő
+SKIP_TICKERS = {"PKN.WA"}  # kérés szerint kihagyjuk alapból
 
-# ---- Segédek ---------------------------------------------------------------
+# ---------- Segédek ---------------------------------------------------------
 
 def pct(a, b):
     try:
@@ -26,9 +27,7 @@ def pct(a, b):
         return None
 
 def read_tickers(csv_path: str):
-    """Rugalmas beolvasás: megpróbáljuk megtalálni a ticker- és mennyiség-oszlopokat.
-       Ha nincs qty oszlop, minden ticker watchlistként kezelődik.
-    """
+    """Rugalmas beolvasás: ticker + (opcionális) darabszám oszlopok felismerése."""
     df = pd.read_csv(csv_path)
     cols = {c.lower(): c for c in df.columns}
 
@@ -38,7 +37,7 @@ def read_tickers(csv_path: str):
         if k in cols:
             ticker_col = cols[k]; break
     if ticker_col is None:
-        ticker_col = df.columns[0]  # fallback: első oszlop
+        ticker_col = df.columns[0]  # fallback
 
     # qty oszlop
     qty_col = None
@@ -48,16 +47,15 @@ def read_tickers(csv_path: str):
 
     out = []
     for _, row in df.iterrows():
-        t = str(row[ticker_col]).strip()
-        if not t or t == "nan":
+        t = str(row[ticker_col]).strip().upper()
+        if not t or t == "NAN":
             continue
         if t in SKIP_TICKERS:
             continue
         qty = None
-        if qty_col is not None:
+        if qty_col is not None and pd.notna(row[qty_col]):
             try:
-                val = row[qty_col]
-                qty = float(val) if pd.notna(val) else None
+                qty = float(row[qty_col])
             except Exception:
                 qty = None
         out.append((t, qty))
@@ -69,47 +67,77 @@ def read_tickers(csv_path: str):
             seen[t] = q
     return [(t, seen[t]) for t in seen.keys()]
 
-# ---- Árlekérés (többlépcsős fallback) -------------------------------------
+# ---------- Árlekérés (09:30-as open preferálva) ----------------------------
+
+def _normalize_ny(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    if df.index.tz is None:
+        df.index = df.index.tz_localize("UTC").tz_convert(TZ_NY)
+    else:
+        df.index = df.index.tz_convert(TZ_NY)
+    return df
+
+def _pick_session_open(df_today: pd.DataFrame):
+    """Válaszd a 09:30:00-hoz legközelebbi REGULAR bart:
+       1) pont 09:30:00
+       2) az első >=09:30:00 (max +3 perc tolerancia)
+       3) ha nincs, None
+    """
+    if df_today.empty:
+        return None
+    # 1) pontos egyezés
+    exact = df_today[df_today.index.time == OPEN_T]
+    if not exact.empty:
+        return float(exact.iloc[0]["Open"])
+    # 2) első >= 09:30:00
+    later = df_today[df_today.index.time >= OPEN_T]
+    if not later.empty:
+        idx0 = later.index[0]
+        # max +3 perc tolerancia
+        if (idx0 - later.index[0].replace(hour=9, minute=30, second=0, microsecond=0)).total_seconds() <= 180:
+            return float(later.iloc[0]["Open"])
+    return None
 
 def fetch_metrics(symbol: str):
-    """Open→Now a mai REGULAR perces adatokból, több lépcsős fallback-kel.
-       Fallback sorrend:
-         1) 1m / 1d REGULAR
-         2) 5m / 5d REGULAR (ma szűrve)
-         3) quote v7 mezők (regularMarketOpen/regularMarketPrice/regularMarketPreviousClose)
-         4) fast_info.previous_close (ha elérhető)
+    """Open→Now a mai REGULAR perces adatokból, szigorú 09:30 open prioritással.
+       Fallback: 5m/5d, majd quote v7 open/price/prev, végül fast_info.previous_close.
     """
     try:
         t = yf.Ticker(symbol)
 
-        # 1) 1 perces adatok, 1 nap
+        # 1) 1m / 1d REGULAR
         hist = t.history(period="1d", interval="1m", prepost=False, actions=False)
-        if hist is None or hist.empty:
-            # 2) 5 perces fallback, 5 napból ma szűrve
-            hist = t.history(period="5d", interval="5m", prepost=False, actions=False)
-            if hist is None:
-                hist = pd.DataFrame()
-
         open_px = last_px = high_px = low_px = None
-        if not hist.empty:
-            # TZ normalizálás
-            if hist.index.tz is None:
-                hist.index = hist.index.tz_localize("UTC").tz_convert(TZ_NY)
-            else:
-                hist.index = hist.index.tz_convert(TZ_NY)
+        if hist is not None and not hist.empty:
+            hist = _normalize_ny(hist)
             today = datetime.now(TZ_NY).date()
             df = hist[hist.index.date == today]
             if not df.empty:
-                first = df.iloc[0]
-                open_px = float(first["Open"])
+                open_px = _pick_session_open(df)
                 last_px = float(df["Close"].iloc[-1])
                 high_px = float(df["High"].max())
                 low_px  = float(df["Low"].min())
 
+        # 2) 5m / 5d fallback (ha nincs 1m vagy hiányzik a 09:30 open)
+        if open_px is None or last_px is None:
+            hist5 = t.history(period="5d", interval="5m", prepost=False, actions=False)
+            if hist5 is not None and not hist5.empty:
+                hist5 = _normalize_ny(hist5)
+                today = datetime.now(TZ_NY).date()
+                df5 = hist5[hist5.index.date == today]
+                if not df5.empty:
+                    if open_px is None:
+                        open_px = _pick_session_open(df5)
+                    if last_px is None:
+                        last_px = float(df5["Close"].iloc[-1])
+                    high_px = float(df5["High"].max()) if high_px is None else high_px
+                    low_px  = float(df5["Low"].min())  if low_px  is None else low_px
+
         prev = None
 
-        # 3) ha percesből nincs adat, kérjünk quote v7-et
-        if open_px is None or last_px is None:
+        # 3) quote v7 fallback (ha nincs elég perces adat)
+        if open_px is None or last_px is None or prev is None:
             try:
                 q = requests.get(
                     "https://query1.finance.yahoo.com/v7/finance/quote",
@@ -125,7 +153,7 @@ def fetch_metrics(symbol: str):
             except Exception:
                 pass
 
-        # 4) previous close fast_info-ból (ha még mindig None)
+        # 4) fast_info.previous_close utolsó próbálkozásra
         if prev is None:
             try:
                 fi = getattr(t, "fast_info", None)
@@ -133,7 +161,7 @@ def fetch_metrics(symbol: str):
             except Exception:
                 prev = None
 
-        res = {
+        return {
             "symbol": symbol,
             "open": open_px,
             "last": last_px,
@@ -143,11 +171,10 @@ def fetch_metrics(symbol: str):
             "low_over_open_pct":  None if open_px in (None,0) or low_px  is None else round(pct(open_px, low_px), 2),
             "error": None if (open_px is not None and last_px is not None) else "no_price_data"
         }
-        return res
     except Exception as e:
         return {"symbol": symbol, "error": f"exc:{e}"}
 
-# ---- Main (#3 jelentés) ----------------------------------------------------
+# ---------- Jelentés (#3) ---------------------------------------------------
 
 def write_summary(md_path: str, text: str):
     try:
@@ -186,7 +213,7 @@ def main():
     df = pd.DataFrame(results)
     df.to_csv(reports_dir / "all_metrics.csv", index=False)
 
-    # #3 fő szűrő és override
+    # #3 fő szűrő (Open→Most) + OVERRIDE (PrevClose→Most)
     main_hits = df[df["open_to_now_pct"].abs() >= 3.00].copy()
     override_hits = df[df["prevclose_to_now_pct"].abs() >= 8.00].copy()
 
@@ -200,7 +227,7 @@ def main():
     main_hits.to_csv(reports_dir / "report3_open_to_now_hits.csv", index=False)
     override_hits.to_csv(reports_dir / "report3_override_prevclose_hits.csv", index=False)
 
-    # Összefoglaló a Job Summary-ba is
+    # Összefoglaló a Job Summary-ba
     def fmt(r, k):
         v = r.get(k)
         return "–" if pd.isna(v) or v is None else f"{v:.2f}%"
@@ -225,9 +252,17 @@ def main():
         for _, r in override_hits.iterrows():
             lines.append(f"- **{r['symbol']}** – Open→Most: {fmt(r,'open_to_now_pct')} | **PrevClose→Most: {fmt(r,'prevclose_to_now_pct')}** | High/Open: {fmt(r,'high_over_open_pct')} | Low/Open: {fmt(r,'low_over_open_pct')}")
 
+    # Külön sanity blokk – a sokat említett nevek mindig kiírásra kerülnek
+    focus = ["AMZN","RGTI","GOOG","IREN","AMD","META","MSTR","CRWV"]
+    focus_df = df[df["symbol"].isin(focus)].copy()
+    if not focus_df.empty:
+        lines.append("\n### Ellenőrzés – fókusz tickerek")
+        for _, r in focus_df.iterrows():
+            lines.append(f"- **{r['symbol']}** – Open→Most: {fmt(r,'open_to_now_pct')} | PrevClose→Most: {fmt(r,'prevclose_to_now_pct')}")
+
     summary_md = "\n".join(lines)
 
-    print(summary_md)  # UTF-8-ra kényszerítettük a futást
+    print(summary_md)
     with open(reports_dir / "summary_report3.md", "w", encoding="utf-8") as f:
         f.write(summary_md)
 
