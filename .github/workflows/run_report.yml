@@ -11,7 +11,6 @@ on:
         description: 'MASTER CSV URL (üres = DEFAULT_CSV_URL)'
         default: ''
         required: false
-
   repository_dispatch:
     types: [run_report]
 
@@ -19,6 +18,7 @@ jobs:
   run:
     runs-on: windows-latest
     env:
+      # <<< IDE írd, ha másik publikus CSV-t akarsz alapértelmezettnek >>>
       DEFAULT_CSV_URL: https://docs.google.com/spreadsheets/d/e/2PACX-1vTf5h3xx4LWJvI-e7PSyc8g6uGZT-H6pCeuwEqs7NqeCDKuAltTpL_ncPOWMtooRw/pub?output=csv
 
     steps:
@@ -34,7 +34,7 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          pip install pandas requests yfinance pytz tabulate
+          pip install pandas requests yfinance pytz
 
       - name: Resolve inputs (report, csv)
         id: vars
@@ -75,13 +75,17 @@ jobs:
       - name: Run report (#3 + extrém override)
         shell: pwsh
         run: |
+          # Konzol + Python kimenet legyen UTF-8 (nyilak, ékezetek)
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+          $env:PYTHONIOENCODING = "utf-8"
+
           $report = "${{ steps.vars.outputs.report }}"
           $csv    = "reports\master.csv"
           if (-not (Test-Path "scripts\report_runner.py")) {
             Write-Error "scripts\report_runner.py hiányzik. Másold be a repo-ba a mellékelt fájlt."
             exit 1
           }
-          python "scripts\report_runner.py" --report $report --csv "$csv" --summary "$env:GITHUB_STEP_SUMMARY"
+          python -X utf8 "scripts\report_runner.py" --report $report --csv "$csv" --summary "$env:GITHUB_STEP_SUMMARY"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
