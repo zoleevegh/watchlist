@@ -1,5 +1,5 @@
 # Jelentés #1 – After-hours & Premarket
-*Futás:* 2025-10-30 10:03:10 UTC
+*Futás:* 2025-10-30 13:41:13 UTC
 *Forrás CSV:* https://docs.google.com/spreadsheets/d/e/2PACX-1vRqKLV8hMZe6KnJOo-ZzMGxanv7vyac7EjGjsct90vhH0yDXHxl-ZXj4S5bfOSPDDgzIboBFXoYtUPC/pub?output=csv
 **Lefedettség:** TELJES
 
@@ -94,7 +94,11 @@
 
 
 ## Bejelentések & fel/lemínősítések
-- Nincs releváns bejelentés vagy elemzői lépés a vizsgált ablakban.
+- NVDA — 5 Top Artificial Intelligence Stocks to Buy Right Now
+- AMZN — 5 Top Artificial Intelligence Stocks to Buy Right Now
+- AMD — Rosenblatt Reiterates Buy on Advanced Micro Devices (AMD), Sets $250 PT Amid Growth Outlook
+- AMD — 5 Top Artificial Intelligence Stocks to Buy Right Now
+- MU — Barclays Hikes Micron (MU) Price Target to $240 on Select AI Exposure, Maintains ‘Overweight’.Barclays Hikes Micron PT to $240 on Select AI Exposure, Maintains Overweight Rating
 
 ## Közelgő katalizátorok (pár nap)
 - n/a (manuálisan egészíthető ki)
