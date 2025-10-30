@@ -83,38 +83,6 @@ jobs:
           }
           python "scripts\report_runner.py" --report $report --csv "$csv" --summary "$env:GITHUB_STEP_SUMMARY"
 
-            - name: Diagnosztika (yahoo v7, bash)
-        if: ${{ github.event.inputs.diag == 'true' }}
-        shell: bash
-        continue-on-error: true
-        run: |
-          python - << 'PY'
-          import yfinance as yf, pytz
-          from datetime import datetime
-          TZ = pytz.timezone('America/New_York')
-          def show(sym):
-              t = yf.Ticker(sym)
-              hist = t.history(period='1d', interval='1m', prepost=False, actions=False)
-              if hist.empty:
-                  print(sym, 'no 1m data'); return
-              if hist.index.tz is None:
-                  hist.index = hist.index.tz_localize('UTC').tz_convert(TZ)
-              else:
-                  hist.index = hist.index.tz_convert(TZ)
-              today = datetime.now(TZ).date()
-              df = hist[hist.index.date==today]
-              if df.empty:
-                  print(sym, 'no today bars'); return
-              o = float(df.iloc[0]['Open']); l = float(df['Close'].iloc[-1])
-              fi = t.fast_info if hasattr(t, 'fast_info') else None
-              pc = getattr(fi, 'previous_close', None) if fi else None
-              to_pct = (l-o)/o*100 if o else None
-              pc_pct = (l-pc)/pc*100 if pc else None
-              print(f"{sym}  Open→Now: {to_pct:.2f}%   PrevClose→Now: {pc_pct:.2f}%")
-          for s in ['META','CRWV','MSTR']:
-              show(s)
-          PY
-
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
