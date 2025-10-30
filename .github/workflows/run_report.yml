@@ -4,13 +4,18 @@ on:
   workflow_dispatch:
     inputs:
       report:
-        description: 'Jelentés (1/2/3)'
+        description: 'Jelentés típusa (1=AH/PM, 2=Open→Close, 3=Open→Most)'
         default: '3'
         required: false
       csv_url:
         description: 'MASTER CSV URL (üres = DEFAULT_CSV_URL)'
         default: ''
         required: false
+      include_news:
+        description: 'Hírek gyűjtése (true/false)'
+        default: 'true'
+        required: false
+
   repository_dispatch:
     types: [run_report]
 
@@ -18,8 +23,10 @@ jobs:
   run:
     runs-on: windows-latest
     env:
-      # <<< IDE írd, ha másik publikus CSV-t akarsz alapértelmezettnek >>>
+      # Állítsd erre a PUBLISH-TO-WEB CSV linkedet
       DEFAULT_CSV_URL: https://docs.google.com/spreadsheets/d/e/2PACX-1vTf5h3xx4LWJvI-e7PSyc8g6uGZT-H6pCeuwEqs7NqeCDKuAltTpL_ncPOWMtooRw/pub?output=csv
+      # SEC-hez kultúrált UA kell
+      SEC_UA: "Zoli-Riport/1.0 (contact: you@example.com)"
 
     steps:
       - name: Checkout
@@ -34,9 +41,9 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          pip install pandas requests yfinance pytz
+          pip install pandas requests yfinance pytz feedparser python-dateutil tabulate
 
-      - name: Resolve inputs (report, csv)
+      - name: Resolve inputs
         id: vars
         shell: pwsh
         run: |
@@ -48,44 +55,45 @@ jobs:
           if (-not $csv) { $csv = "${{ github.event.client_payload.csv_url }}" }
           if (-not $csv) { $csv = "${{ env.DEFAULT_CSV_URL }}" }
 
-          "report=$report" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "csv=$csv"       | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          $news = "${{ github.event.inputs.include_news }}"
+          if (-not $news) { $news = "true" }
+
+          "report=$report"     | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "csv=$csv"           | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "include_news=$news" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           Write-Host "REPORT: $report"
           Write-Host "CSV URL: $csv"
+          Write-Host "INCLUDE_NEWS: $news"
 
-      - name: Fetch MASTER CSV + preview (robust)
+      - name: Fetch MASTER CSV
         shell: pwsh
         run: |
           $csvUrl = "${{ steps.vars.outputs.csv }}"
           if (-not $csvUrl) { Write-Error "Hiányzik a CSV URL."; exit 1 }
           New-Item -ItemType Directory -Force -Path reports | Out-Null
           $out = "reports\master.csv"
-
-          Write-Host "Letöltés: $csvUrl"
           & curl.exe -fL --retry 3 --retry-all-errors -A "Mozilla/5.0" "$csvUrl" -o "$out"
           if ($LASTEXITCODE -ne 0) { Write-Error "CSV letöltés sikertelen (curl exit $LASTEXITCODE)."; exit 1 }
-
-          if ((Get-Item "$out").Length -lt 10) { Write-Error "A CSV túl kicsi / üres."; exit 1 }
           $first = Get-Content "$out" -TotalCount 1
-          if ($first -match "<!DOCTYPE html>|<html") { Write-Error "Nem CSV érkezett (HTML). Ellenőrizd a linket/megosztást."; exit 1 }
+          if ($first -match "<!DOCTYPE html>|<html") { Write-Error "Nem CSV érkezett (HTML)."; exit 1 }
+          Write-Host "CSV OK"
 
-          Write-Host "Első 5 sor:"
-          Get-Content "$out" -TotalCount 5 | ForEach-Object { Write-Host "CSV> $_" }
-
-      - name: Run report (#3 + extrém override)
+      - name: Run price report (#3 – Open→Most)
+        if: ${{ steps.vars.outputs.report == '3' }}
         shell: pwsh
         run: |
-          # Konzol + Python kimenet legyen UTF-8 (nyilak, ékezetek)
           [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
           $env:PYTHONIOENCODING = "utf-8"
+          python -X utf8 "scripts/report_runner.py" --report 3 --csv "reports\master.csv" --summary "$env:GITHUB_STEP_SUMMARY"
 
-          $report = "${{ steps.vars.outputs.report }}"
-          $csv    = "reports\master.csv"
-          if (-not (Test-Path "scripts\report_runner.py")) {
-            Write-Error "scripts\report_runner.py hiányzik. Másold be a repo-ba a mellékelt fájlt."
-            exit 1
-          }
-          python -X utf8 "scripts\report_runner.py" --report $report --csv "$csv" --summary "$env:GITHUB_STEP_SUMMARY"
+      - name: Run news report (#1/#2/#3)
+        if: ${{ steps.vars.outputs.include_news == 'true' }}
+        shell: pwsh
+        run: |
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+          $env:PYTHONIOENCODING = "utf-8"
+          $env:SEC_UA = "${{ env.SEC_UA }}"
+          python -X utf8 "scripts/news_runner.py" --report "${{ steps.vars.outputs.report }}" --csv "reports\master.csv" --summary "$env:GITHUB_STEP_SUMMARY"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
