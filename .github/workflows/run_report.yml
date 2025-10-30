@@ -78,26 +78,14 @@ jobs:
           if ($first -match "<!DOCTYPE html>|<html") { Write-Error "Nem CSV érkezett (HTML)."; exit 1 }
           Write-Host "CSV OK"
 
-      - name: Run price report (#3 – Open→Most)
-        if: ${{ steps.vars.outputs.report == '3' }}
-        shell: pwsh
-        run: |
           [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
           $env:PYTHONIOENCODING = "utf-8"
           python -X utf8 "scripts/report_runner.py" --report 3 --csv "reports\master.csv" --summary "$env:GITHUB_STEP_SUMMARY"
 
-      - name: Run news report (#1/#2/#3)
-        if: ${{ steps.vars.outputs.include_news == 'true' }}
-        shell: pwsh
-        run: |
-          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-          $env:PYTHONIOENCODING = "utf-8"
-          $env:SEC_UA = "${{ env.SEC_UA }}"
-          python -X utf8 "scripts/news_runner.py" --report "${{ steps.vars.outputs.report }}" --csv "reports\master.csv" --summary "$env:GITHUB_STEP_SUMMARY"
-
       - name: Upload artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: report-bundle
-          path: reports/**
+          path: reports/*
           if-no-files-found: warn
