@@ -1,5 +1,5 @@
 # Jelentés #1 – After-hours & Premarket
-*Futás:* 2025-10-30 08:38:16 UTC
+*Futás:* 2025-10-30 09:18:02 UTC
 *Forrás CSV:* https://docs.google.com/spreadsheets/d/e/2PACX-1vRqKLV8hMZe6KnJOo-ZzMGxanv7vyac7EjGjsct90vhH0yDXHxl-ZXj4S5bfOSPDDgzIboBFXoYtUPC/pub?output=csv
 **Lefedettség:** TELJES
 
