@@ -4,18 +4,17 @@ on:
   workflow_dispatch:
     inputs:
       report:
-        description: 'Jelentés típusa (1=AH/PM, 2=Open→Close, 3=Open→Most)'
+        description: 'Jelentés: 1=AH+PM, 2=Open→Close (előző nap), 3=Ma Open→Most'
         default: '3'
         required: false
       csv_url:
         description: 'MASTER CSV URL (üres = DEFAULT_CSV_URL)'
         default: ''
         required: false
-      include_news:
-        description: 'Hírek gyűjtése (true/false)'
-        default: 'true'
+      override_pct:
+        description: 'Napi extrém blokk küszöb (PrevClose→Now). 0 = kikapcsolva (#3)'
+        default: '8'
         required: false
-
   repository_dispatch:
     types: [run_report]
 
@@ -23,10 +22,8 @@ jobs:
   run:
     runs-on: windows-latest
     env:
-      # Állítsd erre a PUBLISH-TO-WEB CSV linkedet
+      # ← IDE írd a Google Sheets "Publish to web" CSV linkjét
       DEFAULT_CSV_URL: https://docs.google.com/spreadsheets/d/e/2PACX-1vTf5h3xx4LWJvI-e7PSyc8g6uGZT-H6pCeuwEqs7NqeCDKuAltTpL_ncPOWMtooRw/pub?output=csv
-      # SEC-hez kultúrált UA kell
-      SEC_UA: "Zoli-Riport/1.0 (contact: you@example.com)"
 
     steps:
       - name: Checkout
@@ -41,9 +38,9 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          pip install pandas requests yfinance pytz feedparser python-dateutil tabulate
+          pip install pandas requests yfinance pytz feedparser beautifulsoup4
 
-      - name: Resolve inputs
+      - name: Resolve inputs (report, csv, override)
         id: vars
         shell: pwsh
         run: |
@@ -55,37 +52,87 @@ jobs:
           if (-not $csv) { $csv = "${{ github.event.client_payload.csv_url }}" }
           if (-not $csv) { $csv = "${{ env.DEFAULT_CSV_URL }}" }
 
-          $news = "${{ github.event.inputs.include_news }}"
-          if (-not $news) { $news = "true" }
+          $ovr = "${{ github.event.inputs.override_pct }}"
+          if (-not $ovr) { $ovr = "8" }
 
-          "report=$report"     | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "csv=$csv"           | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "include_news=$news" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "report=$report" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "csv=$csv"       | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "ovr=$ovr"       | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           Write-Host "REPORT: $report"
           Write-Host "CSV URL: $csv"
-          Write-Host "INCLUDE_NEWS: $news"
+          Write-Host "OVERRIDE_PCT: $ovr"
 
-      - name: Fetch MASTER CSV
+      - name: Fetch MASTER CSV (robust)
         shell: pwsh
         run: |
-          $csvUrl = "${{ steps.vars.outputs.csv }}"
-          if (-not $csvUrl) { Write-Error "Hiányzik a CSV URL."; exit 1 }
           New-Item -ItemType Directory -Force -Path reports | Out-Null
-          $out = "reports\master.csv"
+          $out   = "reports\master.csv"
+          $csvUrl = "${{ steps.vars.outputs.csv }}"
+          Write-Host "Letöltés: $csvUrl"
           & curl.exe -fL --retry 3 --retry-all-errors -A "Mozilla/5.0" "$csvUrl" -o "$out"
-          if ($LASTEXITCODE -ne 0) { Write-Error "CSV letöltés sikertelen (curl exit $LASTEXITCODE)."; exit 1 }
+          if ($LASTEXITCODE -ne 0) { Write-Error "CSV letöltés sikertelen (curl exit $LASTEXITCODE)"; exit 1 }
+          if ((Get-Item "$out").Length -lt 10) { Write-Error "A CSV túl kicsi / üres"; exit 1 }
           $first = Get-Content "$out" -TotalCount 1
-          if ($first -match "<!DOCTYPE html>|<html") { Write-Error "Nem CSV érkezett (HTML)."; exit 1 }
-          Write-Host "CSV OK"
+          if ($first -match "<!DOCTYPE html>|<html") { Write-Error "Nem CSV érkezett (HTML). Ellenőrizd a Publish to web linket"; exit 1 }
+          Get-Content "$out" -TotalCount 5 | ForEach-Object { Write-Host "CSV> $_" }
 
+      - name: Run report (#1/#2/#3)
+        shell: pwsh
+        run: |
           [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
           $env:PYTHONIOENCODING = "utf-8"
-          python -X utf8 "scripts/report_runner.py" --report 3 --csv "reports\master.csv" --summary "$env:GITHUB_STEP_SUMMARY"
+          $report = "${{ steps.vars.outputs.report }}"
+          $csv    = "reports\master.csv"
+          $ovr    = "${{ steps.vars.outputs.ovr }}"
+          if (-not (Test-Path "scripts\report_runner.py")) {
+            Write-Error "scripts\report_runner.py hiányzik a repóban"; exit 1
+          }
+          python -X utf8 "scripts\report_runner.py" --report $report --csv "$csv" --summary "$env:GITHUB_STEP_SUMMARY" --override-pct $ovr
+
+      # (Opcionális) Gist publikálás – classic vagy fine-grained PAT szükséges gist jogosultsággal
+      - name: Check Gist auth
+        if: always()
+        shell: pwsh
+        env:
+          GH_GIST_TOKEN: ${{ secrets.GH_GIST_TOKEN }}
+        run: |
+          if (-not $env:GH_GIST_TOKEN) { Write-Host "Nincs GH_GIST_TOKEN secret – kihagyjuk a Gistet."; exit 0 }
+          $r = curl.exe -s -H "Authorization: token $env:GH_GIST_TOKEN" https://api.github.com/gists
+          if ($LASTEXITCODE -ne 0) { Write-Error "Gist auth failed"; exit 1 }
+          Write-Host "Gist auth OK"
+
+      - name: Publish summary to Gist (unlisted)
+        if: always()
+        shell: pwsh
+        env:
+          GH_GIST_TOKEN: ${{ secrets.GH_GIST_TOKEN }}
+        run: |
+          if (-not $env:GH_GIST_TOKEN) { Write-Host "No GH_GIST_TOKEN – skip"; exit 0 }
+          $files = Get-ChildItem reports -Filter "summary_report*.md" | Select-Object -ExpandProperty FullName
+          if (-not $files) { Write-Host "No summary file found"; exit 0 }
+          $payload = @{
+            description = "Részvények – automata riport"
+            public      = $false
+            files       = @{}
+          }
+          foreach ($f in $files) {
+            $name = Split-Path $f -Leaf
+            $content = Get-Content -Raw $f
+            $payload.files[$name] = @{ content = $content }
+          }
+          $json = $payload | ConvertTo-Json -Depth 10
+          $resp = curl.exe -s -X POST "https://api.github.com/gists" `
+            -H "Authorization: token $env:GH_GIST_TOKEN" `
+            -H "Content-Type: application/json" `
+            -d $json
+          $obj = $resp | ConvertFrom-Json
+          if ($null -eq $obj.html_url) { Write-Error "Gist create failed: $resp"; exit 1 }
+          "Gist URL: $($obj.html_url)"
 
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: report-bundle
-          path: reports/*
+          path: reports/**
           if-no-files-found: warn
