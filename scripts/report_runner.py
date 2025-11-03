@@ -249,12 +249,10 @@ def fetch_window_change_batch(symbols, start_cet: dtime, end_cet: dtime, retry_o
     """Ablakos változás CET-ben: 1m + fallback 5m; egyszeri rövid retry (30s)."""
     if not symbols:
         return {}
-    # időablak CET-ben (konkrét datetime)
     now_cet = datetime.now(TZ_CET)
     today = now_cet.date()
     prev  = today - timedelta(days=1)
 
-    # start_dt / end_dt meghatározása a kapott "start_cet, end_cet" alapján
     def window_dates_for(date):
         sdt = datetime.combine(date, start_cet, tzinfo=TZ_CET)
         edt = datetime.combine(date, end_cet, tzinfo=TZ_CET)
@@ -262,7 +260,6 @@ def fetch_window_change_batch(symbols, start_cet: dtime, end_cet: dtime, retry_o
             edt += timedelta(days=1)
         return sdt, edt
 
-    # Ha átlóg éjfél (AH), a tegnapi + mai részt is összefűzzük
     if end_cet < start_cet:
         s_prev, e_prev = window_dates_for(prev)
         s_today, e_today = window_dates_for(today)
@@ -271,11 +268,9 @@ def fetch_window_change_batch(symbols, start_cet: dtime, end_cet: dtime, retry_o
     else:
         start_dt, end_dt = window_dates_for(today)
 
-    # 1m letöltés
     df1 = _download_bars(symbols, period="2d", interval="1m", prepost=True)
     res  = _compute_change_with_fallback(df1, symbols, start_dt, end_dt, TZ_CET, fallback_interval="5m")
 
-    # Egyszeri rövid retry azoknál, ahol nincs gyertya és az ablak már megkezdődött
     if retry_once:
         need_retry = []
         now = datetime.now(TZ_CET)
@@ -403,7 +398,7 @@ def collect_news_for(sym, window_start: datetime, window_end: datetime):
     out.sort(key=lambda x: x[2])
     return out
 
-# --- High-conviction (opcionális – változatlan az előző verzióhoz képest) ---
+# --- High-conviction (opcionális) -------------------------------------------
 def marketbeat_latest_ratings(max_pages=2):
     base = "https://www.marketbeat.com/ratings/"
     out = []
@@ -478,6 +473,15 @@ def high_conviction_candidates(universe_syms, excluded_syms, days=7, min_signals
             picks.append({"symbol": s, "signals": c, "notes": details.get(s, [])[:5]})
     return picks
 
+# --- Közös: summary biztonságos írása ---------------------------------------
+def safe_write_summary(path, text):
+    try:
+        if path:
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(text + "\n")
+    except Exception as e:
+        print(f"[warn] summary write failed: {e}", file=sys.stderr)
+
 # --- Közös fejléc -----------------------------------------------------------
 def report_header_common(missing_syms, macro_line):
     cov = ("HIÁNYOS – nem elérhető ticker(ek): " + ", ".join(missing_syms)) if missing_syms else "TELJES"
@@ -486,19 +490,16 @@ def report_header_common(missing_syms, macro_line):
     lines.append(f"**Politika/FED:** {macro_line}")
     return lines
 
-# --- #1 riport: pontos hétfői logika + ablakok kiírása ----------------------
+# --- #1 riport: hétfői logika + ablakok kiírása -----------------------------
 def _compute_ah_pm_windows_cet():
     now_cet = datetime.now(TZ_CET)
     now_ny_date = datetime.now(TZ_NY).date()
     last_td_ny = previous_trading_day(now_ny_date)  # utolsó USA kereskedési nap
-    # 16:00 NY (zárás) → CET dátum meghatározása
     ny_close_dt = TZ_NY.localize(datetime.combine(last_td_ny, dtime(16,0)))
     cet_close_dt = ny_close_dt.astimezone(TZ_CET)
-    ah_start_date_cet = cet_close_dt.date()  # ugyanaz a naptári nap CET-ben
-    # AH: last_td 22:00 → +4h
+    ah_start_date_cet = cet_close_dt.date()
     ah_start = datetime.combine(ah_start_date_cet, dtime(22,0), tzinfo=TZ_CET)
     ah_end   = ah_start + timedelta(hours=4)  # 02:00
-    # PM: mindig ma 10:00–15:30 CET
     pm_start = datetime.combine(now_cet.date(), dtime(10,0), tzinfo=TZ_CET)
     pm_end   = datetime.combine(now_cet.date(), dtime(15,30), tzinfo=TZ_CET)
     return ah_start, ah_end, pm_start, pm_end
@@ -507,10 +508,8 @@ def report_1(rows, macro_mode):
     ah_start, ah_end, pm_start, pm_end = _compute_ah_pm_windows_cet()
 
     symbols = [r["symbol"] for r in rows]
-    # Két külön ablakra futtatjuk a változást
     def chg_for_window(start_dt, end_dt):
         start_t, end_t = start_dt.timetz(), end_dt.timetz()
-        # Az extract függvény CET-ben dolgozik; passzoljunk csak time-okat:
         return fetch_window_change_batch(symbols, start_t, end_t, retry_once=True)
 
     ah_map = chg_for_window(ah_start, ah_end)
@@ -520,7 +519,6 @@ def report_1(rows, macro_mode):
     for r in rows:
         sym = r["symbol"]
         price_rows.append((sym, r["qty"], r["K"], ah_map.get(sym, {"chg_pct": None, "error": "no"}), pm_map.get(sym, {"chg_pct": None, "error": "no"})))
-    # hírblokk (ticker szint) – az AH kezdettől a PM végéig
     for sym in symbols:
         news_map[sym] = collect_news_for(sym, ah_start, pm_end)
 
@@ -528,11 +526,9 @@ def report_1(rows, macro_mode):
 
     lines = []
     lines.append("## #1 – After-hours (22:00–02:00) + Premarket (10:00–15:30) — CEST")
-    # Időablakok konkrétan:
     lines.append(f"_Vizsgált ablakok ma_: AH **{ah_start.strftime('%Y-%m-%d %H:%M')} → {ah_end.strftime('%H:%M')}**; PM **{pm_start.strftime('%Y-%m-%d %H:%M')} → {pm_end.strftime('%H:%M')}** CEST")
     lines += report_header_common(missing, macro_blurb(macro_mode))
 
-    # Darabszámosok
     lines.append("\n### Darabszámos (≥K%):")
     any_pos = False
     for sym, qty, K, ah, pm in price_rows:
@@ -545,7 +541,6 @@ def report_1(rows, macro_mode):
             any_pos = True
     if not any_pos: lines.append("_nincs_")
 
-    # Watchlist (feltételes)
     lines.append("\n### Watchlist (≥K% vagy hír):")
     any_wl = False
     for sym, qty, K, ah, pm in price_rows:
@@ -559,7 +554,6 @@ def report_1(rows, macro_mode):
             any_wl = True
     if not any_wl: lines.append("_nincs_")
 
-    # Bejelentések & fel/lemínősítések
     lines.append("\n### Bejelentések & fel/lemínősítések")
     any_news = False
     for sym in symbols:
@@ -569,13 +563,12 @@ def report_1(rows, macro_mode):
             any_news = True
     if not any_news: lines.append("_(nincs releváns bejegyzés az ablakban)_")
 
-    # Közeli katalizátorok
     lines.append("\n### Közeli katalizátorok (pár nap)")
     lines.append("_(ha van beállított naptár/univerzum, itt listázzuk)_")
 
     return "\n".join(lines)
 
-# --- #2 riport (változatlan logika) -----------------------------------------
+# --- #2 riport ---------------------------------------------------------------
 def report_2(rows, macro_mode):
     now_ny = datetime.now(TZ_NY)
     prev_day = previous_trading_day(now_ny.date())
@@ -614,7 +607,7 @@ def report_2(rows, macro_mode):
 
     return "\n".join(lines)
 
-# --- #3 riport (mint korábban, batchelve) -----------------------------------
+# --- #3 riport ---------------------------------------------------------------
 def report_3(rows, override_pct, macro_mode, universe_csv=None, hc_days=7):
     symbols = [r["symbol"] for r in rows]
     m_map = fetch_today_open_now_batch(symbols)
@@ -662,7 +655,6 @@ def report_3(rows, override_pct, macro_mode, universe_csv=None, hc_days=7):
     lines.append("\n### Zárásig várható / közeli katalizátorok")
     lines.append("_(ha ma még jöhet katalizátor, itt jelezzük)_")
 
-    # HC blokk – opcionális (változatlan)
     lines.append("\n### Listán kívüli, 3–12 hónapos high-conviction jelöltek")
     if universe_csv:
         try:
@@ -705,8 +697,7 @@ def main():
     if not rows:
         msg = "Nincs ticker a CSV-ben."
         print(msg)
-        if args.summary: 
-            write_summary(args.summary, f"**Hiba:** {msg}")
+        safe_write_summary(args.summary, f"**Hiba:** {msg}")
         sys.exit(1)
 
     rep = str(args.report).strip()
@@ -721,8 +712,7 @@ def main():
         Path("reports/summary_report3.md").write_text(text, encoding="utf-8")
 
     print(text)
-    if args.summary:
-        write_summary(args.summary, text)
+    safe_write_summary(args.summary, text)
 
 if __name__ == "__main__":
     main()
