@@ -23,7 +23,7 @@ SKIP_TICKERS = {"PKN.WA"}
 
 # CSV oszlopnevek
 TICKER_COLS = ["ticker","symbol","tiker","tic","name","név","papír"]
-QTY_COLS    = ["qty","quantity","db","darab","darabszam","darabszám","shares","pcs","mennyiseg","mennyiség"]
+QTY_COLS    = ["qty","quantity","db","darab","darabszam","darabszám","shares","pcs","mennyiseg","mennyiség","darabszam"]
 K_COLS      = ["k","min_move_pct","min_intraday_pct","min_pct"]
 L_COLS      = ["l","vol_mult","unusual_vol_mult","volx"]
 M_COLS      = ["m","max_dist_52w_pct","dist_52w_pct","dist_pct"]
@@ -97,28 +97,28 @@ def read_rows(csv_path, Kd=3.0, Ld=2.0, Md=1.0):
         qty = None
         if qcol and pd.notna(r.get(qcol)):
             try:
-                qty = float(r[qcol])
+                qty = float(str(r[qcol]).replace(",", "."))
             except Exception:
                 qty = None
 
         K = Kd
         if kcol and pd.notna(r.get(kcol)):
             try:
-                K = float(r[kcol])
+                K = float(str(r[kcol]).replace(",", "."))
             except Exception:
                 K = Kd
 
         L = Ld
         if lcol and pd.notna(r.get(lcol)):
             try:
-                L = float(r[lcol])
+                L = float(str(r[lcol]).replace(",", "."))
             except Exception:
                 L = Ld
 
         M = Md
         if mcol and pd.notna(r.get(mcol)):
             try:
-                M = float(r[mcol])
+                M = float(str(r[mcol]).replace(",", "."))
             except Exception:
                 M = Md
 
@@ -499,22 +499,28 @@ def report_3(rows):
     lines.append("## #3 – Ma nyitástól mostanáig (Open→Most)")
     lines.append("**Lefedettség:** " + ("HIÁNYOS – nem elérhető ticker(ek): " + ", ".join(missing) if missing else "TELJES"))
 
-    # Darabszámos jelzések
-    lines.append("\n### Darabszámos jelzések (abs(Open→Most) ≥ K):")
+    # Darabszámos jelzések – MINDEN pozíció, küszöb nélkül
+    lines.append("\n### Darabszámos jelzések (Open→Most – minden pozíció):")
     any_main = False
     for sym, qty, K, m in price_rows:
         if not qty:
             continue
         ch = m["open_to_now_pct"]
-        if ch is not None and abs(ch) >= float(K):
-            sent = "pozitív" if ch > 0 else "negatív"
-            reason = f"[{sent}] nyitáshoz képest érdemi elmozdulás, egyértelmű hír nélkül – valószínű szektor- vagy flow-hatás."
-            lines.append(f"- **{sym}** — {ch:+.2f}% – {reason}")
-            any_main = True
+        if ch is None:
+            continue
+        # szentiment és indok
+        if abs(ch) >= float(K):
+            sent = "pozitív" if ch > 0 else "negatív" if ch < 0 else "semleges"
+            reason = f"[{sent}] nyitáshoz képest érdemi elmozdulás (≥{K:.2f}%), érdemes figyelni a nap végi zárót és a híreket."
+        else:
+            sent = "pozitív" if ch > 0 else "negatív" if ch < 0 else "semleges"
+            reason = f"[{sent}] nyitás óta mérsékelt intranapi mozgás, egyelőre nincs küszöb feletti elmozdulás."
+        lines.append(f"- **{sym}** — {ch:+.2f}% – {reason}")
+        any_main = True
     if not any_main:
         lines.append("_nincs_")
 
-    # Watchlist jelzések
+    # Watchlist jelzések – itt marad a K-s küszöb
     lines.append("\n### Watchlist (abs(Open→Most) ≥ K):")
     any_wl = False
     for sym, qty, K, m in price_rows:
@@ -522,8 +528,8 @@ def report_3(rows):
             continue
         ch = m["open_to_now_pct"]
         if ch is not None and abs(ch) >= float(K):
-            sent = "pozitív" if ch > 0 else "negatív"
-            reason = f"[{sent}] nyitáshoz képest érdemi elmozdulás, egyértelmű hír nélkül – valószínű szektor- vagy flow-hatás."
+            sent = "pozitív" if ch > 0 else "negatív" if ch < 0 else "semleges"
+            reason = f"[{sent}] nyitáshoz képest érdemi elmozdulás (≥{K:.2f}%), érdemes figyelni a híreket / szektormozgást."
             lines.append(f"- **{sym}** — {ch:+.2f}% – {reason}")
             any_wl = True
     if not any_wl:
