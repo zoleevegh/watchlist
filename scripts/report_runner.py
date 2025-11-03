@@ -32,30 +32,15 @@ SESSION = requests.Session()
 SESSION.headers.update({"User-Agent": "Mozilla/5.0"})
 HTTP_TIMEOUT = 10
 
-# --- Fordító + szentiment ---------------------------------------------------
-try:
-    from googletrans import Translator
-    _TRANS = Translator()
-except Exception:
-    _TRANS = None
+# --- Gyorsított „fordító”: csak rövidítés ----------------------------------
+def translate_hu(text: str, max_len: int = 200) -> str:
+    """Nem fordít, csak rövidíti az angol címet, hogy 1 sorban maradjon."""
+    base = str(text or "").strip()
+    if len(base) > max_len:
+        base = base[:max_len].rsplit(" ", 1)[0] + "…"
+    return base
 
-def translate_hu(text: str, max_len: int = 240) -> str:
-    """Angol headline rövid magyarítása (ha a fordító nem elérhető, angolul hagyja)."""
-    if not text:
-        return ""
-    base = str(text).strip()
-    if not base:
-        return ""
-    out = base
-    if _TRANS is not None:
-        try:
-            out = _TRANS.translate(base, dest="hu").text or base
-        except Exception:
-            out = base
-    if len(out) > max_len:
-        out = out[:max_len].rsplit(" ", 1)[0] + "…"
-    return out
-
+# --- Szentiment -------------------------------------------------------------
 POS_WORDS = [
     "UPGRADE", "UPGRADED", "RAISE PRICE TARGET", "RAISED PRICE TARGET",
     "BEAT", "BEATS", "TOPS", "SURGE", "JUMP", "JUMPS", "SOARS",
@@ -68,7 +53,7 @@ NEG_WORDS = [
 ]
 
 def classify_sentiment_en(text: str) -> str:
-    """Egyszerű szentiment-angol cím alapján: pozitív / negatív / semleges (magyar szavakkal)."""
+    """Egyszerű szentiment-angol cím alapján: pozitív / negatív / semleges."""
     t = (text or "").upper()
     pos = any(w in t for w in POS_WORDS)
     neg = any(w in t for w in NEG_WORDS)
@@ -78,7 +63,7 @@ def classify_sentiment_en(text: str) -> str:
         return "negatív"
     return "semleges"
 
-# --- Helperek ---------------------------------------------------------------
+# --- Segédfüggvények --------------------------------------------------------
 def pct(a,b):
     try:
         if a is None or b is None or a == 0: return None
@@ -151,13 +136,8 @@ def previous_trading_day(date_ny):
         d -= timedelta(days=1)
     return d
 
-# --- Prices for #1 ----------------------------------------------------------
+# --- Fetch Prices (egyesített AH+PM) ---------------------------------------
 def fetch_ah_pm_changes(sym):
-    """
-    Visszaadja az AH és PM változást a legutóbbi rendes záráshoz képest.
-    - AH: előző kereskedési nap 16:00–20:00 NY
-    - PM: következő napon 04:00–09:30 NY
-    """
     try:
         now_ny = datetime.now(TZ_NY)
         last_td = previous_trading_day(now_ny.date())
@@ -170,112 +150,32 @@ def fetch_ah_pm_changes(sym):
             actions=False
         )
         if h is None or h.empty:
-            return {"ah": {"chg_pct": None, "error": "no_1m_prepost"},
-                    "pm": {"chg_pct": None, "error": "no_1m_prepost"}}
+            return {"ah": {"chg_pct": None}, "pm": {"chg_pct": None}}
         h = _tz(h, TZ_NY)
 
         prev_day = last_td
         next_day = last_td + timedelta(days=1)
-
         rth = h[(h.index.date == prev_day) & (h.index.time <= CLOSE_T)]
         if rth.empty:
-            return {"ah": {"chg_pct": None, "error": "no_prev_close"},
-                    "pm": {"chg_pct": None, "error": "no_prev_close"}}
+            return {"ah": {"chg_pct": None}, "pm": {"chg_pct": None}}
         prev_close = float(rth["Close"].iloc[-1])
 
         def win_chg(start_dt, end_dt):
             win = h[(h.index >= start_dt) & (h.index <= end_dt)]
-            if win.empty:
-                return {"chg_pct": None, "error": "no_bars_in_window"}
-            last_price = float(win["Close"].iloc[-1])
-            return {"chg_pct": round(pct(prev_close, last_price), 2), "error": None}
+            if win.empty: return None
+            return round(pct(prev_close, float(win["Close"].iloc[-1])), 2)
 
-        # AH: prev_day 16:00–20:00 NY
         ah_start = TZ_NY.localize(datetime.combine(prev_day, CLOSE_T))
         ah_end   = ah_start + timedelta(hours=4)
-
-        # PM: next_day 04:00–09:30 NY
         pm_start = TZ_NY.localize(datetime.combine(next_day, dtime(4,0)))
         pm_end   = TZ_NY.localize(datetime.combine(next_day, dtime(9,30)))
 
-        return {
-            "ah": win_chg(ah_start, ah_end),
-            "pm": win_chg(pm_start, pm_end),
-        }
+        return {"ah": {"chg_pct": win_chg(ah_start, ah_end)},
+                "pm": {"chg_pct": win_chg(pm_start, pm_end)}}
     except Exception:
-        return {
-            "ah": {"chg_pct": None, "error": "exception"},
-            "pm": {"chg_pct": None, "error": "exception"},
-        }
+        return {"ah": {"chg_pct": None}, "pm": {"chg_pct": None}}
 
-# --- Prices for #2/#3 -------------------------------------------------------
-def fetch_today_open_now(sym):
-    t = yf.Ticker(sym)
-    h = t.history(period="1d", interval="1m", prepost=False, actions=False)
-    open_px = last_px = high_px = low_px = None
-    if h is not None and not h.empty:
-        h = _tz(h, TZ_NY)
-        today = datetime.now(TZ_NY).date()
-        df = h[h.index.date == today]
-        if not df.empty:
-            open_px = _pick_open(df)
-            last_px = float(df["Close"].iloc[-1])
-            high_px = float(df["High"].max())
-            low_px  = float(df["Low"].min())
-    if open_px is None or last_px is None:
-        h5 = t.history(period="5d", interval="5m", prepost=False, actions=False)
-        if h5 is not None and not h5.empty:
-            h5 = _tz(h5, TZ_NY)
-            today = datetime.now(TZ_NY).date()
-            df5 = h5[h5.index.date == today]
-            if not df5.empty:
-                if open_px is None: open_px = _pick_open(df5)
-                if last_px is None: last_px = float(df5["Close"].iloc[-1])
-                if high_px is None: high_px = float(df5["High"].max())
-                if low_px  is None: low_px  = float(df5["Low"].min())
-    prev = None
-    try:
-        q = SESSION.get(
-            "https://query1.finance.yahoo.com/v7/finance/quote",
-            params={"symbols": sym},
-            timeout=HTTP_TIMEOUT
-        ).json()["quoteResponse"]["result"][0]
-        if prev is None: prev = q.get("regularMarketPreviousClose") or None
-        if last_px is None: last_px = q.get("regularMarketPrice") or None
-        if open_px is None: open_px = q.get("regularMarketOpen") or None
-    except Exception:
-        pass
-    return {
-        "open": open_px,
-        "last": last_px,
-        "open_to_now_pct": None if open_px in (None,0) or last_px is None else round(pct(open_px, last_px), 2),
-        "prev_to_now_pct": None if prev in (None,0) or last_px is None else round(pct(prev, last_px), 2),
-        "high_over_open_pct": None if open_px in (None,0) or high_px is None else round(pct(open_px, high_px), 2),
-        "low_over_open_pct":  None if open_px in (None,0) or low_px  is None else round(pct(open_px, low_px), 2),
-        "error": None if (open_px is not None and last_px is not None) else "no_price_data"
-    }
-
-def fetch_prev_open_close(sym, prev_trading_date):
-    t = yf.Ticker(sym)
-    h = t.history(start=prev_trading_date, end=prev_trading_date + timedelta(days=1),
-                  interval="1m", prepost=False, actions=False)
-    open_px = close_px = None
-    if h is not None and not h.empty:
-        h = _tz(h, TZ_NY)
-        d = h[h.index.date == prev_trading_date]
-        if not d.empty:
-            open_px = _pick_open(d)
-            lastbars = d[d.index.time <= CLOSE_T]
-            if not lastbars.empty:
-                close_px = float(lastbars["Close"].iloc[-1])
-    return {
-        "open": open_px,
-        "close": close_px,
-        "open_to_close_pct": None if open_px in (None,0) or close_px is None else round(pct(open_px, close_px), 2),
-        "error": None if (open_px is not None and close_px is not None) else "no_price_data"
-    }
-
-# --- News (light) -----------------------------------------------------------
+# --- News Feeds -------------------------------------------------------------
 REUTERS_FEEDS = [
     "https://feeds.reuters.com/reuters/businessNews",
     "https://feeds.reuters.com/reuters/USBusinessNews",
@@ -305,7 +205,7 @@ def _dt(e):
             return datetime.fromtimestamp(time.mktime(v), tz=pytz.UTC).astimezone(TZ_CET)
     return None
 
-def collect_news_for(sym, window_start: datetime, window_end: datetime):
+def collect_news_for(sym, window_start, window_end):
     hits = []
     for feed in REUTERS_FEEDS + IR_PR_FEEDS + [yahoo_ticker_feed(sym)]:
         fp = _parse_feed(feed)
@@ -327,197 +227,147 @@ def collect_news_for(sym, window_start: datetime, window_end: datetime):
     return out
 
 def short_news_reason(sym, news_map, chg_for_sent=None):
-    """
-    1 mondatos magyarázat:
-    - ha van hír: cím alapján szentiment + magyar összefoglaló
-    - ha nincs hír, de nagy mozgás: irány szerinti generikus ok
-    """
     items = news_map.get(sym) or []
     if items:
         src, title, dt = items[-1]
         sent = classify_sentiment_en(title)
-        hu   = translate_hu(title, max_len=220)
-        return f"[{sent}] {hu}"
+        short = translate_hu(title)
+        return f"[{sent}] {short}"
     if chg_for_sent is not None:
         sent = "pozitív" if chg_for_sent > 0 else "negatív"
-        return f"[{sent}] nagyobb elmozdulás az AH/PM sávban, kiemelt hír nélkül – valószínű szektor- vagy flow-hatás."
+        return f"[{sent}] nagyobb elmozdulás az AH/PM sávban, hír nélkül – valószínű szektorhatás."
     return ""
 
-# --- Reports ----------------------------------------------------------------
-def write_summary(path, text):
-    try:
-        if path:
-            with open(path, "a", encoding="utf-8") as f:
-                f.write(text + "\n")
-    except Exception:
-        pass
-
+# --- Jelentés 1 -------------------------------------------------------------
 def report_1(rows):
-    # CET ablakok a headerhez
     AH_S, AH_E = dtime(22,0), dtime(2,0)
     PM_S, PM_E = dtime(10,0), dtime(15,30)
-
     now_cet = datetime.now(TZ_CET)
-    ah_start = now_cet.replace(hour=AH_S.hour, minute=AH_S.minute, second=0, microsecond=0)
-    ah_end   = (ah_start + timedelta(days=1)).replace(hour=AH_E.hour, minute=AH_E.minute)
-    pm_start = now_cet.replace(hour=PM_S.hour, minute=PM_S.minute, second=0, microsecond=0)
-    pm_end   = now_cet.replace(hour=PM_E.hour, minute=PM_E.minute, second=0, microsecond=0)
+    ah_start = now_cet.replace(hour=22, minute=0)
+    ah_end   = (ah_start + timedelta(days=1)).replace(hour=2, minute=0)
+    pm_start = now_cet.replace(hour=10, minute=0)
+    pm_end   = now_cet.replace(hour=15, minute=30)
 
     price_rows, news_map = [], {}
     for r in rows:
         sym = r["symbol"]
         chg = fetch_ah_pm_changes(sym)
-        ah, pm = chg["ah"], chg["pm"]
-        price_rows.append((sym, r["qty"], r["K"], ah, pm))
+        price_rows.append((sym, r["qty"], r["K"], chg["ah"], chg["pm"]))
         news_map[sym] = collect_news_for(sym, ah_start, pm_end)
 
-    missing = [sym for sym,_,_,ah,pm in price_rows if (ah["error"] and pm["error"])]
+    missing = [sym for sym,_,_,ah,pm in price_rows if (ah["chg_pct"] is None and pm["chg_pct"] is None)]
     lines = []
     lines.append("## #1 – After-hours (22:00–02:00) + Premarket (10:00–15:30) — CEST")
-    lines.append(f"_Vizsgált ablakok_: AH {ah_start.strftime('%Y-%m-%d %H:%M')} → {ah_end.strftime('%H:%M')} · PM {pm_start.strftime('%Y-%m-%d %H:%M')} → {pm_end.strftime('%H:%M')} CEST")
+    lines.append(f"_Vizsgált ablakok_: AH {ah_start:%Y-%m-%d %H:%M} → {ah_end:%H:%M}, PM {pm_start:%H:%M} → {pm_end:%H:%M}")
     lines.append("**Lefedettség:** " + ("HIÁNYOS – nem elérhető ticker(ek): " + ", ".join(missing) if missing else "TELJES"))
 
-    # --- Darabszámosok ---
+    # Darabszámos
     lines.append("\n### Darabszámos (≥K%):")
-    any_pos = False
+    anypos = False
     for sym, qty, K, ah, pm in price_rows:
-        if not qty:
-            continue
+        if not qty: continue
         chunks = []
-        if ah["chg_pct"] is not None and abs(ah["chg_pct"]) >= float(K):
-            chunks.append(f"AH {ah['chg_pct']:.2f}%")
-        if pm["chg_pct"] is not None and abs(pm["chg_pct"]) >= float(K):
-            chunks.append(f"PM {pm['chg_pct']:.2f}%")
+        if ah["chg_pct"] and abs(ah["chg_pct"]) >= K: chunks.append(f"AH {ah['chg_pct']:.2f}%")
+        if pm["chg_pct"] and abs(pm["chg_pct"]) >= K: chunks.append(f"PM {pm['chg_pct']:.2f}%")
         if chunks:
-            ch_for_sent = pm["chg_pct"] if pm["chg_pct"] is not None else ah["chg_pct"]
-            reason = short_news_reason(sym, news_map, ch_for_sent)
-            tail = f" – {reason}" if reason else ""
-            lines.append(f"- **{sym}** — " + " | ".join(chunks) + tail)
-            any_pos = True
-    if not any_pos:
-        lines.append("_nincs_")
+            chg = pm["chg_pct"] if pm["chg_pct"] else ah["chg_pct"]
+            reason = short_news_reason(sym, news_map, chg)
+            lines.append(f"- **{sym}** — {' | '.join(chunks)} – {reason}")
+            anypos = True
+    if not anypos: lines.append("_nincs_")
 
-    # --- Watchlist ---
+    # Watchlist
     lines.append("\n### Watchlist (≥K% vagy hír):")
-    any_wl = False
+    anywl = False
     for sym, qty, K, ah, pm in price_rows:
-        if qty:
-            continue
+        if qty: continue
         chunks = []
-        if ah["chg_pct"] is not None and abs(ah["chg_pct"]) >= float(K):
-            chunks.append(f"AH {ah['chg_pct']:.2f}%")
-        if pm["chg_pct"] is not None and abs(pm["chg_pct"]) >= float(K):
-            chunks.append(f"PM {pm['chg_pct']:.2f}%")
-        news_items = news_map.get(sym) or []
-        has_news = bool(news_items)
-        if not (chunks or has_news):
-            continue
-
+        if ah["chg_pct"] and abs(ah["chg_pct"]) >= K: chunks.append(f"AH {ah['chg_pct']:.2f}%")
+        if pm["chg_pct"] and abs(pm["chg_pct"]) >= K: chunks.append(f"PM {pm['chg_pct']:.2f}%")
+        news = news_map.get(sym)
+        if not chunks and not news: continue
+        chg = pm["chg_pct"] if pm["chg_pct"] else ah["chg_pct"]
+        reason = short_news_reason(sym, news_map, chg)
         base = " | ".join(chunks) if chunks else "releváns hír"
-        ch_for_sent = pm["chg_pct"] if pm["chg_pct"] is not None else ah["chg_pct"]
-        reason = short_news_reason(sym, news_map, ch_for_sent)
-        tail = f" – {reason}" if reason else ""
-        lines.append(f"- **{sym}** — {base}{tail}")
-        any_wl = True
-    if not any_wl:
-        lines.append("_nincs_")
+        lines.append(f"- **{sym}** — {base} – {reason}")
+        anywl = True
+    if not anywl: lines.append("_nincs_")
 
-    # --- Hírblokk ---
+    # Hírblokk
     lines.append("\n### Bejelentések & fel/lemínősítések")
-    any_news = False
+    anynews = False
     for sym in [r["symbol"] for r in rows]:
         for (src, title, dt) in news_map.get(sym, []):
-            when = dt.strftime("%Y-%m-%d %H:%M")
-            lines.append(f"- **{sym}** — {src} — {title} — {when} CEST")
-            any_news = True
-    if not any_news:
-        lines.append("_(nincs releváns bejegyzés az ablakban)_")
-
-    lines.append("\n### Közeli katalizátorok (pár nap)")
-    lines.append("_(ha van beállított naptár/univerzum, itt listázzuk)_")
+            lines.append(f"- **{sym}** — {src} — {translate_hu(title)} — {dt:%Y-%m-%d %H:%M} CEST")
+            anynews = True
+    if not anynews: lines.append("_(nincs releváns bejegyzés az ablakban)_")
 
     return "\n".join(lines)
 
+# --- Jelentés 2 -------------------------------------------------------------
 def report_2(rows):
     now_ny = datetime.now(TZ_NY)
-    prev_day = previous_trading_day(now_ny.date())
-    res, missing = [], []
+    prev = previous_trading_day(now_ny.date())
+    res, miss = [], []
     for r in rows:
         sym = r["symbol"]
-        m = fetch_prev_open_close(sym, prev_day)
-        if m["error"]: missing.append(sym)
-        res.append((sym, r["qty"], r["K"], m))
+        h = yf.Ticker(sym).history(start=prev, end=prev+timedelta(days=1), interval="1m")
+        if h.empty:
+            miss.append(sym)
+            continue
+        h = _tz(h, TZ_NY)
+        o = _pick_open(h)
+        c = float(h["Close"].iloc[-1])
+        if not o: continue
+        res.append((sym, r["qty"], r["K"], round(pct(o, c), 2)))
     lines = []
     lines.append("## #2 – Tegnapi Open→Close (15:30–22:00 CEST)")
-    lines.append("**Lefedettség:** " + ("HIÁNYOS – " + ", ".join(missing) if missing else "TELJES"))
-    lines.append("\n### Darabszámos (abs(Open→Close) ≥ K):")
-    any_pos = False
-    for sym, qty, K, m in res:
-        if qty and m["open_to_close_pct"] is not None and abs(m["open_to_close_pct"]) >= float(K):
-            lines.append(f"- **{sym}** — **{m['open_to_close_pct']:.2f}%**")
-            any_pos = True
-    if not any_pos: lines.append("_nincs_")
-    lines.append("\n### Watchlist (abs(Open→Close) ≥ K):")
-    any_wl = False
-    for sym, qty, K, m in res:
-        if (not qty) and m["open_to_close_pct"] is not None and abs(m["open_to_close_pct"]) >= float(K):
-            lines.append(f"- **{sym}** — **{m['open_to_close_pct']:.2f}%**")
-            any_wl = True
-    if not any_wl: lines.append("_nincs_")
+    lines.append("**Lefedettség:** " + ("HIÁNYOS – "+", ".join(miss) if miss else "TELJES"))
+    for sym, qty, K, ch in res:
+        if ch and abs(ch) >= K:
+            lines.append(f"- **{sym}** — {ch:+.2f}%")
     return "\n".join(lines)
 
-def report_3(rows, override_pct):
-    res, missing = [], []
+# --- Jelentés 3 -------------------------------------------------------------
+def report_3(rows):
+    res, miss = [], []
     for r in rows:
         sym = r["symbol"]
-        m = fetch_today_open_now(sym)
-        if m["error"]: missing.append(sym)
-        res.append((sym, r["qty"], r["K"], m))
+        m = yf.Ticker(sym).history(period="1d", interval="1m")
+        if m.empty:
+            miss.append(sym)
+            continue
+        m = _tz(m, TZ_NY)
+        o = _pick_open(m)
+        l = float(m["Close"].iloc[-1])
+        if not o: continue
+        res.append((sym, r["qty"], r["K"], round(pct(o, l), 2)))
     lines = []
     lines.append("## #3 – Ma nyitástól mostanáig (Open→Most)")
-    lines.append("**Lefedettség:** " + ("HIÁNYOS – " + ", ".join(missing) if missing else "TELJES"))
-    lines.append("\n### Jelzések (abs(Open→Most) ≥ K):")
-    any_main = False
-    for sym, qty, K, m in res:
-        ch = m["open_to_now_pct"]
-        if ch is not None and abs(ch) >= float(K):
-            lines.append(f"- **{sym}** — **{ch:.2f}%**" + (" · (POS)" if qty else ""))
-            any_main = True
-    if not any_main: lines.append("_nincs_")
-    if override_pct and float(override_pct) > 0:
-        lines.append(f"\n### Napi extrém (abs(PrevClose→Most) ≥ {float(override_pct):.2f}%):")
-        any_ovr = False
-        for sym, qty, K, m in res:
-            ch = m["prev_to_now_pct"]
-            if ch is not None and abs(ch) >= float(override_pct) and not (m["open_to_now_pct"] and abs(m["open_to_now_pct"]) >= float(K)):
-                lines.append(f"- **{sym}** — **{ch:.2f}%**" + (" · (POS)" if qty else ""))
-                any_ovr = True
-        if not any_ovr: lines.append("_nincs_")
+    lines.append("**Lefedettség:** " + ("HIÁNYOS – "+", ".join(miss) if miss else "TELJES"))
+    for sym, qty, K, ch in res:
+        if ch and abs(ch) >= K:
+            lines.append(f"- **{sym}** — {ch:+.2f}%")
     return "\n".join(lines)
 
-# --- CLI --------------------------------------------------------------------
+# --- Main -------------------------------------------------------------------
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--report", default="3")
     ap.add_argument("--csv", required=True)
     ap.add_argument("--summary", default="")
-    ap.add_argument("--override-pct", type=float, default=8.0)
     ap.add_argument("--default-k", type=float, default=3.0)
     ap.add_argument("--default-l", type=float, default=2.0)
     ap.add_argument("--default-m", type=float, default=1.0)
-    # workflow kompatibilitás
     ap.add_argument("--macro", default="auto")
     args = ap.parse_args()
 
     Path("reports").mkdir(parents=True, exist_ok=True)
     rows = read_rows(args.csv, args.default_k, args.default_l, args.default_m)
     if not rows:
-        msg = "Nincs ticker a CSV-ben."
-        print(msg)
-        if args.summary: write_summary(args.summary, f"**Hiba:** {msg}")
-        sys.exit(1)
+        print("Nincs ticker a CSV-ben."); sys.exit(1)
 
-    rep = str(args.report).strip()
+    rep = str(args.report)
     if rep == "1":
         text = report_1(rows)
         Path("reports/summary_report1.md").write_text(text, encoding="utf-8")
@@ -525,12 +375,12 @@ def main():
         text = report_2(rows)
         Path("reports/summary_report2.md").write_text(text, encoding="utf-8")
     else:
-        text = report_3(rows, args.override_pct)
+        text = report_3(rows)
         Path("reports/summary_report3.md").write_text(text, encoding="utf-8")
 
     print(text)
     if args.summary:
-        write_summary(args.summary, text)
+        with open(args.summary, "a", encoding="utf-8") as f: f.write(text)
 
 if __name__ == "__main__":
     main()
