@@ -508,7 +508,6 @@ def report_3(rows):
         ch = m["open_to_now_pct"]
         if ch is None:
             continue
-        # szentiment és indok
         if abs(ch) >= float(K):
             sent = "pozitív" if ch > 0 else "negatív" if ch < 0 else "semleges"
             reason = f"[{sent}] nyitáshoz képest érdemi elmozdulás (≥{K:.2f}%), érdemes figyelni a nap végi zárót és a híreket."
