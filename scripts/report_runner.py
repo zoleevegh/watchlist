@@ -151,7 +151,64 @@ def previous_trading_day(date_ny):
         d -= timedelta(days=1)
     return d
 
-# --- Prices -----------------------------------------------------------------
+# --- Prices for #1 ----------------------------------------------------------
+def fetch_ah_pm_changes(sym):
+    """
+    Visszaadja az AH és PM változást a legutóbbi rendes záráshoz képest.
+    - AH: előző kereskedési nap 16:00–20:00 NY
+    - PM: következő napon 04:00–09:30 NY
+    """
+    try:
+        now_ny = datetime.now(TZ_NY)
+        last_td = previous_trading_day(now_ny.date())
+        t = yf.Ticker(sym)
+        h = t.history(
+            start=last_td - timedelta(days=1),
+            end=last_td + timedelta(days=2),
+            interval="1m",
+            prepost=True,
+            actions=False
+        )
+        if h is None or h.empty:
+            return {"ah": {"chg_pct": None, "error": "no_1m_prepost"},
+                    "pm": {"chg_pct": None, "error": "no_1m_prepost"}}
+        h = _tz(h, TZ_NY)
+
+        prev_day = last_td
+        next_day = last_td + timedelta(days=1)
+
+        rth = h[(h.index.date == prev_day) & (h.index.time <= CLOSE_T)]
+        if rth.empty:
+            return {"ah": {"chg_pct": None, "error": "no_prev_close"},
+                    "pm": {"chg_pct": None, "error": "no_prev_close"}}
+        prev_close = float(rth["Close"].iloc[-1])
+
+        def win_chg(start_dt, end_dt):
+            win = h[(h.index >= start_dt) & (h.index <= end_dt)]
+            if win.empty:
+                return {"chg_pct": None, "error": "no_bars_in_window"}
+            last_price = float(win["Close"].iloc[-1])
+            return {"chg_pct": round(pct(prev_close, last_price), 2), "error": None}
+
+        # AH: prev_day 16:00–20:00 NY
+        ah_start = TZ_NY.localize(datetime.combine(prev_day, CLOSE_T))
+        ah_end   = ah_start + timedelta(hours=4)
+
+        # PM: next_day 04:00–09:30 NY
+        pm_start = TZ_NY.localize(datetime.combine(next_day, dtime(4,0)))
+        pm_end   = TZ_NY.localize(datetime.combine(next_day, dtime(9,30)))
+
+        return {
+            "ah": win_chg(ah_start, ah_end),
+            "pm": win_chg(pm_start, pm_end),
+        }
+    except Exception:
+        return {
+            "ah": {"chg_pct": None, "error": "exception"},
+            "pm": {"chg_pct": None, "error": "exception"},
+        }
+
+# --- Prices for #2/#3 -------------------------------------------------------
 def fetch_today_open_now(sym):
     t = yf.Ticker(sym)
     h = t.history(period="1d", interval="1m", prepost=False, actions=False)
@@ -217,49 +274,6 @@ def fetch_prev_open_close(sym, prev_trading_date):
         "open_to_close_pct": None if open_px in (None,0) or close_px is None else round(pct(open_px, close_px), 2),
         "error": None if (open_px is not None and close_px is not None) else "no_price_data"
     }
-
-def fetch_window_change(sym, start_cet: dtime, end_cet: dtime):
-    """
-    #1-hez: AH / PM változás a LEGUTÓBBI RENDES ZÁRÁSHOZ képest (PrevClose→AH/PM).
-    Hétfőn a péntek zárásától mér.
-    """
-    try:
-        now_ny = datetime.now(TZ_NY)
-        last_td = previous_trading_day(now_ny.date())
-        t = yf.Ticker(sym)
-        h = t.history(start=last_td - timedelta(days=1),
-                      end=last_td + timedelta(days=2),
-                      interval="1m",
-                      prepost=True,
-                      actions=False)
-        if h is None or h.empty:
-            return {"chg_pct": None, "error": "no_1m_prepost"}
-        h = _tz(h, TZ_NY)
-
-        # előző rendes záróár
-        prev_day = last_td
-        next_day = last_td + timedelta(days=1)
-        rth = h[(h.index.date == prev_day) & (h.index.time <= CLOSE_T)]
-        if rth.empty:
-            return {"chg_pct": None, "error": "no_prev_close"}
-        prev_close = float(rth["Close"].iloc[-1])
-
-        if end_cet < start_cet:
-            # AH: előző kereskedési nap 16:00–20:00 NY (CET-ben ~22:00–02:00)
-            start_dt = TZ_NY.localize(datetime.combine(prev_day, CLOSE_T))
-            end_dt   = start_dt + timedelta(hours=4)
-        else:
-            # PM: következő napon 04:00–09:30 NY (CET-ben ~10:00–15:30)
-            start_dt = TZ_NY.localize(datetime.combine(next_day, dtime(4,0)))
-            end_dt   = TZ_NY.localize(datetime.combine(next_day, dtime(9,30)))
-
-        win = h[(h.index >= start_dt) & (h.index <= end_dt)]
-        if win.empty:
-            return {"chg_pct": None, "error": "no_bars_in_window"}
-        last_price = float(win["Close"].iloc[-1])
-        return {"chg_pct": round(pct(prev_close, last_price), 2), "error": None}
-    except Exception:
-        return {"chg_pct": None, "error": "exception"}
 
 # --- News (light) -----------------------------------------------------------
 REUTERS_FEEDS = [
@@ -339,21 +353,21 @@ def write_summary(path, text):
         pass
 
 def report_1(rows):
-    # Időablakok (CET)
+    # CET ablakok a headerhez
     AH_S, AH_E = dtime(22,0), dtime(2,0)
     PM_S, PM_E = dtime(10,0), dtime(15,30)
 
     now_cet = datetime.now(TZ_CET)
-    ah_start = now_cet.replace(hour=22, minute=0, second=0, microsecond=0)
-    ah_end   = (ah_start + timedelta(days=1)).replace(hour=2, minute=0)
-    pm_start = now_cet.replace(hour=10, minute=0, second=0, microsecond=0)
-    pm_end   = now_cet.replace(hour=15, minute=30, second=0, microsecond=0)
+    ah_start = now_cet.replace(hour=AH_S.hour, minute=AH_S.minute, second=0, microsecond=0)
+    ah_end   = (ah_start + timedelta(days=1)).replace(hour=AH_E.hour, minute=AH_E.minute)
+    pm_start = now_cet.replace(hour=PM_S.hour, minute=PM_S.minute, second=0, microsecond=0)
+    pm_end   = now_cet.replace(hour=PM_E.hour, minute=PM_E.minute, second=0, microsecond=0)
 
     price_rows, news_map = [], {}
     for r in rows:
         sym = r["symbol"]
-        ah = fetch_window_change(sym, AH_S, AH_E)
-        pm = fetch_window_change(sym, PM_S, PM_E)
+        chg = fetch_ah_pm_changes(sym)
+        ah, pm = chg["ah"], chg["pm"]
         price_rows.append((sym, r["qty"], r["K"], ah, pm))
         news_map[sym] = collect_news_for(sym, ah_start, pm_end)
 
@@ -491,7 +505,7 @@ def main():
     ap.add_argument("--default-k", type=float, default=3.0)
     ap.add_argument("--default-l", type=float, default=2.0)
     ap.add_argument("--default-m", type=float, default=1.0)
-    # workflow kompatibilitás miatt (most nem használjuk külön)
+    # workflow kompatibilitás
     ap.add_argument("--macro", default="auto")
     args = ap.parse_args()
 
