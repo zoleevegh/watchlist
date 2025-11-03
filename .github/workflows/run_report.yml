@@ -99,7 +99,7 @@ jobs:
           if (-not (Test-Path "scripts\report_runner.py")) {
             Write-Error "scripts\report_runner.py hiányzik a repóban"; exit 1
           }
-          python -X utf8 "scripts\report_runner.py" --report $report --csv "$csv" --summary "$env:GITHUB_STEP_SUMMARY" --override-pct $ovr --macro $macro
+          python -X utf8 "scripts\report_runner.py" --report $report --csv "$csv" --summary "$env:GITHUB_STEP_SUMMARY" --macro $macro
 
       # Egyszeri unlisted Gist létrehozása (nem kötelező, de meghagytam)
       - name: Publish summary to Gist (unlisted)
