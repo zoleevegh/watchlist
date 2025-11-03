@@ -12,8 +12,12 @@ on:
         default: ''
         required: false
       override_pct:
-        description: 'Napi extrém blokk küszöb (PrevClose→Now). 0 = kikapcsolva (#3)'
+        description: 'Napi extrém blokk küszöb (PrevClose→Most). 0 = kikapcsolva (#3)'
         default: '8'
+        required: false
+      macro:
+        description: 'Politika/FED blokk: auto | off | strict'
+        default: 'auto'
         required: false
   repository_dispatch:
     types: [run_report]
@@ -21,10 +25,10 @@ on:
 jobs:
   run:
     runs-on: windows-latest
-    timeout-minutes: 8            # ← IDE kerül az időkorlát
+
     env:
+      # ← IDE írd a Google Sheets "Publish to web" CSV linkjét
       DEFAULT_CSV_URL: https://docs.google.com/spreadsheets/d/e/2PACX-1vTf5h3xx4LWJvI-e7PSyc8g6uGZT-H6pCeuwEqs7NqeCDKuAltTpL_ncPOWMtooRw/pub?output=csv
-      PYTHONUNBUFFERED: "1"       # ← EZ is a job env-ben (folyamatos log)
 
     steps:
       - name: Checkout
@@ -41,7 +45,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install pandas requests yfinance pytz feedparser beautifulsoup4
 
-      - name: Resolve inputs (report, csv, override)
+      - name: Resolve inputs (report, csv, override, macro)
         id: vars
         shell: pwsh
         run: |
@@ -56,12 +60,18 @@ jobs:
           $ovr = "${{ github.event.inputs.override_pct }}"
           if (-not $ovr) { $ovr = "8" }
 
+          $macro = "${{ github.event.inputs.macro }}"
+          if (-not $macro) { $macro = "auto" }
+
           "report=$report" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "csv=$csv"       | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "ovr=$ovr"       | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "macro=$macro"   | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
           Write-Host "REPORT: $report"
           Write-Host "CSV URL: $csv"
           Write-Host "OVERRIDE_PCT: $ovr"
+          Write-Host "MACRO: $macro"
 
       - name: Fetch MASTER CSV (robust)
         shell: pwsh
@@ -85,25 +95,15 @@ jobs:
           $report = "${{ steps.vars.outputs.report }}"
           $csv    = "reports\master.csv"
           $ovr    = "${{ steps.vars.outputs.ovr }}"
+          $macro  = "${{ steps.vars.outputs.macro }}"
           if (-not (Test-Path "scripts\report_runner.py")) {
             Write-Error "scripts\report_runner.py hiányzik a repóban"; exit 1
           }
-          python -X utf8 "scripts\report_runner.py" --report $report --csv "$csv" --summary "$env:GITHUB_STEP_SUMMARY" --override-pct $ovr
+          python -X utf8 "scripts\report_runner.py" --report $report --csv "$csv" --summary "$env:GITHUB_STEP_SUMMARY" --override-pct $ovr --macro $macro
 
-      # (Opcionális) Gist publikálás – classic vagy fine-grained PAT szükséges gist jogosultsággal
-      - name: Check Gist auth
-        if: always()
-        shell: pwsh
-        env:
-          GH_GIST_TOKEN: ${{ secrets.GH_GIST_TOKEN }}
-        run: |
-          if (-not $env:GH_GIST_TOKEN) { Write-Host "Nincs GH_GIST_TOKEN secret – kihagyjuk a Gistet."; exit 0 }
-          $r = curl.exe -s -H "Authorization: token $env:GH_GIST_TOKEN" https://api.github.com/gists
-          if ($LASTEXITCODE -ne 0) { Write-Error "Gist auth failed"; exit 1 }
-          Write-Host "Gist auth OK"
-
+      # (Opcionális) egyszeri Gist létrehozás – ha kell mellé egy ideiglenes link
       - name: Publish summary to Gist (unlisted)
-        if: always()
+        if: ${{ always() }}
         shell: pwsh
         env:
           GH_GIST_TOKEN: ${{ secrets.GH_GIST_TOKEN }}
@@ -131,44 +131,44 @@ jobs:
           "Gist URL: $($obj.html_url)"
 
       - name: Upload artifacts
-        if: always()
+        if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: report-bundle
           path: reports/**
           if-no-files-found: warn
 
-            - name: Update fixed Gist with latest summary
-    if: always()
-    shell: pwsh
-    env:
-      GH_GIST_TOKEN: ${{ secrets.GH_GIST_TOKEN }}
-      HC_GIST_ID: ${{ secrets.HC_GIST_ID }}
-    run: |
-      if (-not $env:GH_GIST_TOKEN) { Write-Host "No GH_GIST_TOKEN – skip"; exit 0 }
-      if (-not $env:HC_GIST_ID) { Write-Host "No HC_GIST_ID – skip"; exit 0 }
+      # Fix Gist frissítése: mindig ugyanaz az URL frissül
+      - name: Update fixed Gist with latest summary
+        if: ${{ always() }}
+        shell: pwsh
+        env:
+          GH_GIST_TOKEN: ${{ secrets.GH_GIST_TOKEN }}
+          HC_GIST_ID: ${{ secrets.HC_GIST_ID }}
+        run: |
+          if (-not $env:GH_GIST_TOKEN) { Write-Host "No GH_GIST_TOKEN – skip"; exit 0 }
+          if (-not $env:HC_GIST_ID) { Write-Host "No HC_GIST_ID – skip"; exit 0 }
 
-      $files = Get-ChildItem reports -Filter "summary_report*.md"
-      if (-not $files) { Write-Host "No summary files to publish"; exit 0 }
+          $files = Get-ChildItem reports -Filter "summary_report*.md"
+          if (-not $files) { Write-Host "No summary files to publish"; exit 0 }
 
-      $payload = @{ files = @{} }
-      foreach ($f in $files) {
-        $name = Split-Path $f -Leaf
-        $content = Get-Content -Raw $f
-        $payload.files[$name] = @{ content = $content }
-      }
-      $json = $payload | ConvertTo-Json -Depth 10
+          $payload = @{ files = @{} }
+          foreach ($f in $files) {
+            $name = Split-Path $f -Leaf
+            $content = Get-Content -Raw $f
+            $payload.files[$name] = @{ content = $content }
+          }
+          $json = $payload | ConvertTo-Json -Depth 10
 
-      $resp = curl.exe -s -X PATCH "https://api.github.com/gists/$env:HC_GIST_ID" `
-        -H "Authorization: token $env:GH_GIST_TOKEN" `
-        -H "Accept: application/vnd.github+json" `
-        -H "Content-Type: application/json" `
-        -d $json
+          $resp = curl.exe -s -X PATCH "https://api.github.com/gists/$env:HC_GIST_ID" `
+            -H "Authorization: token $env:GH_GIST_TOKEN" `
+            -H "Accept: application/vnd.github+json" `
+            -H "Content-Type: application/json" `
+            -d $json
 
-      $obj = $resp | ConvertFrom-Json
-      if ($null -eq $obj.html_url) {
-        Write-Error "Gist update failed: $resp"
-        exit 1
-      }
-      "Gist updated: $($obj.html_url)"
-
+          $obj = $resp | ConvertFrom-Json
+          if ($null -eq $obj.html_url) {
+            Write-Error "Gist update failed: $resp"
+            exit 1
+          }
+          "Gist updated: $($obj.html_url)"
