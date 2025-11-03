@@ -137,3 +137,38 @@ jobs:
           name: report-bundle
           path: reports/**
           if-no-files-found: warn
+
+            - name: Update fixed Gist with latest summary
+    if: always()
+    shell: pwsh
+    env:
+      GH_GIST_TOKEN: ${{ secrets.GH_GIST_TOKEN }}
+      HC_GIST_ID: ${{ secrets.HC_GIST_ID }}
+    run: |
+      if (-not $env:GH_GIST_TOKEN) { Write-Host "No GH_GIST_TOKEN – skip"; exit 0 }
+      if (-not $env:HC_GIST_ID) { Write-Host "No HC_GIST_ID – skip"; exit 0 }
+
+      $files = Get-ChildItem reports -Filter "summary_report*.md"
+      if (-not $files) { Write-Host "No summary files to publish"; exit 0 }
+
+      $payload = @{ files = @{} }
+      foreach ($f in $files) {
+        $name = Split-Path $f -Leaf
+        $content = Get-Content -Raw $f
+        $payload.files[$name] = @{ content = $content }
+      }
+      $json = $payload | ConvertTo-Json -Depth 10
+
+      $resp = curl.exe -s -X PATCH "https://api.github.com/gists/$env:HC_GIST_ID" `
+        -H "Authorization: token $env:GH_GIST_TOKEN" `
+        -H "Accept: application/vnd.github+json" `
+        -H "Content-Type: application/json" `
+        -d $json
+
+      $obj = $resp | ConvertFrom-Json
+      if ($null -eq $obj.html_url) {
+        Write-Error "Gist update failed: $resp"
+        exit 1
+      }
+      "Gist updated: $($obj.html_url)"
+
