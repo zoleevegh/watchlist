@@ -32,6 +32,35 @@ SESSION = requests.Session()
 SESSION.headers.update({"User-Agent": "Mozilla/5.0"})
 HTTP_TIMEOUT = 6  # feed / quote hívásokra
 
+# --- Fordító (angol -> magyar) ----------------------------------------------
+try:
+    from googletrans import Translator
+    _TRANSLATOR = Translator()
+except Exception:
+    _TRANSLATOR = None
+
+def translate_hu(text: str, max_len: int = 220) -> str:
+    """
+    Angol szöveg rövid magyar fordítása.
+    - Ha nincs fordító (lib hiba), visszaadja az eredetit.
+    - max_len felett értelmesen vág, és „…”-et tesz a végére.
+    """
+    if not text:
+        return ""
+    base = str(text).strip()
+    if not base:
+        return ""
+    out = base
+    try:
+        if _TRANSLATOR is not None:
+            t = _TRANSLATOR.translate(base, dest="hu")
+            out = t.text or base
+    except Exception:
+        out = base
+    if max_len and len(out) > max_len:
+        out = out[:max_len].rsplit(" ", 1)[0] + "…"
+    return out
+
 # --- Helperek ---------------------------------------------------------------
 def pct(a,b):
     try:
@@ -139,19 +168,29 @@ def _dt_entry(e):
     return None
 
 def macro_blurb(mode="auto", lookback_hours=18):
+    """
+    Politika/FED blokk – magyarul.
+    mode:
+      - auto: próbál élő hírt találni, különben magyar placeholder
+      - off: csak statikus magyar placeholder
+      - strict: csak akkor ír bármit, ha van releváns hír, különben „nincs releváns fejlemény”
+    """
     now = datetime.now(TZ_CET)
     window_start = now - timedelta(hours=lookback_hours)
+
     if mode == "off":
-        return "Trump-napihír: — (nincs releváns mai bejelentés). FED: —"
+        return "Trump-napihír: nincs ma kiemelt hír. FED: nincs új, piackompatibilis fejlemény."
 
     feeds = REUTERS_FEEDS + YF_INDEX_FEEDS
     entries = []
     for f in feeds:
         fp = _parse_feed(f)
-        if not fp or not fp.entries: continue
+        if not fp or not fp.entries:
+            continue
         for e in fp.entries:
             dt = _dt_entry(e)
-            if not dt or dt < window_start or dt > now: continue
+            if not dt or dt < window_start or dt > now:
+                continue
             title = (e.get("title") or "").strip()
             summ  = _strip_html(e.get("summary") or "")
             txt   = (title + " " + summ).upper()
@@ -164,14 +203,22 @@ def macro_blurb(mode="auto", lookback_hours=18):
     fed_hit   = next(((dt,t,s) for (dt,t,s,txt) in sorted(entries, reverse=True) if any(k in txt for k in fed_keys)), None)
 
     if trump_hit or fed_hit:
-        parts = []
-        parts.append(f"Trump-napihír: {trump_hit[1] if trump_hit else '—'}")
-        parts.append(f"FED: {fed_hit[1] if fed_hit else '—'}")
-        return "  ".join(parts)
+        if trump_hit:
+            trump_text_en = trump_hit[1] or trump_hit[2]
+            trump_text_hu = translate_hu(trump_text_en, max_len=220)
+        else:
+            trump_text_hu = "nincs ma kiemelt Trump-hír."
+        if fed_hit:
+            fed_text_en = fed_hit[1] or fed_hit[2]
+            fed_text_hu = translate_hu(fed_text_en, max_len=220)
+        else:
+            fed_text_hu = "nincs új, piacmozgató FED-hír az ablakban."
+        return f"Trump-napihír: {trump_text_hu}  FED/makró: {fed_text_hu}"
 
+    # nincs releváns találat
     if mode == "strict":
-        return "Trump-napihír: —  FED: — (nincs releváns fejlemény az ablakban)"
-    return "Trump-napihír: — (nincs releváns mai bejelentés). FED: —"
+        return "Trump-napihír: nincs releváns fejlemény az ablakban.  FED/makró: nincs releváns, új információ."
+    return "Trump-napihír: nincs ma kiemelt hír. FED/makró: nincs új, lényeges piaci fejlemény."
 
 # --- Prices: batch + fallback + egyszeri retry ------------------------------
 def _extract_window(df_local_tz, start_dt, end_dt):
@@ -518,7 +565,15 @@ def report_1(rows, macro_mode):
     price_rows, news_map = [], {}
     for r in rows:
         sym = r["symbol"]
-        price_rows.append((sym, r["qty"], r["K"], ah_map.get(sym, {"chg_pct": None, "error": "no"}), pm_map.get(sym, {"chg_pct": None, "error": "no"})))
+        price_rows.append(
+            (
+                sym,
+                r["qty"],
+                r["K"],
+                ah_map.get(sym, {"chg_pct": None, "error": "no"}),
+                pm_map.get(sym, {"chg_pct": None, "error": "no"}),
+            )
+        )
     for sym in symbols:
         news_map[sym] = collect_news_for(sym, ah_start, pm_end)
 
@@ -529,31 +584,53 @@ def report_1(rows, macro_mode):
     lines.append(f"_Vizsgált ablakok ma_: AH **{ah_start.strftime('%Y-%m-%d %H:%M')} → {ah_end.strftime('%H:%M')}**; PM **{pm_start.strftime('%Y-%m-%d %H:%M')} → {pm_end.strftime('%H:%M')}** CEST")
     lines += report_header_common(missing, macro_blurb(macro_mode))
 
+    # Darabszámosok
     lines.append("\n### Darabszámos (≥K%):")
     any_pos = False
     for sym, qty, K, ah, pm in price_rows:
-        if not qty: continue
+        if not qty:
+            continue
         chunks = []
-        if ah.get("chg_pct") is not None and abs(ah["chg_pct"]) >= float(K): chunks.append(f"AH {ah['chg_pct']:.2f}%")
-        if pm.get("chg_pct") is not None and abs(pm["chg_pct"]) >= float(K): chunks.append(f"PM {pm['chg_pct']:.2f}%")
+        if ah.get("chg_pct") is not None and abs(ah["chg_pct"]) >= float(K):
+            chunks.append(f"AH {ah['chg_pct']:.2f}%")
+        if pm.get("chg_pct") is not None and abs(pm["chg_pct"]) >= float(K):
+            chunks.append(f"PM {pm['chg_pct']:.2f}%")
         if chunks:
             lines.append(f"- **{sym}** — " + " | ".join(chunks))
             any_pos = True
-    if not any_pos: lines.append("_nincs_")
+    if not any_pos:
+        lines.append("_nincs_")
 
+    # Watchlist (feltételes) + 1 mondatos hír-indok magyarul
     lines.append("\n### Watchlist (≥K% vagy hír):")
     any_wl = False
     for sym, qty, K, ah, pm in price_rows:
-        if qty: continue
+        if qty:
+            continue
         chunks = []
-        if ah.get("chg_pct") is not None and abs(ah["chg_pct"]) >= float(K): chunks.append(f"AH {ah['chg_pct']:.2f}%")
-        if pm.get("chg_pct") is not None and abs(pm["chg_pct"]) >= float(K): chunks.append(f"PM {pm['chg_pct']:.2f}%")
-        has_news = bool(news_map.get(sym))
-        if chunks or has_news:
-            lines.append(f"- **{sym}** — " + (" | ".join(chunks) if chunks else "releváns hír"))
-            any_wl = True
-    if not any_wl: lines.append("_nincs_")
+        if ah.get("chg_pct") is not None and abs(ah["chg_pct"]) >= float(K):
+            chunks.append(f"AH {ah['chg_pct']:.2f}%")
+        if pm.get("chg_pct") is not None and abs(pm["chg_pct"]) >= float(K):
+            chunks.append(f"PM {pm['chg_pct']:.2f}%")
+        news_items = news_map.get(sym) or []
+        has_news = bool(news_items)
+        if not (chunks or has_news):
+            continue
 
+        base = " | ".join(chunks) if chunks else "releváns hír"
+        reason = ""
+        if news_items:
+            # legfrissebb hír címe, rövid magyar fordítással
+            _, latest_title, _dt = news_items[-1]
+            hu_reason = translate_hu(latest_title, max_len=160)
+            if hu_reason:
+                reason = f" · hír: {hu_reason}"
+        lines.append(f"- **{sym}** — {base}{reason}")
+        any_wl = True
+    if not any_wl:
+        lines.append("_nincs_")
+
+    # Bejelentések & fel/lemínősítések – itt marad az eredeti (többnyire angol) cím
     lines.append("\n### Bejelentések & fel/lemínősítések")
     any_news = False
     for sym in symbols:
@@ -561,7 +638,8 @@ def report_1(rows, macro_mode):
             when = dt.strftime("%Y-%m-%d %H:%M")
             lines.append(f"- **{sym}** — {src} — {title} — {when} CEST")
             any_news = True
-    if not any_news: lines.append("_(nincs releváns bejegyzés az ablakban)_")
+    if not any_news:
+        lines.append("_(nincs releváns bejegyzés az ablakban)_")
 
     lines.append("\n### Közeli katalizátorok (pár nap)")
     lines.append("_(ha van beállított naptár/univerzum, itt listázzuk)_")
@@ -576,7 +654,8 @@ def report_2(rows, macro_mode):
     for r in rows:
         sym = r["symbol"]
         m = fetch_prev_open_close(sym, prev_day)
-        if m["error"]: missing.append(sym)
+        if m["error"]:
+            missing.append(sym)
         res.append((sym, r["qty"], r["K"], m))
 
     lines = []
@@ -589,7 +668,8 @@ def report_2(rows, macro_mode):
         if qty and m["open_to_close_pct"] is not None and abs(m["open_to_close_pct"]) >= float(K):
             lines.append(f"- **{sym}** — **Open→Close {m['open_to_close_pct']:.2f}%** — ok: (napközbeni hír/szektor/hozam)")
             any_pos = True
-    if not any_pos: lines.append("_nincs_")
+    if not any_pos:
+        lines.append("_nincs_")
 
     lines.append("\n### Watchlist (abs(Open→Close) ≥ K):")
     any_wl = False
@@ -597,7 +677,8 @@ def report_2(rows, macro_mode):
         if (not qty) and m["open_to_close_pct"] is not None and abs(m["open_to_close_pct"]) >= float(K):
             lines.append(f"- **{sym}** — **Open→Close {m['open_to_close_pct']:.2f}%** — ok: (napközbeni hír/szektor/hozam)")
             any_wl = True
-    if not any_wl: lines.append("_nincs_")
+    if not any_wl:
+        lines.append("_nincs_")
 
     lines.append("\n### Bejelentések & fel/lemínősítések")
     lines.append("_(darabszámosok minden lényeges bejelentésével; watchlisten csak lényeges eset)_")
@@ -622,7 +703,8 @@ def report_3(rows, override_pct, macro_mode, universe_csv=None, hc_days=7):
     for r in rows:
         sym = r["symbol"]
         m = m_map.get(sym, {"error":"no"})
-        if m.get("error"): missing.append(sym)
+        if m.get("error"):
+            missing.append(sym)
         res.append((sym, r["qty"], r["K"], m))
 
     lines = []
@@ -636,7 +718,8 @@ def report_3(rows, override_pct, macro_mode, universe_csv=None, hc_days=7):
         if ch is not None and abs(ch) >= float(K):
             lines.append(f"- **{sym}** — **Open→Most {ch:.2f}%**" + (" · (POS)" if qty else "") + " — ok: (intraday hír/szektor)")
             any_main = True
-    if not any_main: lines.append("_nincs_")
+    if not any_main:
+        lines.append("_nincs_")
 
     if override_pct and float(override_pct) > 0:
         thr = float(override_pct)
@@ -647,7 +730,8 @@ def report_3(rows, override_pct, macro_mode, universe_csv=None, hc_days=7):
             if ch is not None and abs(ch) >= thr and not (m["open_to_now_pct"] and abs(m["open_to_now_pct"]) >= float(K)):
                 lines.append(f"- **{sym}** — **PrevClose→Most {ch:.2f}%**" + (" · (POS)" if qty else ""))
                 any_ovr = True
-        if not any_ovr: lines.append("_nincs_")
+        if not any_ovr:
+            lines.append("_nincs_")
 
     lines.append("\n### Bejelentések & fel/lemínősítések")
     lines.append("_(darabszámosok minden lényeges bejelentésével; watchlisten csak lényeges eset)_")
