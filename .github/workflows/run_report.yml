@@ -101,7 +101,7 @@ jobs:
           }
           python -X utf8 "scripts\report_runner.py" --report $report --csv "$csv" --summary "$env:GITHUB_STEP_SUMMARY" --override-pct $ovr --macro $macro
 
-      # (Opcionális) egyszeri Gist létrehozás – ha kell mellé egy ideiglenes link
+      # Egyszeri unlisted Gist létrehozása (nem kötelező, de meghagytam)
       - name: Publish summary to Gist (unlisted)
         if: ${{ always() }}
         shell: pwsh
@@ -109,10 +109,12 @@ jobs:
           GH_GIST_TOKEN: ${{ secrets.GH_GIST_TOKEN }}
         run: |
           if (-not $env:GH_GIST_TOKEN) { Write-Host "No GH_GIST_TOKEN – skip"; exit 0 }
+
           $files = Get-ChildItem reports -Filter "summary_report*.md" | Select-Object -ExpandProperty FullName
           if (-not $files) { Write-Host "No summary file found"; exit 0 }
+
           $payload = @{
-            description = "Részvények – automata riport"
+            description = "Részvények – automata riport (unlisted)"
             public      = $false
             files       = @{}
           }
@@ -121,14 +123,20 @@ jobs:
             $content = Get-Content -Raw $f
             $payload.files[$name] = @{ content = $content }
           }
-          $json = $payload | ConvertTo-Json -Depth 10
-          $resp = curl.exe -s -X POST "https://api.github.com/gists" `
-            -H "Authorization: token $env:GH_GIST_TOKEN" `
-            -H "Content-Type: application/json" `
-            -d $json
-          $obj = $resp | ConvertFrom-Json
-          if ($null -eq $obj.html_url) { Write-Error "Gist create failed: $resp"; exit 1 }
-          "Gist URL: $($obj.html_url)"
+
+          $json    = $payload | ConvertTo-Json -Depth 10
+          $headers = @{
+            Authorization = "token $env:GH_GIST_TOKEN"
+            "Content-Type" = "application/json"
+          }
+
+          $resp = Invoke-RestMethod -Method Post -Uri "https://api.github.com/gists" -Headers $headers -Body $json
+          if (-not $resp.html_url) {
+            Write-Error ("Gist create failed: " + ($resp | ConvertTo-Json -Depth 10))
+            exit 1
+          }
+
+          "Gist URL: $($resp.html_url)"
 
       - name: Upload artifacts
         if: ${{ always() }}
@@ -138,7 +146,7 @@ jobs:
           path: reports/**
           if-no-files-found: warn
 
-      # Fix Gist frissítése: mindig ugyanaz az URL frissül
+      # Fix Gist frissítése: mindig ugyanaz az URL frissül (HC_GIST_ID secret alapján)
       - name: Update fixed Gist with latest summary
         if: ${{ always() }}
         shell: pwsh
@@ -158,17 +166,19 @@ jobs:
             $content = Get-Content -Raw $f
             $payload.files[$name] = @{ content = $content }
           }
-          $json = $payload | ConvertTo-Json -Depth 10
 
-          $resp = curl.exe -s -X PATCH "https://api.github.com/gists/$env:HC_GIST_ID" `
-            -H "Authorization: token $env:GH_GIST_TOKEN" `
-            -H "Accept: application/vnd.github+json" `
-            -H "Content-Type: application/json" `
-            -d $json
+          $json    = $payload | ConvertTo-Json -Depth 10
+          $headers = @{
+            Authorization = "token $env:GH_GIST_TOKEN"
+            "Content-Type" = "application/json"
+          }
 
-          $obj = $resp | ConvertFrom-Json
-          if ($null -eq $obj.html_url) {
-            Write-Error "Gist update failed: $resp"
+          $uri  = "https://api.github.com/gists/$($env:HC_GIST_ID)"
+          $resp = Invoke-RestMethod -Method Patch -Uri $uri -Headers $headers -Body $json
+
+          if (-not $resp.html_url) {
+            Write-Error ("Gist update failed: " + ($resp | ConvertTo-Json -Depth 10))
             exit 1
           }
-          "Gist updated: $($obj.html_url)"
+
+          "Gist updated: $($resp.html_url)"
