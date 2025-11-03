@@ -221,9 +221,7 @@ def fetch_prev_open_close(sym, prev_trading_date):
 def fetch_window_change(sym, start_cet: dtime, end_cet: dtime):
     """
     #1-hez: AH / PM változás a LEGUTÓBBI RENDES ZÁRÁSHOZ képest (PrevClose→AH/PM).
-    - AH: tegnapi RTH zárás (16:00 NY) → 20:00 NY (CET-ben 22:00→02:00).
-    - PM: ma 04:00→09:30 NY (CET-ben 10:00→15:30).
-    A start_cet/end_cet csak azt jelzi, melyik ablakot kérjük.
+    Hétfőn a péntek zárásától mér.
     """
     try:
         now_ny = datetime.now(TZ_NY)
@@ -247,11 +245,11 @@ def fetch_window_change(sym, start_cet: dtime, end_cet: dtime):
         prev_close = float(rth["Close"].iloc[-1])
 
         if end_cet < start_cet:
-            # AH ablak: előző kereskedési nap 16:00–20:00 NY
+            # AH: előző kereskedési nap 16:00–20:00 NY (CET-ben ~22:00–02:00)
             start_dt = TZ_NY.localize(datetime.combine(prev_day, CLOSE_T))
             end_dt   = start_dt + timedelta(hours=4)
         else:
-            # PM ablak: következő napon 04:00–09:30 NY
+            # PM: következő napon 04:00–09:30 NY (CET-ben ~10:00–15:30)
             start_dt = TZ_NY.localize(datetime.combine(next_day, dtime(4,0)))
             end_dt   = TZ_NY.localize(datetime.combine(next_day, dtime(9,30)))
 
@@ -294,7 +292,6 @@ def _dt(e):
     return None
 
 def collect_news_for(sym, window_start: datetime, window_end: datetime):
-    names = [sym]
     hits = []
     for feed in REUTERS_FEEDS + IR_PR_FEEDS + [yahoo_ticker_feed(sym)]:
         fp = _parse_feed(feed)
@@ -305,9 +302,8 @@ def collect_news_for(sym, window_start: datetime, window_end: datetime):
             title = (e.get("title") or "").strip()
             summ  = _strip_html(e.get("summary") or "")
             text  = (title + " " + summ).upper()
-            if any(n in text for n in [sym, sym.upper()]):
+            if sym.upper() in text:
                 hits.append((feed.split('/')[2], title, dt))
-    # dedup címre
     seen, out = set(), []
     for src, title, dt in hits:
         if title not in seen:
@@ -318,7 +314,7 @@ def collect_news_for(sym, window_start: datetime, window_end: datetime):
 
 def short_news_reason(sym, news_map, chg_for_sent=None):
     """
-    1–3 mondatos (gyakorlatban 1 mondat) magyarázat:
+    1 mondatos magyarázat:
     - ha van hír: cím alapján szentiment + magyar összefoglaló
     - ha nincs hír, de nagy mozgás: irány szerinti generikus ok
     """
@@ -341,12 +337,6 @@ def write_summary(path, text):
                 f.write(text + "\n")
     except Exception:
         pass
-
-def previous_trading_day(date_ny):
-    d = date_ny - timedelta(days=1)
-    while d.weekday() >= 5:
-        d -= timedelta(days=1)
-    return d
 
 def report_1(rows):
     # Időablakok (CET)
@@ -385,12 +375,7 @@ def report_1(rows):
         if pm["chg_pct"] is not None and abs(pm["chg_pct"]) >= float(K):
             chunks.append(f"PM {pm['chg_pct']:.2f}%")
         if chunks:
-            # irány a nagyobbik mozgás alapján
-            ch_for_sent = None
-            if pm["chg_pct"] is not None:
-                ch_for_sent = pm["chg_pct"]
-            elif ah["chg_pct"] is not None:
-                ch_for_sent = ah["chg_pct"]
+            ch_for_sent = pm["chg_pct"] if pm["chg_pct"] is not None else ah["chg_pct"]
             reason = short_news_reason(sym, news_map, ch_for_sent)
             tail = f" – {reason}" if reason else ""
             lines.append(f"- **{sym}** — " + " | ".join(chunks) + tail)
@@ -415,12 +400,7 @@ def report_1(rows):
             continue
 
         base = " | ".join(chunks) if chunks else "releváns hír"
-        # irány a PM / AH alapján, ha kell
-        ch_for_sent = None
-        if pm["chg_pct"] is not None:
-            ch_for_sent = pm["chg_pct"]
-        elif ah["chg_pct"] is not None:
-            ch_for_sent = ah["chg_pct"]
+        ch_for_sent = pm["chg_pct"] if pm["chg_pct"] is not None else ah["chg_pct"]
         reason = short_news_reason(sym, news_map, ch_for_sent)
         tail = f" – {reason}" if reason else ""
         lines.append(f"- **{sym}** — {base}{tail}")
@@ -511,6 +491,8 @@ def main():
     ap.add_argument("--default-k", type=float, default=3.0)
     ap.add_argument("--default-l", type=float, default=2.0)
     ap.add_argument("--default-m", type=float, default=1.0)
+    # workflow kompatibilitás miatt (most nem használjuk külön)
+    ap.add_argument("--macro", default="auto")
     args = ap.parse_args()
 
     Path("reports").mkdir(parents=True, exist_ok=True)
