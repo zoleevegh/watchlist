@@ -5,21 +5,6 @@ report_runner.py
 -----------------
 
 Egységes runner script az 1/2/3-as riportokhoz.
-
-FIGYELEM:
-- Ez egy *alap* implementáció, amit a GitHub repódban tudsz tovább finomítani.
-- Az 1-es riporthoz illeszkedik a `report_1_helpers.py` segédfájlhoz.
-- Az árfolyamokat és AH/PM adatokat a Yahoo Finance chart API-járól szedi.
-- A hír- és katalizátorblokkok jelenleg *csak szerkezetet* tartalmaznak, a konkrét
-  extra források és katalizátor-adatok felvétele a következő lépés lehet.
-
-Használat (példa):
-    python -X utf8 scripts/report_runner.py --report 1 --csv path/to/list.csv --summary "$GITHUB_STEP_SUMMARY" --macro "Trump-napihír stb."
-
-A script három fő részt tud:
-    #1 – After-hours & Premarket (legutóbbi zárástól ma 15:30-ig)
-    #2 – Tegnapi nyitástól zárásig (Open→Close)
-    #3 – Ma nyitástól mostanáig (Open→Most)
 """
 
 from __future__ import annotations
@@ -29,7 +14,7 @@ import csv
 import os
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
 import requests
@@ -82,12 +67,6 @@ def _parse_float(val: str) -> Optional[float]:
 
 
 def load_tickers_from_csv(path: str, default_k: float = 3.0) -> List[TickerRow]:
-    """
-    CSV beolvasása. Rugalmasan kezeli a fejléceket:
-    - Ticker / ticker
-    - Darabszám / Qty / Quantity
-    - K / k / MinMove / MinMovePct stb. (ha nincs: 3.0)
-    """
     if not os.path.exists(path):
         raise FileNotFoundError(f"CSV nem található: {path}")
 
@@ -140,16 +119,12 @@ def load_tickers_from_csv(path: str, default_k: float = 3.0) -> List[TickerRow]:
 
 @dataclass
 class PriceSnapshot:
-    """Egyszerű árfolyam-pillanatképek 1-es riporthoz."""
     prev_close: Optional[float]
     ah_last: Optional[float]
     pm_last: Optional[float]
 
 
 def fetch_chart_2d_5m(ticker: str) -> dict:
-    """
-    Yahoo Finance chart API: 2 nap, 5 perces gyertyák, pre/post bekapcsolva.
-    """
     url = (
         f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
         "?range=2d&interval=5m&includePrePost=true"
@@ -160,15 +135,6 @@ def fetch_chart_2d_5m(ticker: str) -> dict:
 
 
 def extract_ah_pm_move(ticker: str) -> Tuple[PriceSnapshot, Optional[str]]:
-    """
-    1-es riporthoz:
-    - previousClose (vagy az előző napi RTH záró)
-    - AH utolsó ár (NY 16:00–20:00 sáv)
-    - PM utolsó ár (NY 4:00–9:30 sáv)
-
-    Visszaad:
-        PriceSnapshot, hiba_reason (None ha ok)
-    """
     try:
         data = fetch_chart_2d_5m(ticker)
     except Exception as e:
@@ -184,22 +150,19 @@ def extract_ah_pm_move(ticker: str) -> Tuple[PriceSnapshot, Optional[str]]:
         if not timestamps or not closes:
             return PriceSnapshot(None, None, None), "no_price_data"
 
-        # previous close
         prev_close = meta.get("previousClose")
-        # ha nincs, próbáljuk az előző napi RTH utolsó gyertyát
-        # (NY 9:30–16:00)
-        dt_list = [datetime.fromtimestamp(ts, tz=US_EASTERN) for ts in timestamps]
+
+        from datetime import datetime as _dt
+        dt_list = [_dt.fromtimestamp(ts, tz=US_EASTERN) for ts in timestamps]
 
         if prev_close is None:
             prev_rth_closes = [
                 c
                 for c, dt in zip(closes, dt_list)
-                if dt.hour >= 9
-                and dt.hour <= 16
+                if dt.hour >= 9 and dt.hour <= 16
             ]
             prev_close = prev_rth_closes[-1] if prev_rth_closes else None
 
-        # AH sáv: előző nap 16:00–20:00 (US Eastern)
         ah_prices = [
             c
             for c, dt in zip(closes, dt_list)
@@ -207,7 +170,6 @@ def extract_ah_pm_move(ticker: str) -> Tuple[PriceSnapshot, Optional[str]]:
         ]
         ah_last = ah_prices[-1] if ah_prices else None
 
-        # PM sáv: mai nap 4:00–9:30 (US Eastern)
         today_date = dt_list[-1].date()
         pm_prices = [
             c
@@ -235,20 +197,10 @@ def run_report_1(
     tickers: List[TickerRow],
     macro: Optional[str],
 ) -> str:
-    """
-    #1 riport – After-hours & Premarket.
-    - Lefedettség blokk (oka: ...)
-    - Politika / FED blokk (--macro)
-    - Darabszámos / watchlist AH/PM mozgások (egyszerű indok-sablonnal)
-    - Bejelentések & fel/lemínősítések blokk (csak szerkezet, lásd segédfájl)
-    - Közeli katalizátorok blokk (jelenleg üres – te töltöd adatból)
-    """
     lines: List[str] = []
 
-    # 0) PKN.WA alapból kihagyva
     filtered = [r for r in tickers if r.ticker != "PKN.WA"]
 
-    # 1) Lefedettség státusz gyűjtés
     status_map: Dict[str, TickerStatus] = {}
     price_map: Dict[str, PriceSnapshot] = {}
 
@@ -260,15 +212,12 @@ def run_report_1(
         else:
             status_map[row.ticker] = TickerStatus(ok=False, reason=reason)
 
-    # Lefedettség blokk
     lines.append(build_coverage_block(status_map))
 
-    # 2) Politika / FED / makró blokk
     macro_block = build_macro_block_1(macro)
     if macro_block:
         lines.append(macro_block)
 
-    # 3) Darabszámos tickerek AH/PM mozgása
     pos_lines: List[str] = []
     pos_lines.append("Darabszámos tickerek – After-hours & Premarket mozgások\n")
 
@@ -295,14 +244,12 @@ def run_report_1(
         pm_str = fmt_pct("PM", pm_pct)
 
         if row.is_position:
-            # Darabszámos: mindig mutatjuk, de jelöljük, ha ≥K a mozgás
             if has_signal:
                 reason = "Érdemi AH/PM elmozdulás (≥K)."
             else:
                 reason = "Egyelőre nincs küszöb feletti AH/PM elmozdulás."
             pos_lines.append(f"{row.ticker} — {ah_str} | {pm_str} — {reason}")
         else:
-            # Watchlist: csak ha jelzés van
             if not has_signal:
                 continue
             reason = "Watchlisten is érdemi AH/PM elmozdulás (≥K)."
@@ -313,16 +260,12 @@ def run_report_1(
     if len(watch_lines) > 1:
         lines.append("\n".join(watch_lines) + "\n")
 
-    # 4) Bejelentések & fel/lemínősítések – jelenleg üres listával hívjuk
     all_news: List[NewsItem] = []
-    # TODO: itt tudod a Yahoo RSS + extra forrást NewsItem listává alakítani
     news_block = build_news_block_1(all_news)
     if news_block:
         lines.append(news_block)
 
-    # 5) Közeli katalizátorok – jelenleg üres listával hívjuk
     catalysts: List[UpcomingCatalyst] = []
-    # TODO: itt tudod feltölteni earnings/guide/investor day adatokkal
     catalyst_block = build_catalyst_block_1(catalysts)
     if catalyst_block:
         lines.append(catalyst_block)
@@ -335,10 +278,6 @@ def run_report_1(
 # ---------------------------------------------------------------------------
 
 def fetch_quote_summary(ticker: str) -> Tuple[Optional[float], Optional[float]]:
-    """
-    Egyszerű current quote + előző záró.
-    Nem használ pre/post adatot, csak a meta.previousClose + regularMarketPrice-t.
-    """
     url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={ticker}"
     resp = requests.get(url, timeout=10)
     resp.raise_for_status()
@@ -355,12 +294,6 @@ def fetch_quote_summary(ticker: str) -> Tuple[Optional[float], Optional[float]]:
 def run_report_2(
     tickers: List[TickerRow],
 ) -> str:
-    """
-    #2 riport – Tegnapi Open→Close.
-    Itt most egy egyszerűsített verziót adunk:
-    - A Yahoo chart alapján is lehetne pontosabb O→C-t számolni,
-      de a biblia logikáját itt csak részben implementáljuk.
-    """
     lines: List[str] = []
     lines.append("#2 – Tegnapi nyitástól zárásig (Open→Close) – egyszerűsített\n")
 
@@ -401,11 +334,6 @@ def run_report_2(
 def run_report_3(
     tickers: List[TickerRow],
 ) -> str:
-    """
-    #3 riport – Ma nyitástól mostanáig (Open→Most).
-    Egyszerűsített verzió: a jelenlegi regularMarketPrice-ot hasonlítja az előző záróhoz.
-    (Ha szeretnéd, később bővíthetjük tényleges intraday O→Most, High/Open, Low/Open számítással.)
-    """
     lines: List[str] = []
     lines.append("#3 – Ma nyitástól mostanáig (Open→Most) – egyszerűsített\n")
 
@@ -491,11 +419,9 @@ def main() -> None:
         raise ValueError(f"Ismeretlen riport: {args.report}")
 
     if args.summary:
-        # GitHub Actions kimenet
         with open(args.summary, "w", encoding="utf-8") as f:
             f.write(report_text)
     else:
-        # Lokális futtatáskor csak a konzolra írjuk
         print(report_text)
 
 
