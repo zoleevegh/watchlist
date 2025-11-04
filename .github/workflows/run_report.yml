@@ -11,10 +11,6 @@ on:
         description: 'MASTER CSV URL (üres = DEFAULT_CSV_URL)'
         default: ''
         required: false
-      override_pct:
-        description: 'Napi extrém blokk küszöb (PrevClose→Most). 0 = kikapcsolva (#3)'
-        default: '8'
-        required: false
       macro:
         description: 'Politika/FED blokk: auto | off | strict'
         default: 'auto'
@@ -25,7 +21,6 @@ on:
 jobs:
   run:
     runs-on: windows-latest
-
     env:
       # ← IDE írd a Google Sheets "Publish to web" CSV linkjét
       DEFAULT_CSV_URL: https://docs.google.com/spreadsheets/d/e/2PACX-1vTf5h3xx4LWJvI-e7PSyc8g6uGZT-H6pCeuwEqs7NqeCDKuAltTpL_ncPOWMtooRw/pub?output=csv
@@ -43,9 +38,9 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          pip install pandas requests yfinance pytz feedparser beautifulsoup4 googletrans==4.0.0rc1
+          pip install pandas requests yfinance pytz feedparser beautifulsoup4
 
-      - name: Resolve inputs (report, csv, override, macro)
+      - name: Resolve inputs (report, csv, macro)
         id: vars
         shell: pwsh
         run: |
@@ -57,20 +52,16 @@ jobs:
           if (-not $csv) { $csv = "${{ github.event.client_payload.csv_url }}" }
           if (-not $csv) { $csv = "${{ env.DEFAULT_CSV_URL }}" }
 
-          $ovr = "${{ github.event.inputs.override_pct }}"
-          if (-not $ovr) { $ovr = "8" }
-
           $macro = "${{ github.event.inputs.macro }}"
+          if (-not $macro) { $macro = "${{ github.event.client_payload.macro }}" }
           if (-not $macro) { $macro = "auto" }
 
           "report=$report" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "csv=$csv"       | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "ovr=$ovr"       | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "macro=$macro"   | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
           Write-Host "REPORT: $report"
           Write-Host "CSV URL: $csv"
-          Write-Host "OVERRIDE_PCT: $ovr"
           Write-Host "MACRO: $macro"
 
       - name: Fetch MASTER CSV (robust)
@@ -94,27 +85,34 @@ jobs:
           $env:PYTHONIOENCODING = "utf-8"
           $report = "${{ steps.vars.outputs.report }}"
           $csv    = "reports\master.csv"
-          $ovr    = "${{ steps.vars.outputs.ovr }}"
           $macro  = "${{ steps.vars.outputs.macro }}"
           if (-not (Test-Path "scripts\report_runner.py")) {
             Write-Error "scripts\report_runner.py hiányzik a repóban"; exit 1
           }
-          python -X utf8 "scripts\report_runner.py" --report $report --csv "$csv" --summary "$env:GITHUB_STEP_SUMMARY"
+          python -X utf8 "scripts\report_runner.py" --report $report --csv "$csv" --summary "$env:GITHUB_STEP_SUMMARY" --macro $macro
 
-      # Egyszeri unlisted Gist létrehozása (nem kötelező, de meghagytam)
+      - name: Check Gist auth
+        if: always()
+        shell: pwsh
+        env:
+          GH_GIST_TOKEN: ${{ secrets.GH_GIST_TOKEN }}
+        run: |
+          if (-not $env:GH_GIST_TOKEN) { Write-Host "Nincs GH_GIST_TOKEN secret – kihagyjuk a Gistet."; exit 0 }
+          $r = curl.exe -s -H "Authorization: token $env:GH_GIST_TOKEN" https://api.github.com/gists
+          if ($LASTEXITCODE -ne 0) { Write-Error "Gist auth failed"; exit 1 }
+          Write-Host "Gist auth OK"
+
       - name: Publish summary to Gist (unlisted)
-        if: ${{ always() }}
+        if: always()
         shell: pwsh
         env:
           GH_GIST_TOKEN: ${{ secrets.GH_GIST_TOKEN }}
         run: |
           if (-not $env:GH_GIST_TOKEN) { Write-Host "No GH_GIST_TOKEN – skip"; exit 0 }
-
           $files = Get-ChildItem reports -Filter "summary_report*.md" | Select-Object -ExpandProperty FullName
           if (-not $files) { Write-Host "No summary file found"; exit 0 }
-
           $payload = @{
-            description = "Részvények – automata riport (unlisted)"
+            description = "Részvények – automata riport"
             public      = $false
             files       = @{}
           }
@@ -123,62 +121,51 @@ jobs:
             $content = Get-Content -Raw $f
             $payload.files[$name] = @{ content = $content }
           }
+          $json = $payload | ConvertTo-Json -Depth 10
+          $resp = curl.exe -s -X POST "https://api.github.com/gists" `
+            -H "Authorization: token $env:GH_GIST_TOKEN" `
+            -H "Content-Type: application/json" `
+            -d $json
+          $obj = $resp | ConvertFrom-Json
+          if ($null -eq $obj.html_url) { Write-Error "Gist create failed: $resp"; exit 1 }
+          "Gist URL: $($obj.html_url)"
 
-          $json    = $payload | ConvertTo-Json -Depth 10
-          $headers = @{
-            Authorization = "token $env:GH_GIST_TOKEN"
-            "Content-Type" = "application/json"
-          }
-
-          $resp = Invoke-RestMethod -Method Post -Uri "https://api.github.com/gists" -Headers $headers -Body $json
-          if (-not $resp.html_url) {
-            Write-Error ("Gist create failed: " + ($resp | ConvertTo-Json -Depth 10))
-            exit 1
-          }
-
-          "Gist URL: $($resp.html_url)"
-
-      - name: Upload artifacts
-        if: ${{ always() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: report-bundle
-          path: reports/**
-          if-no-files-found: warn
-
-      # Fix Gist frissítése: mindig ugyanaz az URL frissül (HC_GIST_ID secret alapján)
       - name: Update fixed Gist with latest summary
-        if: ${{ always() }}
+        if: always()
         shell: pwsh
         env:
           GH_GIST_TOKEN: ${{ secrets.GH_GIST_TOKEN }}
           HC_GIST_ID: ${{ secrets.HC_GIST_ID }}
         run: |
           if (-not $env:GH_GIST_TOKEN) { Write-Host "No GH_GIST_TOKEN – skip"; exit 0 }
-          if (-not $env:HC_GIST_ID) { Write-Host "No HC_GIST_ID – skip"; exit 0 }
+          if (-not $env:HC_GIST_ID)   { Write-Host "No HC_GIST_ID – skip";   exit 0 }
 
-          $files = Get-ChildItem reports -Filter "summary_report*.md"
-          if (-not $files) { Write-Host "No summary files to publish"; exit 0 }
+          $files = Get-ChildItem reports -Filter "summary_report*.md" | Select-Object -ExpandProperty FullName
+          if (-not $files) { Write-Host "No summary file found"; exit 0 }
 
-          $payload = @{ files = @{} }
+          $payload = @{
+            files = @{}
+          }
           foreach ($f in $files) {
             $name = Split-Path $f -Leaf
             $content = Get-Content -Raw $f
             $payload.files[$name] = @{ content = $content }
           }
+          $json = $payload | ConvertTo-Json -Depth 10
 
-          $json    = $payload | ConvertTo-Json -Depth 10
-          $headers = @{
-            Authorization = "token $env:GH_GIST_TOKEN"
-            "Content-Type" = "application/json"
-          }
+          $url = "https://api.github.com/gists/$env:HC_GIST_ID"
+          $resp = curl.exe -s -X PATCH $url `
+            -H "Authorization: token $env:GH_GIST_TOKEN" `
+            -H "Content-Type: application/json" `
+            -d $json
+          $obj = $resp | ConvertFrom-Json
+          if ($null -eq $obj.html_url) { Write-Error "Fixed Gist update failed: $resp"; exit 1 }
+          "Gist updated: $($obj.html_url)"
 
-          $uri  = "https://api.github.com/gists/$($env:HC_GIST_ID)"
-          $resp = Invoke-RestMethod -Method Patch -Uri $uri -Headers $headers -Body $json
-
-          if (-not $resp.html_url) {
-            Write-Error ("Gist update failed: " + ($resp | ConvertTo-Json -Depth 10))
-            exit 1
-          }
-
-          "Gist updated: $($resp.html_url)"
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: report-bundle
+          path: reports/**
+          if-no-files-found: warn
