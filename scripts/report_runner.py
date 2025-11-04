@@ -204,7 +204,14 @@ def previous_trading_day(date_ny):
 
 # --- Árfüggvények ----------------------------------------------------------
 def fetch_ah_pm_changes(sym):
-    """PrevClose→AH / PrevClose→PM változás egyetlen history() hívással."""
+    """
+    AH/PM változás:
+      1) yahoo history (5m, prepost=True, prevClose→AH/PM)
+      2) ha nincs bar, fallback: quote API postMarketChangePercent / preMarketChangePercent
+    """
+    ah_chg = pm_chg = None
+    ah_err = pm_err = None
+
     try:
         now_ny = datetime.now(TZ_NY)
         last_td = previous_trading_day(now_ny.date())
@@ -216,56 +223,67 @@ def fetch_ah_pm_changes(sym):
             prepost=True,
             actions=False,
         )
-        if h is None or h.empty:
-            return {
-                "ah": {"chg_pct": None, "error": "no_5m_prepost"},
-                "pm": {"chg_pct": None, "error": "no_5m_prepost"},
-            }
-        h = _tz(h, TZ_NY)
+        if h is not None and not h.empty:
+            h = _tz(h, TZ_NY)
 
-        prev_day = last_td
-        next_day = last_td + timedelta(days=1)
+            prev_day = last_td
+            next_day = last_td + timedelta(days=1)
 
-        # előző rendes záró
-        rth = h[(h.index.date == prev_day) & (h.index.time <= CLOSE_T)]
-        if rth.empty:
-            return {
-                "ah": {"chg_pct": None, "error": "no_prev_close"},
-                "pm": {"chg_pct": None, "error": "no_prev_close"},
-            }
-        prev_close = float(rth["Close"].iloc[-1])
+            # előző rendes záró
+            rth = h[(h.index.date == prev_day) & (h.index.time <= CLOSE_T)]
+            if not rth.empty:
+                prev_close = float(rth["Close"].iloc[-1])
 
-        def win_pct(start_dt, end_dt):
-            win = h[(h.index >= start_dt) & (h.index <= end_dt)]
-            if win.empty:
-                return None
-            last_price = float(win["Close"].iloc[-1])
-            return round(pct(prev_close, last_price), 2)
+                def win_pct(start_dt, end_dt):
+                    win = h[(h.index >= start_dt) & (h.index <= end_dt)]
+                    if win.empty:
+                        return None
+                    last_price = float(win["Close"].iloc[-1])
+                    return round(pct(prev_close, last_price), 2)
 
-        # AH: prev_day 16:00–20:00 NY
-        ah_start = TZ_NY.localize(datetime.combine(prev_day, CLOSE_T))
-        ah_end = ah_start + timedelta(hours=4)
-        # PM: next_day 04:00–09:30 NY
-        pm_start = TZ_NY.localize(datetime.combine(next_day, dtime(4, 0)))
-        pm_end = TZ_NY.localize(datetime.combine(next_day, dtime(9, 30)))
+                # AH: prev_day 16:00–20:00 NY
+                ah_start = TZ_NY.localize(datetime.combine(prev_day, CLOSE_T))
+                ah_end = ah_start + timedelta(hours=4)
+                # PM: next_day 04:00–09:30 NY
+                pm_start = TZ_NY.localize(datetime.combine(next_day, dtime(4, 0)))
+                pm_end = TZ_NY.localize(datetime.combine(next_day, dtime(9, 30)))
 
-        ah_chg = win_pct(ah_start, ah_end)
-        pm_chg = win_pct(pm_start, pm_end)
-        return {
-            "ah": {
-                "chg_pct": ah_chg,
-                "error": None if ah_chg is not None else "no_bars_ah",
-            },
-            "pm": {
-                "chg_pct": pm_chg,
-                "error": None if pm_chg is not None else "no_bars_pm",
-            },
-        }
+                ah_chg = win_pct(ah_start, ah_end)
+                pm_chg = win_pct(pm_start, pm_end)
+            else:
+                ah_err = pm_err = "no_prev_close"
+        else:
+            ah_err = pm_err = "no_5m_prepost"
     except Exception:
-        return {
-            "ah": {"chg_pct": None, "error": "exception"},
-            "pm": {"chg_pct": None, "error": "exception"},
-        }
+        ah_err = pm_err = "exception"
+
+    # Fallback: quote API, ha valamelyik irány hiányzik
+    if ah_chg is None or pm_chg is None:
+        try:
+            resp = SESSION.get(
+                "https://query1.finance.yahoo.com/v7/finance/quote",
+                params={"symbols": sym},
+                timeout=HTTP_TIMEOUT,
+            )
+            q = resp.json()["quoteResponse"]["result"][0]
+            if ah_chg is None:
+                cp = q.get("postMarketChangePercent")
+                if cp is not None:
+                    ah_chg = round(float(cp), 2)
+                    ah_err = None
+            if pm_chg is None:
+                cp = q.get("preMarketChangePercent")
+                if cp is not None:
+                    pm_chg = round(float(cp), 2)
+                    pm_err = None
+        except Exception:
+            # ha ez is elhasal, marad a korábbi hiba
+            pass
+
+    return {
+        "ah": {"chg_pct": ah_chg, "error": None if ah_chg is not None else (ah_err or "no_ah_data")},
+        "pm": {"chg_pct": pm_chg, "error": None if pm_chg is not None else (pm_err or "no_pm_data")},
+    }
 
 
 def fetch_prev_open_close(sym, prev_trading_date):
@@ -638,6 +656,10 @@ def report_3(rows):
     # Darabszámos jelzések – MINDEN pozíció, küszöb nélkül
     lines.append("\n### Darabszámos jelzések (Open→Most – minden pozíció):")
     any_main = False
+    for r in rows:
+        pass  # NOTE: keep rows order
+
+    any_main = False
     for sym, qty, K, m in price_rows:
         if not qty:
             continue
@@ -646,8 +668,6 @@ def report_3(rows):
         if ch_o is None and ch_p is None:
             continue
 
-        # szentiment + indok
-        base_sent = None
         if ch_o is not None and abs(ch_o) >= float(K):
             base_sent = "pozitív" if ch_o > 0 else "negatív" if ch_o < 0 else "semleges"
             reason = (
@@ -667,9 +687,7 @@ def report_3(rows):
         if ch_p is not None:
             parts.append(f"PrevClose→Most {ch_p:+.2f}%")
 
-        lines.append(
-            f"- **{sym}** — " + " | ".join(parts) + " – " + reason
-        )
+        lines.append(f"- **{sym}** — " + " | ".join(parts) + " – " + reason)
         any_main = True
     if not any_main:
         lines.append("_nincs_")
@@ -684,7 +702,6 @@ def report_3(rows):
         ch_p = m["prev_to_now_pct"]
         if ch_o is None and ch_p is None:
             continue
-        # szűrés: ha egyik sem lépi át K-t, nem kerül be
         use_ch = ch_o if ch_o is not None else ch_p
         if use_ch is None or abs(use_ch) < float(K):
             continue
@@ -701,9 +718,7 @@ def report_3(rows):
         if ch_p is not None:
             parts.append(f"PrevClose→Most {ch_p:+.2f}%")
 
-        lines.append(
-            f"- **{sym}** — " + " | ".join(parts) + " – " + reason
-        )
+        lines.append(f"- **{sym}** — " + " | ".join(parts) + " – " + reason)
         any_wl = True
     if not any_wl:
         lines.append("_nincs_")
