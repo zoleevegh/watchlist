@@ -6,9 +6,9 @@ report_runner.py
 
 Egységes runner script az 1/2/3-as riportokhoz.
 
-#1: AH + PM (chart 2d/5m, includePrePost)
-#2: Tegnapi Open→Close (batch quote)
-#3: Ma Open→Most (batch quote, regularMarketOpen→regularMarketPrice)
+#1: AH + PM (chart 2d/5m, includePrePost) – árforrás: Yahoo chart (v8)
+#2: Tegnapi Open→Close (batch quote) – árforrás: Yahoo quote (v7)
+#3: Ma Open→Most (batch quote, regularMarketOpen→regularMarketPrice) – árforrás: Yahoo quote (v7)
 """
 
 from __future__ import annotations
@@ -141,6 +141,7 @@ def fetch_chart_2d_5m(ticker: str) -> dict:
 def extract_ah_pm_move(ticker: str) -> Tuple[PriceSnapshot, Optional[str]]:
     """
     #1 riporthoz: AH + PM sáv utolsó ára, previousClose alapján.
+    Árforrás: Yahoo Finance chart (v8)
     """
     try:
         data = fetch_chart_2d_5m(ticker)
@@ -216,6 +217,8 @@ def fetch_quotes_batch(
 
     Visszaad:
         { "AAPL": (prev_close, last, regular_open, error_reason_str_or_None), ... }
+
+    Árforrás: Yahoo Finance quote (v7)
     """
     results: Dict[str, Tuple[Optional[float], Optional[float], Optional[float], Optional[str]]] = {}
     if not tickers:
@@ -237,6 +240,7 @@ def fetch_quotes_batch(
             print(f"[WARN] fetch_quotes_batch network error for {symbols_str}: {e}", file=sys.stderr)
             continue
 
+        # 429-et itt csak jelöljük, nem dobjuk szét a scriptet
         if resp.status_code == 429:
             for t in batch:
                 results[t] = (None, None, None, "rate_limited")
@@ -301,6 +305,7 @@ def run_report_1(
         f"Vizsgált ablakok (CEST): AH {prev_day} 22:00 → {today_str} 02:00, "
         f"PM {today_str} 10:00 → 15:30\n"
     )
+    lines.append("_Árforrás: Yahoo Finance chart (v8, 2d/5m, includePrePost)_\n")
 
     filtered = [r for r in tickers if r.ticker != "PKN.WA"]
 
@@ -343,17 +348,19 @@ def run_report_1(
         ah_str = fmt_pct("AH", ah_pct)
         pm_str = fmt_pct("PM", pm_pct)
 
+        src_str = "árforrás: Yahoo chart"
+
         if row.is_position:
             if has_signal:
                 reason = "Érdemi AH/PM elmozdulás (≥K)."
             else:
                 reason = "Egyelőre nincs küszöb feletti AH/PM elmozdulás."
-            pos_lines.append(f"{row.ticker} — {ah_str} | {pm_str} — {reason}")
+            pos_lines.append(f"{row.ticker} — {ah_str} | {pm_str} — {reason} ({src_str})")
         else:
             if not has_signal:
                 continue
             reason = "Watchlisten is érdemi AH/PM elmozdulás (≥K)."
-            watch_lines.append(f"{row.ticker} — {ah_str} | {pm_str} — {reason}")
+            watch_lines.append(f"{row.ticker} — {ah_str} | {pm_str} — {reason} ({src_str})")
 
     if len(pos_lines) > 1:
         lines.append("\n".join(pos_lines) + "\n")
@@ -386,6 +393,7 @@ def run_report_2(
 ) -> str:
     lines: List[str] = []
     lines.append("#2 – Tegnapi nyitástól zárásig (Open→Close) – egyszerűsített\n")
+    lines.append("_Árforrás: Yahoo Finance quote (v7 – previousClose → last)_\n")
 
     filtered = [r for r in tickers if r.ticker != "PKN.WA"]
     if not filtered:
@@ -411,7 +419,8 @@ def run_report_2(
             continue
 
         sign = "+" if move >= 0 else ""
-        line = f"{row.ticker} — Open→Close (becsült): {sign}{move:.2f}%"
+        src_str = "árforrás: Yahoo quote"
+        line = f"{row.ticker} — Open→Close (becsült): {sign}{move:.2f}% ({src_str})"
 
         if row.is_position:
             pos_lines.append(line)
@@ -443,6 +452,7 @@ def run_report_3(
     lines.append(
         f"Vizsgált ablak (CEST): mai USA nyitás (15:30) → lekérdezés időpontja ({today_str})\n"
     )
+    lines.append("_Árforrás: Yahoo Finance quote (v7 – regularMarketOpen → regularMarketPrice)_\n")
 
     filtered = [r for r in tickers if r.ticker != "PKN.WA"]
     if not filtered:
@@ -483,6 +493,7 @@ def run_report_3(
             return f"Open→Most: {sign}{value:.2f}%"
 
         open_most_str = fmt_open_most(open_most)
+        src_base = "árforrás: Yahoo quote"
 
         if row.is_position:
             # MINDEN darabszámos pozíció
@@ -496,14 +507,26 @@ def run_report_3(
             else:
                 reason_str = "Mérsékelt intranapi mozgás, egyelőre nincs küszöb feletti elmozdulás."
 
-            pos_lines.append(f"{row.ticker} — {open_most_str} — {reason_str}")
+            # ha volt hiba, jelezzük a forrásnál is
+            if reason:
+                src_str = f"{src_base} (hiba: {reason})"
+            else:
+                src_str = src_base
+
+            pos_lines.append(f"{row.ticker} — {open_most_str} — {reason_str} ({src_str})")
         else:
             # Watchlist: csak jelzésnél (≥K)
             has_signal = open_most is not None and abs(open_most) >= row.k_threshold
             if not has_signal:
                 continue
             reason_str = "Watchlisten is érdemi intranapi mozgás (≥K) nyitáshoz képest."
-            watch_lines.append(f"{row.ticker} — {open_most_str} — {reason_str}")
+
+            if reason:
+                src_str = f"{src_base} (hiba: {reason})"
+            else:
+                src_str = src_base
+
+            watch_lines.append(f"{row.ticker} — {open_most_str} — {reason_str} ({src_str})")
 
     if len(pos_lines) > 1:
         lines.append("\n".join(pos_lines) + "\n")
