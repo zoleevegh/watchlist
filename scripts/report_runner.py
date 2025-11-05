@@ -295,16 +295,44 @@ def run_report_1(
 # ---------------------------------------------------------------------------
 
 def fetch_quote_summary(ticker: str) -> Tuple[Optional[float], Optional[float]]:
+    """
+    Egyszerű current quote + előző záró.
+
+    429 (Too Many Requests) esetén:
+    - nem dobunk kivételt,
+    - (None, None)-t adunk vissza,
+    - így a riportban az adott ticker 'n/a' lesz vagy kimarad,
+      de a teljes workflow nem hal el.
+    """
     url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={ticker}"
-    resp = requests.get(url, timeout=10)
-    resp.raise_for_status()
-    data = resp.json()
+
     try:
+        resp = requests.get(url, timeout=10)
+    except Exception as e:
+        # hálózati hiba: jelöljük hiányzó adatnak
+        print(f"[WARN] fetch_quote_summary network error for {ticker}: {e}", file=sys.stderr)
+        return None, None
+
+    # KÜLÖN KEZELJÜK A 429-ET
+    if resp.status_code == 429:
+        print(f"[WARN] rate limited (429) in fetch_quote_summary for {ticker}", file=sys.stderr)
+        # nincs adat, de nem állítjuk meg a scriptet
+        return None, None
+
+    try:
+        resp.raise_for_status()
+    except requests.exceptions.HTTPError as e:
+        print(f"[WARN] HTTP error in fetch_quote_summary for {ticker}: {e}", file=sys.stderr)
+        return None, None
+
+    try:
+        data = resp.json()
         q = data["quoteResponse"]["result"][0]
         prev_close = q.get("regularMarketPreviousClose")
         last = q.get("regularMarketPrice")
         return prev_close, last
-    except Exception:
+    except Exception as e:
+        print(f"[WARN] parse error in fetch_quote_summary for {ticker}: {e}", file=sys.stderr)
         return None, None
 
 
