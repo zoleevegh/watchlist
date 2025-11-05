@@ -208,9 +208,12 @@ def pct_change(base: Optional[float], new: Optional[float]) -> Optional[float]:
 # Quote batch helper (#2 és #3 riporthoz)
 # ---------------------------------------------------------------------------
 
+import time  # a file elején legyen importálva
+
+
 def fetch_quotes_batch(
     tickers: List[str],
-    batch_size: int = 50,
+    batch_size: int = 20,
 ) -> Dict[str, Tuple[Optional[float], Optional[float], Optional[float], Optional[str]]]:
     """
     Yahoo quote API batch-ben (#2 és #3 riporthoz).
@@ -219,6 +222,10 @@ def fetch_quotes_batch(
         { "AAPL": (prev_close, last, regular_open, error_reason_str_or_None), ... }
 
     Árforrás: Yahoo Finance quote (v7)
+
+    Rate limit kímélés:
+    - kisebb batch_size (20),
+    - batch-ek között 2 másodperc sleep.
     """
     results: Dict[str, Tuple[Optional[float], Optional[float], Optional[float], Optional[str]]] = {}
     if not tickers:
@@ -238,13 +245,16 @@ def fetch_quotes_batch(
             for t in batch:
                 results[t] = (None, None, None, f"network_error: {e}")
             print(f"[WARN] fetch_quotes_batch network error for {symbols_str}: {e}", file=sys.stderr)
+            # következő batch előtt is pihenjünk egy kicsit
+            time.sleep(2)
             continue
 
-        # 429-et itt csak jelöljük, nem dobjuk szét a scriptet
         if resp.status_code == 429:
             for t in batch:
                 results[t] = (None, None, None, "rate_limited")
             print(f"[WARN] fetch_quotes_batch rate limited (429) for {symbols_str}", file=sys.stderr)
+            # ha már rate limit, akkor várjunk kicsit többet
+            time.sleep(5)
             continue
 
         try:
@@ -253,6 +263,7 @@ def fetch_quotes_batch(
             for t in batch:
                 results[t] = (None, None, None, f"http_error: {e}")
             print(f"[WARN] fetch_quotes_batch HTTP error for {symbols_str}: {e}", file=sys.stderr)
+            time.sleep(2)
             continue
 
         try:
@@ -262,6 +273,7 @@ def fetch_quotes_batch(
             for t in batch:
                 results[t] = (None, None, None, f"parse_error: {e}")
             print(f"[WARN] fetch_quotes_batch parse error for {symbols_str}: {e}", file=sys.stderr)
+            time.sleep(2)
             continue
 
         seen_in_batch = set()
@@ -283,8 +295,10 @@ def fetch_quotes_batch(
                 if reason is None:
                     results[t] = (None, None, None, "no_quote_result")
 
-    return results
+        # MINDIG pihenjünk egy kicsit a batch-ek között
+        time.sleep(2)
 
+    return results
 
 # ---------------------------------------------------------------------------
 # 1-es riport: AH + PM
