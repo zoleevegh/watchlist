@@ -7,8 +7,8 @@ report_runner.py
 Egységes runner script az 1/2/3-as riportokhoz.
 
 #1: AH + PM (chart 2d/5m, includePrePost)
-#2: Tegnapi Open→Close (egyszerűsített, batch quote)
-#3: Ma Open→Most (chart 2d/5m, RTH intraday)
+#2: Tegnapi Open→Close (batch quote)
+#3: Ma Open→Most (batch quote, regularMarketOpen→regularMarketPrice)
 """
 
 from __future__ import annotations
@@ -128,16 +128,6 @@ class PriceSnapshot:
     pm_last: Optional[float]
 
 
-@dataclass
-class IntradaySnapshot:
-    """
-    3-as riporthoz: aznapi RTH open és 'mostani' ár + previousClose.
-    """
-    open: Optional[float]
-    last: Optional[float]
-    prev_close: Optional[float]
-
-
 def fetch_chart_2d_5m(ticker: str) -> dict:
     url = (
         f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
@@ -207,57 +197,6 @@ def extract_ah_pm_move(ticker: str) -> Tuple[PriceSnapshot, Optional[str]]:
         return PriceSnapshot(None, None, None), f"parse_error: {e}"
 
 
-def extract_open_most_intraday(ticker: str) -> Tuple[IntradaySnapshot, Optional[str]]:
-    """
-    #3 riporthoz: aznapi RTH Open→Most mozgás.
-
-    - 'open': első RTH gyertya (9:30 US Eastern)
-    - 'last': utolsó elérhető RTH gyertya az aktuális napra
-    - 'prev_close': previousClose a meta-ból (ha van)
-    """
-    try:
-        data = fetch_chart_2d_5m(ticker)
-    except Exception as e:
-        return IntradaySnapshot(None, None, None), f"fetch_error: {e}"
-
-    try:
-        result = data["chart"]["result"][0]
-        meta = result.get("meta", {})
-        timestamps = result.get("timestamp", [])
-        quotes = result.get("indicators", {}).get("quote", [{}])[0]
-        closes = quotes.get("close", [])
-
-        if not timestamps or not closes:
-            return IntradaySnapshot(None, None, None), "no_price_data"
-
-        prev_close = meta.get("previousClose")
-
-        from datetime import datetime as _dt
-        dt_list = [_dt.fromtimestamp(ts, tz=US_EASTERN) for ts in timestamps]
-
-        # Az aktuális (utolsó) gyertya napja US idő szerint
-        today_date = dt_list[-1].date()
-
-        # RTH: 9:30–16:00 US idő, az aktuális napon
-        rth_prices = []
-        for c, dt in zip(closes, dt_list):
-            if dt.date() != today_date:
-                continue
-            if (dt.hour > 9 or (dt.hour == 9 and dt.minute >= 30)) and dt.hour < 16:
-                rth_prices.append((dt, c))
-
-        if not rth_prices:
-            return IntradaySnapshot(None, None, prev_close), "no_rth_data"
-
-        rth_prices.sort(key=lambda x: x[0])
-        open_price = rth_prices[0][1]
-        last_price = rth_prices[-1][1]
-
-        return IntradaySnapshot(open_price, last_price, prev_close), None
-    except Exception as e:
-        return IntradaySnapshot(None, None, None), f"parse_error: {e}"
-
-
 def pct_change(base: Optional[float], new: Optional[float]) -> Optional[float]:
     if base is None or new is None or base == 0:
         return None
@@ -265,24 +204,25 @@ def pct_change(base: Optional[float], new: Optional[float]) -> Optional[float]:
 
 
 # ---------------------------------------------------------------------------
-# Quote batch helper (2-es riporthoz)
+# Quote batch helper (#2 és #3 riporthoz)
 # ---------------------------------------------------------------------------
 
 def fetch_quotes_batch(
     tickers: List[str],
     batch_size: int = 50,
-) -> Dict[str, Tuple[Optional[float], Optional[float], Optional[str]]]:
+) -> Dict[str, Tuple[Optional[float], Optional[float], Optional[float], Optional[str]]]:
     """
-    Yahoo quote API batch-ben (#2 riporthoz).
+    Yahoo quote API batch-ben (#2 és #3 riporthoz).
+
     Visszaad:
-        { "AAPL": (prev_close, last, error_reason_str_or_None), ... }
+        { "AAPL": (prev_close, last, regular_open, error_reason_str_or_None), ... }
     """
-    results: Dict[str, Tuple[Optional[float], Optional[float], Optional[str]]] = {}
+    results: Dict[str, Tuple[Optional[float], Optional[float], Optional[float], Optional[str]]] = {}
     if not tickers:
         return results
 
     for t in tickers:
-        results[t] = (None, None, None)
+        results[t] = (None, None, None, None)
 
     for i in range(0, len(tickers), batch_size):
         batch = tickers[i:i + batch_size]
@@ -293,13 +233,13 @@ def fetch_quotes_batch(
             resp = requests.get(url, timeout=10)
         except Exception as e:
             for t in batch:
-                results[t] = (None, None, f"network_error: {e}")
+                results[t] = (None, None, None, f"network_error: {e}")
             print(f"[WARN] fetch_quotes_batch network error for {symbols_str}: {e}", file=sys.stderr)
             continue
 
         if resp.status_code == 429:
             for t in batch:
-                results[t] = (None, None, "rate_limited")
+                results[t] = (None, None, None, "rate_limited")
             print(f"[WARN] fetch_quotes_batch rate limited (429) for {symbols_str}", file=sys.stderr)
             continue
 
@@ -307,7 +247,7 @@ def fetch_quotes_batch(
             resp.raise_for_status()
         except requests.exceptions.HTTPError as e:
             for t in batch:
-                results[t] = (None, None, f"http_error: {e}")
+                results[t] = (None, None, None, f"http_error: {e}")
             print(f"[WARN] fetch_quotes_batch HTTP error for {symbols_str}: {e}", file=sys.stderr)
             continue
 
@@ -316,7 +256,7 @@ def fetch_quotes_batch(
             qlist = data.get("quoteResponse", {}).get("result", []) or []
         except Exception as e:
             for t in batch:
-                results[t] = (None, None, f"parse_error: {e}")
+                results[t] = (None, None, None, f"parse_error: {e}")
             print(f"[WARN] fetch_quotes_batch parse error for {symbols_str}: {e}", file=sys.stderr)
             continue
 
@@ -325,16 +265,19 @@ def fetch_quotes_batch(
             sym = q.get("symbol")
             if not sym:
                 continue
+
             prev_close = q.get("regularMarketPreviousClose")
             last = q.get("regularMarketPrice")
-            results[sym] = (prev_close, last, None)
+            open_px = q.get("regularMarketOpen")
+
+            results[sym] = (prev_close, last, open_px, None)
             seen_in_batch.add(sym)
 
         for t in batch:
             if t not in seen_in_batch:
-                _, _, reason = results.get(t, (None, None, None))
+                _, _, _, reason = results.get(t, (None, None, None, None))
                 if reason is None:
-                    results[t] = (None, None, "no_quote_result")
+                    results[t] = (None, None, None, "no_quote_result")
 
     return results
 
@@ -435,7 +378,7 @@ def run_report_1(
 
 
 # ---------------------------------------------------------------------------
-# 2-es riport: Tegnapi Open→Close (batch-es, egyszerűsített)
+# 2-es riport: Tegnapi Open→Close (batch quote, egyszerűsített)
 # ---------------------------------------------------------------------------
 
 def run_report_2(
@@ -459,7 +402,7 @@ def run_report_2(
     watch_lines.append("Watchlist – abs(Open→Close) becsült mozgás (≥K)\n")
 
     for row in filtered:
-        prev_close, last, reason = quote_map.get(row.ticker, (None, None, None))
+        prev_close, last, open_px, reason = quote_map.get(row.ticker, (None, None, None, None))
         move = pct_change(prev_close, last)
 
         if move is None:
@@ -484,7 +427,7 @@ def run_report_2(
 
 
 # ---------------------------------------------------------------------------
-# 3-as riport: Ma Open→Most (chart-alapú, minden pozíció listázva)
+# 3-as riport: Ma nyitástól mostanáig (Open→Most, batch quote, minden pozíció)
 # ---------------------------------------------------------------------------
 
 def run_report_3(
@@ -506,36 +449,32 @@ def run_report_3(
         lines.append("Nincs feldolgozható ticker.\n")
         return "\n".join(lines)
 
-    # Lefedettség: aznapi RTH chart alapján
-    status_map: Dict[str, TickerStatus] = {}
-    intraday_map: Dict[str, IntradaySnapshot] = {}
+    ticker_list = [r.ticker for r in filtered]
+    quote_map = fetch_quotes_batch(ticker_list)
 
+    # Lefedettség a quote alapján
+    status_map: Dict[str, TickerStatus] = {}
     for row in filtered:
-        snap, reason = extract_open_most_intraday(row.ticker)
-        intraday_map[row.ticker] = snap
-        if reason is None:
+        prev_close, last, open_px, reason = quote_map.get(row.ticker, (None, None, None, None))
+        if reason is None and open_px is not None and last is not None:
             status_map[row.ticker] = TickerStatus(ok=True)
         else:
-            status_map[row.ticker] = TickerStatus(ok=False, reason=reason)
+            status_map[row.ticker] = TickerStatus(ok=False, reason=reason or "no_open_or_last")
 
     lines.append(build_coverage_block(status_map))
-    # Politika / FED / makró blokk – ugyanazzal a helperrel, mint az 1-esnél
     lines.append(build_macro_block_1(macro))
 
-    # Darabszámos – MINDEN pozíció listázása, magyarázattal
+    # Darabszámos – MINDEN pozíció listázása
     pos_lines: List[str] = []
     pos_lines.append("### Darabszámos tickerek – Ma nyitástól mostanáig (Open→Most)\n")
 
-    # Watchlist – csak ahol ≥K az Open→Most mozgás (hírlogika később)
+    # Watchlist – csak ahol ≥K az Open→Most
     watch_lines: List[str] = []
     watch_lines.append("### Watchlist – Open→Most mozgások (csak ha ≥K vagy anyagilag lényeges hír)\n")
 
     for row in filtered:
-        snap = intraday_map[row.ticker]
-        open_price = snap.open
-        last_price = snap.last
-
-        open_most = pct_change(open_price, last_price)
+        prev_close, last, open_px, reason = quote_map.get(row.ticker, (None, None, None, None))
+        open_most = pct_change(open_px, last)
 
         def fmt_open_most(value: Optional[float]) -> str:
             if value is None:
@@ -546,31 +485,30 @@ def run_report_3(
         open_most_str = fmt_open_most(open_most)
 
         if row.is_position:
-            # MINDEN darabszámos pozíciót listázunk
+            # MINDEN darabszámos pozíció
             if open_most is None:
-                reason = "Hiányzó intranapi adat (nincs értelmezhető Open→Most)."
+                if reason:
+                    reason_str = f"Hiányzó intranapi adat (oka: {reason})."
+                else:
+                    reason_str = "Hiányzó intranapi adat (nincs értelmezhető Open→Most)."
             elif abs(open_most) >= row.k_threshold:
-                reason = "Érdemi intranapi elmozdulás (≥K) nyitáshoz képest."
+                reason_str = "Érdemi intranapi elmozdulás (≥K) nyitáshoz képest."
             else:
-                reason = "Mérsékelt intranapi mozgás, egyelőre nincs küszöb feletti elmozdulás."
+                reason_str = "Mérsékelt intranapi mozgás, egyelőre nincs küszöb feletti elmozdulás."
 
-            pos_lines.append(f"{row.ticker} — {open_most_str} — {reason}")
+            pos_lines.append(f"{row.ticker} — {open_most_str} — {reason_str}")
         else:
-            # Watchlist: csak jelzésnél (≥K) kerül be.
+            # Watchlist: csak jelzésnél (≥K)
             has_signal = open_most is not None and abs(open_most) >= row.k_threshold
-            # TODO: ha lesz ticker-szintű híradat (anyagilag lényeges), akkor azt is be lehet tenni
             if not has_signal:
                 continue
-            reason = "Watchlisten is érdemi intranapi mozgás (≥K) nyitáshoz képest."
-            watch_lines.append(f"{row.ticker} — {open_most_str} — {reason}")
+            reason_str = "Watchlisten is érdemi intranapi mozgás (≥K) nyitáshoz képest."
+            watch_lines.append(f"{row.ticker} — {open_most_str} — {reason_str}")
 
     if len(pos_lines) > 1:
         lines.append("\n".join(pos_lines) + "\n")
     if len(watch_lines) > 1:
         lines.append("\n".join(watch_lines) + "\n")
-
-    # (Opcionális továbblépés: ide jöhetnének intraday hírek + katalizátorok is, ha lesz adatforrás)
-    # Egyelőre a 3-as riport technikai/intranapi fókuszú marad.
 
     return "\n".join(lines)
 
