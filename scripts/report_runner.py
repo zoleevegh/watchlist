@@ -478,15 +478,31 @@ def run_report_3(
 
     # Lefedettség a quote alapján
     status_map: Dict[str, TickerStatus] = {}
+    ok_count = 0
     for row in filtered:
         prev_close, last, open_px, reason = quote_map.get(row.ticker, (None, None, None, None))
         if reason is None and open_px is not None and last is not None:
             status_map[row.ticker] = TickerStatus(ok=True)
+            ok_count += 1
         else:
             status_map[row.ticker] = TickerStatus(ok=False, reason=reason or "no_open_or_last")
 
+    total = len(filtered)
     lines.append(build_coverage_block(status_map))
+
+    # HA GYAKORLATILAG MINDEN RATE_LIMITED → inkább rövid, őszinte üzenet
+    if ok_count == 0:
+        lines.append(
+            "\nA 3-as intranapi riport ma **nem értelmezhető**, mert a Yahoo Finance "
+            "quote API-ja minden tickerre `rate_limited` (429 Too Many Requests) státuszt adott. "
+            "Ilyenkor az Open→Most mozgásokra nincs megbízható adat ebből a forrásból.\n"
+        )
+        return "\n".join(lines)
+
+    # ha nem 0, akkor jöhet a „normál” folytatás (makró + darabszámos + watchlist)
     lines.append(build_macro_block_1(macro))
+    ...
+    # és itt mehet a már megírt darabszámos / watchlist rész
 
     # Darabszámos – MINDEN pozíció listázása
     pos_lines: List[str] = []
