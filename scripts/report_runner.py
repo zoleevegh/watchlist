@@ -190,6 +190,86 @@ def pct_change(base: Optional[float], new: Optional[float]) -> Optional[float]:
 
 
 # ---------------------------------------------------------------------------
+# Quote batch helper (2-es / 3-as riporthoz)
+# ---------------------------------------------------------------------------
+
+def fetch_quotes_batch(
+    tickers: List[str],
+    batch_size: int = 50,
+) -> Dict[str, Tuple[Optional[float], Optional[float], Optional[str]]]:
+    """
+    Yahoo quote API batch-ben.
+    Visszaad:
+        { "AAPL": (prev_close, last, error_reason_str_or_None), ... }
+
+    - batch_size: egyszerre hány ticker menjen egy kérésben
+    - 429 (Too Many Requests) esetén a batch összes tagjára 'rate_limited' reason-t ad
+    """
+
+    results: Dict[str, Tuple[Optional[float], Optional[float], Optional[str]]] = {}
+    if not tickers:
+        return results
+
+    # előre inicializálunk minden tikert "nincs adat" állapotra
+    for t in tickers:
+        results[t] = (None, None, None)
+
+    for i in range(0, len(tickers), batch_size):
+        batch = tickers[i:i + batch_size]
+        symbols_str = ",".join(batch)
+        url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={symbols_str}"
+
+        try:
+            resp = requests.get(url, timeout=10)
+        except Exception as e:
+            for t in batch:
+                results[t] = (None, None, f"network_error: {e}")
+            print(f"[WARN] fetch_quotes_batch network error for {symbols_str}: {e}", file=sys.stderr)
+            continue
+
+        if resp.status_code == 429:
+            for t in batch:
+                results[t] = (None, None, "rate_limited")
+            print(f"[WARN] fetch_quotes_batch rate limited (429) for {symbols_str}", file=sys.stderr)
+            continue
+
+        try:
+            resp.raise_for_status()
+        except requests.exceptions.HTTPError as e:
+            for t in batch:
+                results[t] = (None, None, f"http_error: {e}")
+            print(f"[WARN] fetch_quotes_batch HTTP error for {symbols_str}: {e}", file=sys.stderr)
+            continue
+
+        try:
+            data = resp.json()
+            qlist = data.get("quoteResponse", {}).get("result", []) or []
+        except Exception as e:
+            for t in batch:
+                results[t] = (None, None, f"parse_error: {e}")
+            print(f"[WARN] fetch_quotes_batch parse error for {symbols_str}: {e}", file=sys.stderr)
+            continue
+
+        seen_in_batch = set()
+        for q in qlist:
+            sym = q.get("symbol")
+            if not sym:
+                continue
+            prev_close = q.get("regularMarketPreviousClose")
+            last = q.get("regularMarketPrice")
+            results[sym] = (prev_close, last, None)
+            seen_in_batch.add(sym)
+
+        for t in batch:
+            if t not in seen_in_batch:
+                _, _, reason = results.get(t, (None, None, None))
+                if reason is None:
+                    results[t] = (None, None, "no_quote_result")
+
+    return results
+
+
+# ---------------------------------------------------------------------------
 # 1-es riport: AH + PM
 # ---------------------------------------------------------------------------
 
@@ -223,13 +303,9 @@ def run_report_1(
         else:
             status_map[row.ticker] = TickerStatus(ok=False, reason=reason)
 
-    # Lefedettség blokk (oka: ...)
     lines.append(build_coverage_block(status_map))
-
-    # Politika / FED / makró blokk
     lines.append(build_macro_block_1(macro))
 
-    # Darabszámos / watchlist AH/PM mozgások
     pos_lines: List[str] = []
     pos_lines.append("### Darabszámos tickerek – After-hours & Premarket mozgások\n")
 
@@ -272,7 +348,7 @@ def run_report_1(
     if len(watch_lines) > 1:
         lines.append("\n".join(watch_lines) + "\n")
 
-    # HÍREK – jelenleg még üres lista, amit később Yahoo + extra forrásból töltesz
+    # Hírek – egyelőre üres listákkal (később etethető Yahoo + extra forrásból)
     yahoo_news: List[NewsItem] = []
     extra_news: List[NewsItem] = []
     all_news = merge_news_sources(yahoo_news, extra_news)
@@ -281,7 +357,6 @@ def run_report_1(
     if news_block:
         lines.append(news_block)
 
-    # KÖZELI KATALIZÁTOROK – később tudod feltölteni earnings/guide adatokkal
     catalysts: List[UpcomingCatalyst] = []
     catalyst_block = build_catalyst_block_1(catalysts)
     if catalyst_block:
@@ -291,58 +366,26 @@ def run_report_1(
 
 
 # ---------------------------------------------------------------------------
-# 2-es riport: Tegnapi Open→Close (egyszerűsített)
+# 2-es riport: Tegnapi Open→Close (batch-es)
 # ---------------------------------------------------------------------------
-
-def fetch_quote_summary(ticker: str) -> Tuple[Optional[float], Optional[float]]:
-    """
-    Egyszerű current quote + előző záró.
-
-    429 (Too Many Requests) esetén:
-    - nem dobunk kivételt,
-    - (None, None)-t adunk vissza,
-    - így a riportban az adott ticker 'n/a' lesz vagy kimarad,
-      de a teljes workflow nem hal el.
-    """
-    url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={ticker}"
-
-    try:
-        resp = requests.get(url, timeout=10)
-    except Exception as e:
-        # hálózati hiba: jelöljük hiányzó adatnak
-        print(f"[WARN] fetch_quote_summary network error for {ticker}: {e}", file=sys.stderr)
-        return None, None
-
-    # KÜLÖN KEZELJÜK A 429-ET
-    if resp.status_code == 429:
-        print(f"[WARN] rate limited (429) in fetch_quote_summary for {ticker}", file=sys.stderr)
-        # nincs adat, de nem állítjuk meg a scriptet
-        return None, None
-
-    try:
-        resp.raise_for_status()
-    except requests.exceptions.HTTPError as e:
-        print(f"[WARN] HTTP error in fetch_quote_summary for {ticker}: {e}", file=sys.stderr)
-        return None, None
-
-    try:
-        data = resp.json()
-        q = data["quoteResponse"]["result"][0]
-        prev_close = q.get("regularMarketPreviousClose")
-        last = q.get("regularMarketPrice")
-        return prev_close, last
-    except Exception as e:
-        print(f"[WARN] parse error in fetch_quote_summary for {ticker}: {e}", file=sys.stderr)
-        return None, None
-
 
 def run_report_2(
     tickers: List[TickerRow],
 ) -> str:
+    """
+    #2 riport – Tegnapi Open→Close (egyszerűsített),
+    batch-es Yahoo quote-hívással.
+    """
     lines: List[str] = []
     lines.append("#2 – Tegnapi nyitástól zárásig (Open→Close) – egyszerűsített\n")
 
     filtered = [r for r in tickers if r.ticker != "PKN.WA"]
+    if not filtered:
+        lines.append("Nincs feldolgozható ticker.\n")
+        return "\n".join(lines)
+
+    ticker_list = [r.ticker for r in filtered]
+    quote_map = fetch_quotes_batch(ticker_list)
 
     pos_lines: List[str] = []
     pos_lines.append("Darabszámos tickerek – abs(Open→Close) becsült mozgás (≥K)\n")
@@ -351,9 +394,12 @@ def run_report_2(
     watch_lines.append("Watchlist – abs(Open→Close) becsült mozgás (≥K)\n")
 
     for row in filtered:
-        prev_close, last = fetch_quote_summary(row.ticker)
+        prev_close, last, reason = quote_map.get(row.ticker, (None, None, None))
         move = pct_change(prev_close, last)
-        if move is None or abs(move) < row.k_threshold:
+
+        if move is None:
+            continue
+        if abs(move) < row.k_threshold:
             continue
 
         sign = "+" if move >= 0 else ""
@@ -373,16 +419,27 @@ def run_report_2(
 
 
 # ---------------------------------------------------------------------------
-# 3-as riport: Ma Open→Most (egyszerűsített)
+# 3-as riport: Ma Open→Most (batch-es)
 # ---------------------------------------------------------------------------
 
 def run_report_3(
     tickers: List[TickerRow],
 ) -> str:
+    """
+    #3 riport – Ma nyitástól mostanáig (Open→Most).
+    Batch-es Yahoo quote-hívással, hogy csökkentsük a 429-es rate limitet.
+    Egyszerűsített: prev_close → last alapján becsült Open→Most.
+    """
     lines: List[str] = []
     lines.append("#3 – Ma nyitástól mostanáig (Open→Most) – egyszerűsített\n")
 
     filtered = [r for r in tickers if r.ticker != "PKN.WA"]
+    if not filtered:
+        lines.append("Nincs feldolgozható ticker.\n")
+        return "\n".join(lines)
+
+    ticker_list = [r.ticker for r in filtered]
+    quote_map = fetch_quotes_batch(ticker_list)
 
     pos_lines: List[str] = []
     pos_lines.append("Darabszámos tickerek – Open→Most becsült mozgás\n")
@@ -391,7 +448,7 @@ def run_report_3(
     watch_lines.append("Watchlist – Open→Most becsült mozgás (csak ha ≥K)\n")
 
     for row in filtered:
-        prev_close, last = fetch_quote_summary(row.ticker)
+        prev_close, last, reason = quote_map.get(row.ticker, (None, None, None))
         move = pct_change(prev_close, last)
 
         sign = "+" if (move is not None and move >= 0) else ""
