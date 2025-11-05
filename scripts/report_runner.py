@@ -14,7 +14,7 @@ import csv
 import os
 import sys
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
 import requests
@@ -199,6 +199,17 @@ def run_report_1(
 ) -> str:
     lines: List[str] = []
 
+    # Fejléc + vizsgált ablakok (CET/CEST)
+    now_local = datetime.now(BUDAPEST)
+    today_str = now_local.strftime("%Y-%m-%d")
+    prev_day = (now_local - timedelta(days=1)).strftime("%Y-%m-%d")
+
+    lines.append("## #1 – After-hours (22:00–02:00) + Premarket (10:00–15:30) — CEST\n")
+    lines.append(
+        f"Vizsgált ablakok (CEST): AH {prev_day} 22:00 → {today_str} 02:00, "
+        f"PM {today_str} 10:00 → 15:30\n"
+    )
+
     filtered = [r for r in tickers if r.ticker != "PKN.WA"]
 
     status_map: Dict[str, TickerStatus] = {}
@@ -212,17 +223,18 @@ def run_report_1(
         else:
             status_map[row.ticker] = TickerStatus(ok=False, reason=reason)
 
+    # Lefedettség blokk (oka: ...)
     lines.append(build_coverage_block(status_map))
 
-    macro_block = build_macro_block_1(macro)
-    if macro_block:
-        lines.append(macro_block)
+    # Politika / FED / makró blokk
+    lines.append(build_macro_block_1(macro))
 
+    # Darabszámos / watchlist AH/PM mozgások
     pos_lines: List[str] = []
-    pos_lines.append("Darabszámos tickerek – After-hours & Premarket mozgások\n")
+    pos_lines.append("### Darabszámos tickerek – After-hours & Premarket mozgások\n")
 
     watch_lines: List[str] = []
-    watch_lines.append("Watchlist – After-hours & Premarket mozgások (csak ha ≥K vagy van hír)\n")
+    watch_lines.append("### Watchlist – After-hours & Premarket mozgások (csak ha ≥K vagy van hír)\n")
 
     for row in filtered:
         snap = price_map[row.ticker]
@@ -260,11 +272,16 @@ def run_report_1(
     if len(watch_lines) > 1:
         lines.append("\n".join(watch_lines) + "\n")
 
-    all_news: List[NewsItem] = []
+    # HÍREK – jelenleg még üres lista, amit később Yahoo + extra forrásból töltesz
+    yahoo_news: List[NewsItem] = []
+    extra_news: List[NewsItem] = []
+    all_news = merge_news_sources(yahoo_news, extra_news)
+
     news_block = build_news_block_1(all_news)
     if news_block:
         lines.append(news_block)
 
+    # KÖZELI KATALIZÁTOROK – később tudod feltölteni earnings/guide adatokkal
     catalysts: List[UpcomingCatalyst] = []
     catalyst_block = build_catalyst_block_1(catalysts)
     if catalyst_block:
