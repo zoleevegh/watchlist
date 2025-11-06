@@ -501,9 +501,7 @@ def run_report_3(
 
     # ha nem 0, akkor jöhet a „normál” folytatás (makró + darabszámos + watchlist)
     lines.append(build_macro_block_1(macro))
-    ...
-    # és itt mehet a már megírt darabszámos / watchlist rész
-
+    
     # Darabszámos – MINDEN pozíció listázása
     pos_lines: List[str] = []
     pos_lines.append("### Darabszámos tickerek – Ma nyitástól mostanáig (Open→Most)\n")
