@@ -89,7 +89,14 @@ jobs:
           if (-not (Test-Path "scripts\report_runner.py")) {
             Write-Error "scripts\report_runner.py hiányzik a repóban"; exit 1
           }
-          python -X utf8 "scripts\report_runner.py" --report $report --csv "$csv" --summary "$env:GITHUB_STEP_SUMMARY" --macro $macro
+
+          # Mentés mind gisthez, mind a GitHub UI-hoz
+          $summaryPath = "reports\summary_report_${report}.md"
+          python -X utf8 "scripts\report_runner.py" --report $report --csv "$csv" --summary "$summaryPath" --macro $macro
+
+          if (Test-Path $summaryPath) {
+            Get-Content $summaryPath | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8
+          }
 
       - name: Check Gist auth
         if: always()
