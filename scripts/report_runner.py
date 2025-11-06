@@ -4,11 +4,15 @@
 report_runner.py
 -----------------
 
-Egységes runner script az 1/2/3-as riportokhoz.
+ÁTMENETI VERZIÓ – YAHOO FINANCE IDEIGLENESEN KIKAPCSOLVA
 
-#1: AH + PM (chart 2d/5m, includePrePost) – árforrás: Yahoo chart (v8)
-#2: Tegnapi Open→Close (batch quote) – árforrás: Yahoo quote (v7)
-#3: Ma Open→Most (batch quote, regularMarketOpen→regularMarketPrice) – árforrás: Yahoo quote (v7)
+- A Yahoo Finance (chart + quote) hívások most NEM futnak, hogy ne üssük tovább a rate limitet.
+- #1 és #3 riport: csak tájékoztató szöveget írnak ki, érdemi ármozgás-számítás nélkül.
+- #2 riport: Stooq napi adatokból (EOD) számolja a tegnapi Open→Close becsült változását.
+
+HA KÉSŐBB ÚJRA AKAROD HASZNÁLNI A YAHOO ALAPÚ LEKÉRDEZÉST:
+- ezt a fájlt tedd félre (pl. report_runner_yahoo_off.py),
+- és állítsd vissza a korábbi, Yahoo-t használó report_runner.py-t.
 """
 
 from __future__ import annotations
@@ -27,8 +31,8 @@ import requests
 sys.path.append(os.path.dirname(__file__))
 
 from report_1_helpers import (
-    TickerStatus,
-    build_coverage_block,
+    # TickerStatus,            # YAHOO-OFF módban nem használjuk
+    # build_coverage_block,    # csak Yahoo-s lefedettséghez kellene
     build_macro_block_1,
     NewsItem,
     merge_news_sources,
@@ -43,7 +47,6 @@ except ImportError:  # Python <3.9 fallback
     from backports.zoneinfo import ZoneInfo  # type: ignore
 
 BUDAPEST = ZoneInfo("Europe/Budapest")
-US_EASTERN = ZoneInfo("America/New_York")
 
 
 # ---------------------------------------------------------------------------
@@ -118,85 +121,8 @@ def load_tickers_from_csv(path: str, default_k: float = 3.0) -> List[TickerRow]:
 
 
 # ---------------------------------------------------------------------------
-# Yahoo Finance chart / quote helper-ek
+# Közös helper – százalékszámítás
 # ---------------------------------------------------------------------------
-
-@dataclass
-class PriceSnapshot:
-    prev_close: Optional[float]
-    ah_last: Optional[float]
-    pm_last: Optional[float]
-
-
-def fetch_chart_2d_5m(ticker: str) -> dict:
-    url = (
-        f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
-        "?range=2d&interval=5m&includePrePost=true"
-    )
-    resp = requests.get(url, timeout=10)
-    resp.raise_for_status()
-    return resp.json()
-
-
-def extract_ah_pm_move(ticker: str) -> Tuple[PriceSnapshot, Optional[str]]:
-    """
-    #1 riporthoz: AH + PM sáv utolsó ára, previousClose alapján.
-    Árforrás: Yahoo Finance chart (v8)
-    """
-    try:
-        data = fetch_chart_2d_5m(ticker)
-    except Exception as e:
-        return PriceSnapshot(None, None, None), f"fetch_error: {e}"
-
-    try:
-        result = data["chart"]["result"][0]
-        meta = result.get("meta", {})
-        timestamps = result.get("timestamp", [])
-        quotes = result.get("indicators", {}).get("quote", [{}])[0]
-        closes = quotes.get("close", [])
-
-        if not timestamps or not closes:
-            return PriceSnapshot(None, None, None), "no_price_data"
-
-        prev_close = meta.get("previousClose")
-
-        from datetime import datetime as _dt
-        dt_list = [_dt.fromtimestamp(ts, tz=US_EASTERN) for ts in timestamps]
-
-        # fallback prev_close, ha meta-ban nincs
-        if prev_close is None:
-            prev_rth_closes = [
-                c
-                for c, dt in zip(closes, dt_list)
-                if dt.hour >= 9 and dt.hour <= 16
-            ]
-            prev_close = prev_rth_closes[-1] if prev_rth_closes else None
-
-        # AH: 16:00–20:00 US idő
-        ah_prices = [
-            c
-            for c, dt in zip(closes, dt_list)
-            if dt.hour >= 16 and dt.hour < 20
-        ]
-        ah_last = ah_prices[-1] if ah_prices else None
-
-        # PM: ma 4:00–9:30 US idő
-        today_date = dt_list[-1].date()
-        pm_prices = [
-            c
-            for c, dt in zip(closes, dt_list)
-            if dt.date() == today_date
-            and (
-                dt.hour >= 4
-                and (dt.hour < 9 or (dt.hour == 9 and dt.minute <= 30))
-            )
-        ]
-        pm_last = pm_prices[-1] if pm_prices else None
-
-        return PriceSnapshot(prev_close, ah_last, pm_last), None
-    except Exception as e:
-        return PriceSnapshot(None, None, None), f"parse_error: {e}"
-
 
 def pct_change(base: Optional[float], new: Optional[float]) -> Optional[float]:
     if base is None or new is None or base == 0:
@@ -205,109 +131,96 @@ def pct_change(base: Optional[float], new: Optional[float]) -> Optional[float]:
 
 
 # ---------------------------------------------------------------------------
-# Quote batch helper (#2 és #3 riporthoz)
+# STOOQ helper – csak #2 riporthoz (tegnapi Open→Close)
 # ---------------------------------------------------------------------------
 
-import time  # a file elején legyen importálva
+@dataclass
+class DailyBar:
+    date: str
+    open: Optional[float]
+    close: Optional[float]
 
 
-def fetch_quotes_batch(
-    tickers: List[str],
-    batch_size: int = 20,
-) -> Dict[str, Tuple[Optional[float], Optional[float], Optional[float], Optional[str]]]:
+def to_stooq_symbol(ticker: str) -> str:
     """
-    Yahoo quote API batch-ben (#2 és #3 riporthoz).
+    Egyszerű ticker→Stooq szimbólum konverzió.
 
-    Visszaad:
-        { "AAPL": (prev_close, last, regular_open, error_reason_str_or_None), ... }
+    - US tickereknél (nincs pont a névben): AAPL -> aapl.us, NVDA -> nvda.us
+    - Ha már van benne pont (pl. PKN.WA), azt változatlanul hagyjuk (lowercase):
+      pkn.wa, baba.sw stb.
 
-    Árforrás: Yahoo Finance quote (v7)
-
-    Rate limit kímélés:
-    - kisebb batch_size (20),
-    - batch-ek között 2 másodperc sleep.
+    Ez nem lesz tökéletes minden esetben, de a legtöbb nagy US névre működni fog.
     """
-    results: Dict[str, Tuple[Optional[float], Optional[float], Optional[float], Optional[str]]] = {}
-    if not tickers:
-        return results
+    t = ticker.strip().lower()
+    if "." in t:
+        return t
+    return f"{t}.us"
 
-    for t in tickers:
-        results[t] = (None, None, None, None)
 
-    for i in range(0, len(tickers), batch_size):
-        batch = tickers[i:i + batch_size]
-        symbols_str = ",".join(batch)
-        url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={symbols_str}"
+def fetch_prev_day_oc_stooq(ticker: str) -> Tuple[Optional[float], Optional[float], Optional[str]]:
+    """
+    Stooq napi adatokból (https://stooq.com/q/d/l/?s=...&i=d) visszaadja
+    az ELŐZŐ kereskedési nap Open és Close értékét.
 
-        try:
-            resp = requests.get(url, timeout=10)
-        except Exception as e:
-            for t in batch:
-                results[t] = (None, None, None, f"network_error: {e}")
-            print(f"[WARN] fetch_quotes_batch network error for {symbols_str}: {e}", file=sys.stderr)
-            # következő batch előtt is pihenjünk egy kicsit
-            time.sleep(2)
-            continue
+    Visszatérés:
+        (open_prev, close_prev, error_reason_or_None)
+    """
+    symbol = to_stooq_symbol(ticker)
+    url = f"https://stooq.com/q/d/l/?s={symbol}&i=d"
 
-        if resp.status_code == 429:
-            for t in batch:
-                results[t] = (None, None, None, "rate_limited")
-            print(f"[WARN] fetch_quotes_batch rate limited (429) for {symbols_str}", file=sys.stderr)
-            # ha már rate limit, akkor várjunk kicsit többet
-            time.sleep(5)
-            continue
+    try:
+        resp = requests.get(url, timeout=10)
+    except Exception as e:
+        return None, None, f"stooq_network_error: {e}"
 
-        try:
-            resp.raise_for_status()
-        except requests.exceptions.HTTPError as e:
-            for t in batch:
-                results[t] = (None, None, None, f"http_error: {e}")
-            print(f"[WARN] fetch_quotes_batch HTTP error for {symbols_str}: {e}", file=sys.stderr)
-            time.sleep(2)
-            continue
+    if resp.status_code != 200:
+        return None, None, f"stooq_http_error: {resp.status_code}"
 
-        try:
-            data = resp.json()
-            qlist = data.get("quoteResponse", {}).get("result", []) or []
-        except Exception as e:
-            for t in batch:
-                results[t] = (None, None, None, f"parse_error: {e}")
-            print(f"[WARN] fetch_quotes_batch parse error for {symbols_str}: {e}", file=sys.stderr)
-            time.sleep(2)
-            continue
+    text = resp.text.strip()
+    lines = text.splitlines()
+    if len(lines) < 2:
+        return None, None, "stooq_no_data"
 
-        seen_in_batch = set()
-        for q in qlist:
-            sym = q.get("symbol")
-            if not sym:
-                continue
+    # első sor header: Date,Open,High,Low,Close,Volume
+    data_rows = lines[1:]
 
-            prev_close = q.get("regularMarketPreviousClose")
-            last = q.get("regularMarketPrice")
-            open_px = q.get("regularMarketOpen")
+    # ha csak 1 napi adat van, akkor azt használjuk "tegnapként"
+    if len(data_rows) == 1:
+        row = data_rows[0].split(",")
+        if len(row) < 5:
+            return None, None, "stooq_row_parse_error(single)"
+        o = _parse_float(row[1])
+        c = _parse_float(row[4])
+        return o, c, None
 
-            results[sym] = (prev_close, last, open_px, None)
-            seen_in_batch.add(sym)
+    # különben az utolsó előtti sor az előző nap
+    prev_row = data_rows[-2].split(",")
+    if len(prev_row) < 5:
+        return None, None, "stooq_row_parse_error(prev)"
 
-        for t in batch:
-            if t not in seen_in_batch:
-                _, _, _, reason = results.get(t, (None, None, None, None))
-                if reason is None:
-                    results[t] = (None, None, None, "no_quote_result")
+    o = _parse_float(prev_row[1])
+    c = _parse_float(prev_row[4])
+    return o, c, None
 
-        # MINDIG pihenjünk egy kicsit a batch-ek között
-        time.sleep(2)
-
-    return results
 
 # ---------------------------------------------------------------------------
-# 1-es riport: AH + PM
+# 1-es riport: AH + PM – YAHOO OFF MÓDBAN CSAK TÁJÉKOZTATÓ
 # ---------------------------------------------------------------------------
 
 def run_report_1(
     tickers: List[TickerRow],
     macro: Optional[str],
 ) -> str:
+    """
+    FIGYELEM: YAHOO-OFF VERZIÓ
+
+    Ebben az átmeneti verzióban az 1-es riport NEM húz le AH/PM adatot Yahoo-ról.
+    Csak egy rövid szöveg jelzi, hogy a Yahoo-t ideiglenesen kikapcsoltuk
+    a rate limit miatt.
+
+    HA KÉSŐBB ÚJRA AKAROD HASZNÁLNI A YAHOO-ALAPÚ AH/PM LEKÉRDEZÉST:
+    - cseréld le ezt a függvényt a korábbi, Yahoo chartot használó run_report_1-re.
+    """
     lines: List[str] = []
 
     now_local = datetime.now(BUDAPEST)
@@ -319,69 +232,19 @@ def run_report_1(
         f"Vizsgált ablakok (CEST): AH {prev_day} 22:00 → {today_str} 02:00, "
         f"PM {today_str} 10:00 → 15:30\n"
     )
-    lines.append("_Árforrás: Yahoo Finance chart (v8, 2d/5m, includePrePost)_\n")
+    lines.append(
+        "\nFIGYELEM: A Yahoo Finance API jelenleg rate-limited / letiltott ebben a környezetben, "
+        "ezért az AH/PM ármozgásokat most nem számolom ki.\n"
+        "Amint újra elérhető lesz a Yahoo (429 nélkül), érdemes visszaállítani a korábbi, "
+        "Yahoo chart (v8) alapú run_report_1 implementációt.\n"
+    )
 
-    filtered = [r for r in tickers if r.ticker != "PKN.WA"]
+    # Makróblokk opcionálisan, hogy legyen keret (ha adtál --macro-t)
+    macro_block = build_macro_block_1(macro)
+    if macro_block:
+        lines.append(macro_block)
 
-    status_map: Dict[str, TickerStatus] = {}
-    price_map: Dict[str, PriceSnapshot] = {}
-
-    for row in filtered:
-        snap, reason = extract_ah_pm_move(row.ticker)
-        price_map[row.ticker] = snap
-        if reason is None:
-            status_map[row.ticker] = TickerStatus(ok=True)
-        else:
-            status_map[row.ticker] = TickerStatus(ok=False, reason=reason)
-
-    lines.append(build_coverage_block(status_map))
-    lines.append(build_macro_block_1(macro))
-
-    pos_lines: List[str] = []
-    pos_lines.append("### Darabszámos tickerek – After-hours & Premarket mozgások\n")
-
-    watch_lines: List[str] = []
-    watch_lines.append("### Watchlist – After-hours & Premarket mozgások (csak ha ≥K vagy van hír)\n")
-
-    for row in filtered:
-        snap = price_map[row.ticker]
-        ah_pct = pct_change(snap.prev_close, snap.ah_last)
-        pm_pct = pct_change(snap.prev_close, snap.pm_last)
-
-        def fmt_pct(label: str, value: Optional[float]) -> str:
-            if value is None:
-                return f"{label}: n/a"
-            sign = "+" if value >= 0 else ""
-            return f"{label} {sign}{value:.2f}%"
-
-        has_signal = (
-            (ah_pct is not None and abs(ah_pct) >= row.k_threshold) or
-            (pm_pct is not None and abs(pm_pct) >= row.k_threshold)
-        )
-
-        ah_str = fmt_pct("AH", ah_pct)
-        pm_str = fmt_pct("PM", pm_pct)
-
-        src_str = "árforrás: Yahoo chart"
-
-        if row.is_position:
-            if has_signal:
-                reason = "Érdemi AH/PM elmozdulás (≥K)."
-            else:
-                reason = "Egyelőre nincs küszöb feletti AH/PM elmozdulás."
-            pos_lines.append(f"{row.ticker} — {ah_str} | {pm_str} — {reason} ({src_str})")
-        else:
-            if not has_signal:
-                continue
-            reason = "Watchlisten is érdemi AH/PM elmozdulás (≥K)."
-            watch_lines.append(f"{row.ticker} — {ah_str} | {pm_str} — {reason} ({src_str})")
-
-    if len(pos_lines) > 1:
-        lines.append("\n".join(pos_lines) + "\n")
-    if len(watch_lines) > 1:
-        lines.append("\n".join(watch_lines) + "\n")
-
-    # Hírek – egyelőre üresen (később Yahoo + extra forrás)
+    # Hírek / katalizátorok – ha van más forrás, a helperen keresztül később beépíthető
     yahoo_news: List[NewsItem] = []
     extra_news: List[NewsItem] = []
     all_news = merge_news_sources(yahoo_news, extra_news)
@@ -399,23 +262,31 @@ def run_report_1(
 
 
 # ---------------------------------------------------------------------------
-# 2-es riport: Tegnapi Open→Close (batch quote, egyszerűsített)
+# 2-es riport: Tegnapi Open→Close – STOOQ ALAPÚ
 # ---------------------------------------------------------------------------
 
 def run_report_2(
     tickers: List[TickerRow],
 ) -> str:
-    lines: List[str] = []
-    lines.append("#2 – Tegnapi nyitástól zárásig (Open→Close) – egyszerűsített\n")
-    lines.append("_Árforrás: Yahoo Finance quote (v7 – previousClose → last)_\n")
+    """
+    #2 – Tegnapi nyitástól zárásig (Open→Close) – Stooq napi adatokkal.
 
+    Árforrás:
+    - Stooq (https://stooq.com) napi OHLC,
+    - előző kereskedési nap Open→Close alapján számolom a becsült %-ot.
+
+    Ez nem perces pontosságú intraday, hanem EOD jellegű adat (ami az 1–2 napos
+    késleltetés szempontjából vállalható).
+    """
+    lines: List[str] = []
+    lines.append("#2 – Tegnapi nyitástól zárásig (Open→Close) – Stooq alapú\n")
+    lines.append("_Árforrás: Stooq napi adatok (tegnapi Open→Close) – https://stooq.com_\n")
+
+    # PKN.WA továbbra is ki van zárva
     filtered = [r for r in tickers if r.ticker != "PKN.WA"]
     if not filtered:
         lines.append("Nincs feldolgozható ticker.\n")
         return "\n".join(lines)
-
-    ticker_list = [r.ticker for r in filtered]
-    quote_map = fetch_quotes_batch(ticker_list)
 
     pos_lines: List[str] = []
     pos_lines.append("Darabszámos tickerek – abs(Open→Close) becsült mozgás (≥K)\n")
@@ -423,18 +294,27 @@ def run_report_2(
     watch_lines: List[str] = []
     watch_lines.append("Watchlist – abs(Open→Close) becsült mozgás (≥K)\n")
 
-    for row in filtered:
-        prev_close, last, open_px, reason = quote_map.get(row.ticker, (None, None, None, None))
-        move = pct_change(prev_close, last)
+    error_lines: List[str] = []
+    error_lines.append("Technikai megjegyzések (Stooq hibák / hiányzó adatok):\n")
 
-        if move is None:
+    for row in filtered:
+        open_prev, close_prev, err = fetch_prev_day_oc_stooq(row.ticker)
+        if err is not None:
+            error_lines.append(f"- {row.ticker}: {err}")
             continue
+
+        move = pct_change(open_prev, close_prev)
+        if move is None:
+            error_lines.append(f"- {row.ticker}: nincs értelmezhető Open/Close adat Stooq-ból")
+            continue
+
         if abs(move) < row.k_threshold:
             continue
 
         sign = "+" if move >= 0 else ""
-        src_str = "árforrás: Yahoo quote"
-        line = f"{row.ticker} — Open→Close (becsült): {sign}{move:.2f}% ({src_str})"
+        src_str = "árforrás: Stooq (tegnapi Open→Close)"
+
+        line = f"{row.ticker} — Open→Close (Stooq, tegnapi nap): {sign}{move:.2f}% ({src_str})"
 
         if row.is_position:
             pos_lines.append(line)
@@ -446,17 +326,34 @@ def run_report_2(
     if len(watch_lines) > 1:
         lines.append("\n".join(watch_lines) + "\n")
 
+    # Ha volt bármilyen ticker, amin elhasalt a Stooq, azt a végén jelezzük
+    if len(error_lines) > 1:
+        lines.append("\n".join(error_lines) + "\n")
+
     return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
-# 3-as riport: Ma nyitástól mostanáig (Open→Most, batch quote, minden pozíció)
+# 3-as riport: Ma Open→Most – YAHOO OFF MÓDBAN CSAK TÁJÉKOZTATÓ
 # ---------------------------------------------------------------------------
 
 def run_report_3(
     tickers: List[TickerRow],
     macro: Optional[str],
 ) -> str:
+    """
+    FIGYELEM: YAHOO-OFF VERZIÓ
+
+    A 3-as riport (Ma nyitástól mostanáig, intraday Open→Most) korábban
+    Yahoo quote / chart API-t használt (regularMarketOpen → regularMarketPrice).
+
+    Mivel a Yahoo jelenleg mindenre 429 (rate_limited) választ ad, ebben az
+    átmeneti verzióban NEM próbálunk intranapi adatot számolni, csak egy
+    rövid magyarázatot írunk ki.
+
+    HA KÉSŐBB ÚJRA AKAROD HASZNÁLNI AZ INTRADAY OPEN→MOST RIPORTOT YAHOO-VAL:
+    - cseréld le ezt a függvényt a korábbi, Yahoo-alapú run_report_3 implementációra.
+    """
     lines: List[str] = []
 
     now_local = datetime.now(BUDAPEST)
@@ -466,102 +363,23 @@ def run_report_3(
     lines.append(
         f"Vizsgált ablak (CEST): mai USA nyitás (15:30) → lekérdezés időpontja ({today_str})\n"
     )
-    lines.append("_Árforrás: Yahoo Finance quote (v7 – regularMarketOpen → regularMarketPrice)_\n")
+    lines.append(
+        "_Árforrás: intranapi adatra korábban Yahoo Finance quote (v7 – regularMarketOpen → "
+        "regularMarketPrice) szolgált, de a Yahoo jelenleg rate-limited, ezért ezt most nem hívjuk._\n"
+    )
 
-    filtered = [r for r in tickers if r.ticker != "PKN.WA"]
-    if not filtered:
-        lines.append("Nincs feldolgozható ticker.\n")
-        return "\n".join(lines)
+    lines.append(
+        "\nA 3-as intranapi riport ebben az átmeneti verzióban **nem számol Open→Most mozgást**, "
+        "mert a Yahoo Finance API tartósan 429 (Too Many Requests) státuszt ad vissza. "
+        "Ahhoz, hogy megbízható intraday adat legyen, fennakadás nélkül kellene Yahoo-hoz "
+        "kapcsolódni, vagy beépíteni egy alternatív, intraday adatforrást.\n"
+        "\nAmint a Yahoo újra stabilan elérhető (429 nélkül), érdemes visszaállítani a korábbi, "
+        "Yahoo-alapú run_report_3 implementációt, vagy kialakítani egy új intraday forrást.\n"
+    )
 
-    ticker_list = [r.ticker for r in filtered]
-    quote_map = fetch_quotes_batch(ticker_list)
-
-    # Lefedettség a quote alapján
-    status_map: Dict[str, TickerStatus] = {}
-    ok_count = 0
-    for row in filtered:
-        prev_close, last, open_px, reason = quote_map.get(row.ticker, (None, None, None, None))
-        if reason is None and open_px is not None and last is not None:
-            status_map[row.ticker] = TickerStatus(ok=True)
-            ok_count += 1
-        else:
-            status_map[row.ticker] = TickerStatus(ok=False, reason=reason or "no_open_or_last")
-
-    total = len(filtered)
-    lines.append(build_coverage_block(status_map))
-
-    # HA GYAKORLATILAG MINDEN RATE_LIMITED → inkább rövid, őszinte üzenet
-    if ok_count == 0:
-        lines.append(
-            "\nA 3-as intranapi riport ma **nem értelmezhető**, mert a Yahoo Finance "
-            "quote API-ja minden tickerre `rate_limited` (429 Too Many Requests) státuszt adott. "
-            "Ilyenkor az Open→Most mozgásokra nincs megbízható adat ebből a forrásból.\n"
-        )
-        return "\n".join(lines)
-
-    # ha nem 0, akkor jöhet a „normál” folytatás (makró + darabszámos + watchlist)
-    lines.append(build_macro_block_1(macro))
-    ...
-    # és itt mehet a már megírt darabszámos / watchlist rész
-
-    # Darabszámos – MINDEN pozíció listázása
-    pos_lines: List[str] = []
-    pos_lines.append("### Darabszámos tickerek – Ma nyitástól mostanáig (Open→Most)\n")
-
-    # Watchlist – csak ahol ≥K az Open→Most
-    watch_lines: List[str] = []
-    watch_lines.append("### Watchlist – Open→Most mozgások (csak ha ≥K vagy anyagilag lényeges hír)\n")
-
-    for row in filtered:
-        prev_close, last, open_px, reason = quote_map.get(row.ticker, (None, None, None, None))
-        open_most = pct_change(open_px, last)
-
-        def fmt_open_most(value: Optional[float]) -> str:
-            if value is None:
-                return "Open→Most: n/a"
-            sign = "+" if value >= 0 else ""
-            return f"Open→Most: {sign}{value:.2f}%"
-
-        open_most_str = fmt_open_most(open_most)
-        src_base = "árforrás: Yahoo quote"
-
-        if row.is_position:
-            # MINDEN darabszámos pozíció
-            if open_most is None:
-                if reason:
-                    reason_str = f"Hiányzó intranapi adat (oka: {reason})."
-                else:
-                    reason_str = "Hiányzó intranapi adat (nincs értelmezhető Open→Most)."
-            elif abs(open_most) >= row.k_threshold:
-                reason_str = "Érdemi intranapi elmozdulás (≥K) nyitáshoz képest."
-            else:
-                reason_str = "Mérsékelt intranapi mozgás, egyelőre nincs küszöb feletti elmozdulás."
-
-            # ha volt hiba, jelezzük a forrásnál is
-            if reason:
-                src_str = f"{src_base} (hiba: {reason})"
-            else:
-                src_str = src_base
-
-            pos_lines.append(f"{row.ticker} — {open_most_str} — {reason_str} ({src_str})")
-        else:
-            # Watchlist: csak jelzésnél (≥K)
-            has_signal = open_most is not None and abs(open_most) >= row.k_threshold
-            if not has_signal:
-                continue
-            reason_str = "Watchlisten is érdemi intranapi mozgás (≥K) nyitáshoz képest."
-
-            if reason:
-                src_str = f"{src_base} (hiba: {reason})"
-            else:
-                src_str = src_base
-
-            watch_lines.append(f"{row.ticker} — {open_most_str} — {reason_str} ({src_str})")
-
-    if len(pos_lines) > 1:
-        lines.append("\n".join(pos_lines) + "\n")
-    if len(watch_lines) > 1:
-        lines.append("\n".join(watch_lines) + "\n")
+    macro_block = build_macro_block_1(macro)
+    if macro_block:
+        lines.append(macro_block)
 
     return "\n".join(lines)
 
@@ -571,12 +389,12 @@ def run_report_3(
 # ---------------------------------------------------------------------------
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Részvény riport futtató (1/2/3)")
+    parser = argparse.ArgumentParser(description="Részvény riport futtató (1/2/3) – YAHOO-OFF átmeneti verzió")
     parser.add_argument(
         "--report",
         choices=["1", "2", "3"],
         required=True,
-        help="Riport típusa: 1 = AH/PM, 2 = Tegnapi O→C, 3 = Ma O→Most",
+        help="Riport típusa: 1 = AH/PM (Yahoo OFF), 2 = Tegnapi O→C (Stooq), 3 = Ma O→Most (Yahoo OFF)",
     )
     parser.add_argument(
         "--csv",
