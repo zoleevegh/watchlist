@@ -429,71 +429,96 @@ def run_report_1(
     status_map: Dict[str, TickerStatus] = {}
     price_map: Dict[str, Tuple[PriceSnapshot, str]] = {}
 
-    rate_limited_pos = 0
-    global_rate_limited = False
+    # ------------------------------
+    # 1) Hard stop logika – CSAK darabszámosokra
+    # ------------------------------
+    RATE_LIMIT_TOKENS = (
+        "rate_limited",
+        "Unauthorized",
+        "unauthorized",
+        "user is unable to access",
+        "403",
+        "429",
+    )
+    HARD_STOP_POS_RATE_LIMIT = 3
 
-    # Először a darabszámosak – rájuk épül a hard stop logika
-    for row in positions:
+    hard_stop = False
+    consec_rate_limited = 0
+
+    for idx, row in enumerate(positions):
         snap, src, reason = get_ah_pm_with_fallback(row.ticker)
         price_map[row.ticker] = (snap, src)
 
         if reason is None:
             status_map[row.ticker] = TickerStatus(ok=True)
+            consec_rate_limited = 0
         else:
             status_map[row.ticker] = TickerStatus(ok=False, reason=reason)
-            if "rate_limited" in reason or "429" in reason:
-                rate_limited_pos += 1
-                if rate_limited_pos >= HARD_STOP_POS_RATE_LIMIT:
-                    global_rate_limited = True
-                    break
+            if any(tok in reason for tok in RATE_LIMIT_TOKENS):
+                consec_rate_limited += 1
+            else:
+                consec_rate_limited = 0
 
-    # Ha hard stop történt: a maradék darabszámos + az összes watchlist tickerre már nem kérünk le adatot
-    if global_rate_limited:
-        for row in positions:
-            if row.ticker not in price_map:
-                price_map[row.ticker] = (PriceSnapshot(None, None, None), "none")
-                status_map[row.ticker] = TickerStatus(ok=False, reason="rate_limited_hard_stop")
+        if consec_rate_limited >= HARD_STOP_POS_RATE_LIMIT:
+            hard_stop = True
+            # A maradék pozíciókat már nem kérdezzük le
+            for rest in positions[idx + 1:]:
+                price_map[rest.ticker] = (PriceSnapshot(None, None, None), "none")
+                status_map[rest.ticker] = TickerStatus(
+                    ok=False,
+                    reason="not_queried_due_to_rate_limit",
+                )
+            break
+
+    # ------------------------------
+    # 2) Ha nincs hard stop, jöhet a watchlist; ha van, NEM kérdezzük le
+    # ------------------------------
+    if hard_stop:
         for row in watchlist:
             price_map[row.ticker] = (PriceSnapshot(None, None, None), "none")
-            status_map[row.ticker] = TickerStatus(ok=False, reason="rate_limited_hard_stop")
+            status_map[row.ticker] = TickerStatus(
+                ok=False,
+                reason="not_queried_due_to_rate_limit",
+            )
+    else:
+        for row in watchlist:
+            snap, src, reason = get_ah_pm_with_fallback(row.ticker)
+            price_map[row.ticker] = (snap, src)
+            if reason is None:
+                status_map[row.ticker] = TickerStatus(ok=True)
+            else:
+                status_map[row.ticker] = TickerStatus(ok=False, reason=reason)
 
-        lines.append(build_coverage_block(status_map))
-        lines.append(build_macro_block_1(macro))
-
-        lines.append(
-            "\nA #1 AH/PM riport ma **nem értelmezhető**, mert a Yahoo Finance "
-            "(chart v8 + quote v7 pre/post) több darabszámos tickerre is `rate_limited` "
-            "választ adott. A hard stop logika miatt a további tickereket már nem kértük le, "
-            "hogy ne üssük tovább a forrást.\n"
-        )
-        return "\n".join(lines)
-
-    # Ha nincs globális rate limit, akkor a watchlisten is lefuttatjuk a fallback-es lekérdezést
-    for row in watchlist:
-        snap, src, reason = get_ah_pm_with_fallback(row.ticker)
-        price_map[row.ticker] = (snap, src)
-        if reason is None:
-            status_map[row.ticker] = TickerStatus(ok=True)
-        else:
-            status_map[row.ticker] = TickerStatus(ok=False, reason=reason)
-
-    # Lefedettség + Politika/FED blokk
+    # ------------------------------
+    # 3) Lefedettség + makró blokk
+    # ------------------------------
     lines.append(build_coverage_block(status_map))
     lines.append(build_macro_block_1(macro))
 
-    # Darabszámos tickerek – minden pozíció
-    pos_lines: List[str] = []
-    pos_lines.append("### Darabszámos tickerek – After-hours & Premarket mozgások\n")
+    # Ha hard stop volt, itt lezárjuk a riportot – nincs értelmes AH/PM adat
+    if hard_stop:
+        lines.append(
+            "\nA #1 AH/PM riportban **hard stop** lépett életbe: több darabszámos tickerre "
+            "`rate_limited` / `Unauthorized` választ adott a Yahoo Finance (chart v8 + quote v7), "
+            "ezért a többi pozíciót és a teljes watchlistet már **nem kérdeztük le** "
+            "(oka: `not_queried_due_to_rate_limit`).\n"
+        )
+        return "\n".join(lines)
 
-    # Watchlist – csak jelzésnél (≥K vagy hír – utóbbi majd a news blokkban)
-    watch_lines: List[str] = []
-    watch_lines.append("### Watchlist – After-hours & Premarket mozgások (csak ha ≥K vagy van hír)\n")
-
+    # ------------------------------
+    # 4) Ha nincs hard stop: normál AH/PM lista (pozíció + watchlist)
+    # ------------------------------
     def fmt_pct(label: str, value: Optional[float]) -> str:
         if value is None:
             return f"{label}: n/a"
         sign = "+" if value >= 0 else ""
         return f"{label} {sign}{value:.2f}%"
+
+    pos_lines: List[str] = []
+    pos_lines.append("### Darabszámos tickerek – After-hours & Premarket mozgások\n")
+
+    watch_lines: List[str] = []
+    watch_lines.append("### Watchlist – After-hours & Premarket mozgások (csak ha ≥K vagy van hír)\n")
 
     for row in positions:
         snap, src = price_map[row.ticker]
@@ -532,15 +557,15 @@ def run_report_1(
         ah_pct = pct_change(snap.prev_close, snap.ah_last)
         pm_pct = pct_change(snap.prev_close, snap.pm_last)
 
-        ah_str = fmt_pct("AH", ah_pct)
-        pm_str = fmt_pct("PM", pm_pct)
-
         has_signal = (
             (ah_pct is not None and abs(ah_pct) >= row.k_threshold) or
             (pm_pct is not None and abs(pm_pct) >= row.k_threshold)
         )
         if not has_signal:
             continue
+
+        ah_str = fmt_pct("AH", ah_pct)
+        pm_str = fmt_pct("PM", pm_pct)
 
         if src == "yahoo_chart_v8":
             src_str = "árforrás: Yahoo chart (v8)"
@@ -557,7 +582,7 @@ def run_report_1(
     if len(watch_lines) > 1:
         lines.append("\n".join(watch_lines) + "\n")
 
-    # Hírek – egyelőre üres (később Yahoo + extra forrás)
+    # Hírek / katalizátorok – egyelőre üresen
     yahoo_news: List[NewsItem] = []
     extra_news: List[NewsItem] = []
     all_news = merge_news_sources(yahoo_news, extra_news)
@@ -572,7 +597,6 @@ def run_report_1(
         lines.append(catalyst_block)
 
     return "\n".join(lines)
-
 
 # ---------------------------------------------------------------------------
 # 2-es riport: Tegnapi Open→Close (batch quote, egyszerűsített)
