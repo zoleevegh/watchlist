@@ -6,14 +6,10 @@ report_runner.py
 
 Egységes runner script az 1/2/3-as riportokhoz.
 
-#1: AH + PM – elsődlegesen Yahoo chart (v8, 2d/5m, includePrePost), fallback: Yahoo quote (v7 pre/post).
-#2: Tegnapi Open→Close – Yahoo quote (v7).
-#3: Ma Open→Most – Yahoo quote (v7).
-
-Hard stop logika #1-hez:
-- Először a darabszámos tickereket kérdezzük le.
-- Ha közülük egymás után több is rate_limited (429), akkor hard stop: a maradék tickereket már nem kérdezzük le,
-  és a riport egy rövid magyarázó blokkal zárul.
+#1: AH + PM (chart 2d/5m, includePrePost) – árforrás: Yahoo chart (v8),
+    fallback: Yahoo quote (v7, pre/post).
+#2: Tegnapi Open→Close – árforrás: Yahoo quote (v7).
+#3: Ma Open→Most – árforrás: Yahoo quote (v7).
 """
 
 from __future__ import annotations
@@ -50,9 +46,6 @@ except ImportError:  # Python <3.9 fallback
 
 BUDAPEST = ZoneInfo("Europe/Budapest")
 US_EASTERN = ZoneInfo("America/New_York")
-
-# Hard-stop param: hány darabszámos ticker rate limitje után álljunk le globálisan #1-ben
-HARD_STOP_POS_RATE_LIMIT = 3
 
 
 # ---------------------------------------------------------------------------
@@ -127,7 +120,7 @@ def load_tickers_from_csv(path: str, default_k: float = 3.0) -> List[TickerRow]:
 
 
 # ---------------------------------------------------------------------------
-# Yahoo Finance chart / quote helper-ek
+# Yahoo helper-ek
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -137,33 +130,34 @@ class PriceSnapshot:
     pm_last: Optional[float]
 
 
+def pct_change(base: Optional[float], new: Optional[float]) -> Optional[float]:
+    if base is None or new is None or base == 0:
+        return None
+    return (new - base) / base * 100.0
+
+
 def fetch_chart_2d_5m(ticker: str) -> dict:
-    """
-    Yahoo Finance chart (v8) – 2 nap, 5 perces gyertyák, pre/post is benne.
-    """
     url = (
         f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
         "?range=2d&interval=5m&includePrePost=true"
     )
     resp = requests.get(url, timeout=10)
-    # 429-et külön kezeljük – így könnyebb rá reagálni
-    if resp.status_code == 429:
-        raise RuntimeError("rate_limited_v8")
     resp.raise_for_status()
     return resp.json()
 
 
 def extract_ah_pm_from_chart(ticker: str) -> Tuple[PriceSnapshot, Optional[str]]:
     """
-    #1 riporthoz: AH + PM sáv utolsó ára, previousClose alapján.
-    Árforrás: Yahoo Finance chart (v8)
+    AH/PM a v8 chartból. Hibánál reason stringet ad vissza.
     """
     try:
         data = fetch_chart_2d_5m(ticker)
-    except Exception as e:
-        msg = str(e)
-        if "rate_limited" in msg or "429" in msg:
+    except requests.exceptions.HTTPError as e:
+        status = e.response.status_code if e.response is not None else None
+        if status in (401, 403, 429):
             return PriceSnapshot(None, None, None), "rate_limited"
+        return PriceSnapshot(None, None, None), f"http_error: {e}"
+    except Exception as e:
         return PriceSnapshot(None, None, None), f"fetch_error: {e}"
 
     try:
@@ -213,92 +207,67 @@ def extract_ah_pm_from_chart(ticker: str) -> Tuple[PriceSnapshot, Optional[str]]
 
         return PriceSnapshot(prev_close, ah_last, pm_last), None
     except Exception as e:
-        msg = str(e)
-        if "rate_limited" in msg or "429" in msg:
-            return PriceSnapshot(None, None, None), "rate_limited"
         return PriceSnapshot(None, None, None), f"parse_error: {e}"
 
 
-def extract_ah_pm_from_quote(ticker: str) -> Tuple[PriceSnapshot, Optional[str]]:
+def fetch_ah_pm_from_quote_v7(ticker: str) -> Tuple[PriceSnapshot, Optional[str]]:
     """
-    Fallback #1-hez: Yahoo Finance quote (v7), pre/post mezők alapján.
-    - prev_close: regularMarketPreviousClose
-    - AH: postMarketPrice
-    - PM: preMarketPrice
+    Fallback AH/PM a v7 quote endpointból (pre/post mezők).
     """
     url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={ticker}"
     try:
         resp = requests.get(url, timeout=10)
     except Exception as e:
-        return PriceSnapshot(None, None, None), f"fetch_error_v7: {e}"
+        return PriceSnapshot(None, None, None), f"network_error: {e}"
 
-    if resp.status_code == 429:
+    if resp.status_code in (401, 403, 429):
         return PriceSnapshot(None, None, None), "rate_limited"
 
     try:
         resp.raise_for_status()
     except requests.exceptions.HTTPError as e:
-        msg = str(e)
-        if "429" in msg:
-            return PriceSnapshot(None, None, None), "rate_limited"
-        return PriceSnapshot(None, None, None), f"http_error_v7: {e}"
+        return PriceSnapshot(None, None, None), f"http_error: {e}"
 
     try:
         data = resp.json()
         qlist = data.get("quoteResponse", {}).get("result", []) or []
         if not qlist:
             return PriceSnapshot(None, None, None), "no_quote_result"
+
         q = qlist[0]
         prev_close = q.get("regularMarketPreviousClose")
-        ah_last = q.get("postMarketPrice")   # zárás utáni
-        pm_last = q.get("preMarketPrice")    # nyitás előtti
-        if prev_close is None and q.get("regularMarketPrice") is not None:
-            # nagyon enyhe fallback
-            prev_close = q.get("regularMarketPrice")
+        ah_last = q.get("postMarketPrice")
+        pm_last = q.get("preMarketPrice")
+
         return PriceSnapshot(prev_close, ah_last, pm_last), None
     except Exception as e:
-        return PriceSnapshot(None, None, None), f"parse_error_v7: {e}"
+        return PriceSnapshot(None, None, None), f"parse_error: {e}"
 
 
-def get_ah_pm_with_fallback(ticker: str) -> Tuple[PriceSnapshot, str, Optional[str]]:
+def get_ah_pm_with_fallback(
+    ticker: str,
+) -> Tuple[PriceSnapshot, str, Optional[str]]:
     """
-    Kombinált helper #1-hez:
-    1) próbál chart v8-at
-    2) ha hiba / hiányos adat: próbál quote v7 pre/post-ot
-    3) ha bármelyiknél 429 / rate_limited: rate_limited-et ad vissza
+    Először chart (v8), ha hiba/hiány/limit, akkor quote (v7 pre/post) fallback.
+    Visszaad: snap, source_tag, reason.
     """
     snap, reason = extract_ah_pm_from_chart(ticker)
-    if reason is None and snap.prev_close is not None:
+    if reason is None:
         return snap, "yahoo_chart_v8", None
 
-    # ha explicit rate_limited, ne is nagyon erőltessük tovább – de egyszer adjunk esélyt v7-nek
-    if reason is not None and "rate_limited" in reason:
-        snap2, reason2 = extract_ah_pm_from_quote(ticker)
-        if reason2 is None and snap2.prev_close is not None:
-            return snap2, "yahoo_quote_v7_prepost", None
-        # ha ez is rate_limited vagy hiba, akkor egységesen rate_limited
-        if reason2 is not None and "rate_limited" in reason2:
-            return PriceSnapshot(None, None, None), "none", "rate_limited"
-        # egyéb hiba
-        return PriceSnapshot(None, None, None), "none", (reason2 or reason)
+    # ha a chart "klasszikus" hibával esik el, adunk egy esélyt a v7-nek
+    snap2, reason2 = fetch_ah_pm_from_quote_v7(ticker)
+    if reason2 is None:
+        return snap2, "yahoo_quote_v7_prepost", None
 
-    # nem rate_limited jellegű hiba → megpróbáljuk a v7-et
-    if reason is not None:
-        snap2, reason2 = extract_ah_pm_from_quote(ticker)
-        if reason2 is None and snap2.prev_close is not None:
-            return snap2, "yahoo_quote_v7_prepost", None
-        if reason2 is not None and "rate_limited" in reason2:
-            return PriceSnapshot(None, None, None), "none", "rate_limited"
-        return PriceSnapshot(None, None, None), "none", (reason2 or reason)
+    # ha mindkettő hibás, preferáld a "rate_limited" típusú üzenetet
+    if reason2 == "rate_limited":
+        return PriceSnapshot(None, None, None), "none", "rate_limited"
+    if reason == "rate_limited":
+        return PriceSnapshot(None, None, None), "none", "rate_limited"
 
-    # ide elvileg nem jutunk
-    return snap, "yahoo_chart_v8", reason
-
-
-def pct_change(base: Optional[float], new: Optional[float]) -> Optional[float]:
-    if base is None or new is None or base == 0:
-        return None
-    return (new - base) / base * 100.0
+    # egyébként az első hiba
+    return PriceSnapshot(None, None, None), "none", reason or reason2
 
 
 # ---------------------------------------------------------------------------
@@ -342,10 +311,10 @@ def fetch_quotes_batch(
             time.sleep(2)
             continue
 
-        if resp.status_code == 429:
+        if resp.status_code in (401, 403, 429):
             for t in batch:
                 results[t] = (None, None, None, "rate_limited")
-            print(f"[WARN] fetch_quotes_batch rate limited (429) for {symbols_str}", file=sys.stderr)
+            print(f"[WARN] fetch_quotes_batch rate limited ({resp.status_code}) for {symbols_str}", file=sys.stderr)
             time.sleep(5)
             continue
 
@@ -387,14 +356,13 @@ def fetch_quotes_batch(
                 if reason is None:
                     results[t] = (None, None, None, "no_quote_result")
 
-        # MINDIG pihenjünk egy kicsit a batch-ek között
         time.sleep(2)
 
     return results
 
 
 # ---------------------------------------------------------------------------
-# 1-es riport: AH + PM (hard stop a darabszámosokra)
+# 1-es riport: AH + PM – HAR D STOP csak a darabszámosokra
 # ---------------------------------------------------------------------------
 
 def run_report_1(
@@ -417,7 +385,6 @@ def run_report_1(
         "fallback: Yahoo Finance quote (v7 pre/post)._"
     )
 
-    # PKN.WA kihagyása
     filtered = [r for r in tickers if r.ticker != "PKN.WA"]
     if not filtered:
         lines.append("\nNincs feldolgozható ticker.\n")
@@ -429,9 +396,6 @@ def run_report_1(
     status_map: Dict[str, TickerStatus] = {}
     price_map: Dict[str, Tuple[PriceSnapshot, str]] = {}
 
-    # ------------------------------
-    # 1) Hard stop logika – CSAK darabszámosokra
-    # ------------------------------
     RATE_LIMIT_TOKENS = (
         "rate_limited",
         "Unauthorized",
@@ -445,6 +409,7 @@ def run_report_1(
     hard_stop = False
     consec_rate_limited = 0
 
+    # 1) Először CSAK a darabszámosokra kérdezünk rá
     for idx, row in enumerate(positions):
         snap, src, reason = get_ah_pm_with_fallback(row.ticker)
         price_map[row.ticker] = (snap, src)
@@ -461,7 +426,7 @@ def run_report_1(
 
         if consec_rate_limited >= HARD_STOP_POS_RATE_LIMIT:
             hard_stop = True
-            # A maradék pozíciókat már nem kérdezzük le
+            # a maradék pozíciókat már nem kérdezzük le
             for rest in positions[idx + 1:]:
                 price_map[rest.ticker] = (PriceSnapshot(None, None, None), "none")
                 status_map[rest.ticker] = TickerStatus(
@@ -470,9 +435,7 @@ def run_report_1(
                 )
             break
 
-    # ------------------------------
-    # 2) Ha nincs hard stop, jöhet a watchlist; ha van, NEM kérdezzük le
-    # ------------------------------
+    # 2) Ha hard stop volt, a watchlistre egyáltalán nem küldünk kérést
     if hard_stop:
         for row in watchlist:
             price_map[row.ticker] = (PriceSnapshot(None, None, None), "none")
@@ -481,6 +444,7 @@ def run_report_1(
                 reason="not_queried_due_to_rate_limit",
             )
     else:
+        # normál módon lekérdezzük a watchlistet is
         for row in watchlist:
             snap, src, reason = get_ah_pm_with_fallback(row.ticker)
             price_map[row.ticker] = (snap, src)
@@ -489,25 +453,21 @@ def run_report_1(
             else:
                 status_map[row.ticker] = TickerStatus(ok=False, reason=reason)
 
-    # ------------------------------
-    # 3) Lefedettség + makró blokk
-    # ------------------------------
+    # Lefedettség + makró blokk
     lines.append(build_coverage_block(status_map))
     lines.append(build_macro_block_1(macro))
 
-    # Ha hard stop volt, itt lezárjuk a riportot – nincs értelmes AH/PM adat
+    # Ha hard stop, itt zárjuk le
     if hard_stop:
         lines.append(
             "\nA #1 AH/PM riportban **hard stop** lépett életbe: több darabszámos tickerre "
             "`rate_limited` / `Unauthorized` választ adott a Yahoo Finance (chart v8 + quote v7), "
-            "ezért a többi pozíciót és a teljes watchlistet már **nem kérdeztük le** "
+            "ezért a többi pozíciót és az egész watchlistet már **nem kérdeztük le** "
             "(oka: `not_queried_due_to_rate_limit`).\n"
         )
         return "\n".join(lines)
 
-    # ------------------------------
-    # 4) Ha nincs hard stop: normál AH/PM lista (pozíció + watchlist)
-    # ------------------------------
+    # Ha nincs hard stop: normál AH/PM lista
     def fmt_pct(label: str, value: Optional[float]) -> str:
         if value is None:
             return f"{label}: n/a"
@@ -582,7 +542,7 @@ def run_report_1(
     if len(watch_lines) > 1:
         lines.append("\n".join(watch_lines) + "\n")
 
-    # Hírek / katalizátorok – egyelőre üresen
+    # Hírek / katalizátorok – egyelőre üres
     yahoo_news: List[NewsItem] = []
     extra_news: List[NewsItem] = []
     all_news = merge_news_sources(yahoo_news, extra_news)
@@ -598,8 +558,9 @@ def run_report_1(
 
     return "\n".join(lines)
 
+
 # ---------------------------------------------------------------------------
-# 2-es riport: Tegnapi Open→Close (batch quote, egyszerűsített)
+# 2-es riport: Tegnapi Open→Close (változatlan logika)
 # ---------------------------------------------------------------------------
 
 def run_report_2(
@@ -617,26 +578,6 @@ def run_report_2(
     ticker_list = [r.ticker for r in filtered]
     quote_map = fetch_quotes_batch(ticker_list)
 
-    # Lefedettség
-    status_map: Dict[str, TickerStatus] = {}
-    ok_count = 0
-    for row in filtered:
-        prev_close, last, open_px, reason = quote_map.get(row.ticker, (None, None, None, None))
-        if reason is None and prev_close is not None and last is not None:
-            status_map[row.ticker] = TickerStatus(ok=True)
-            ok_count += 1
-        else:
-            status_map[row.ticker] = TickerStatus(ok=False, reason=reason or "no_prev_or_last")
-
-    lines.append(build_coverage_block(status_map))
-
-    if ok_count == 0:
-        lines.append(
-            "\nA #2 Open→Close riport ma **nem értelmezhető**, mert a Yahoo Finance quote API "
-            "minden tickerre hibát (pl. rate_limited) adott vissza.\n"
-        )
-        return "\n".join(lines)
-
     pos_lines: List[str] = []
     pos_lines.append("Darabszámos tickerek – abs(Open→Close) becsült mozgás (≥K)\n")
 
@@ -646,11 +587,14 @@ def run_report_2(
     for row in filtered:
         prev_close, last, open_px, reason = quote_map.get(row.ticker, (None, None, None, None))
         move = pct_change(prev_close, last)
-        if move is None or abs(move) < row.k_threshold:
+
+        if move is None:
+            continue
+        if abs(move) < row.k_threshold:
             continue
 
         sign = "+" if move >= 0 else ""
-        src_str = "árforrás: Yahoo quote (v7)"
+        src_str = "árforrás: Yahoo quote"
         line = f"{row.ticker} — Open→Close (becsült): {sign}{move:.2f}% ({src_str})"
 
         if row.is_position:
@@ -667,7 +611,7 @@ def run_report_2(
 
 
 # ---------------------------------------------------------------------------
-# 3-as riport: Ma nyitástól mostanáig (Open→Most, batch quote, minden pozíció)
+# 3-as riport: Ma nyitástól mostanáig (változatlan logika)
 # ---------------------------------------------------------------------------
 
 def run_report_3(
@@ -704,38 +648,37 @@ def run_report_3(
         else:
             status_map[row.ticker] = TickerStatus(ok=False, reason=reason or "no_open_or_last")
 
+    total = len(filtered)
     lines.append(build_coverage_block(status_map))
 
     if ok_count == 0:
         lines.append(
-            "\nA 3-as intranapi riport ma **nem értelmezhető**, mert a Yahoo Finance quote API "
-            "minden tickerre hibát (pl. rate_limited) adott vissza.\n"
+            "\nA 3-as intranapi riport ma **nem értelmezhető**, mert a Yahoo Finance "
+            "quote API-ja minden tickerre `rate_limited` (429/403/401) státuszt adott. "
+            "Ilyenkor az Open→Most mozgásokra nincs megbízható adat ebből a forrásból.\n"
         )
         return "\n".join(lines)
 
-    # Makró blokk (Trump-napihír / FED, ha manual macro szöveget adsz)
     lines.append(build_macro_block_1(macro))
 
-    # Darabszámos – MINDEN pozíció listázása
     pos_lines: List[str] = []
     pos_lines.append("### Darabszámos tickerek – Ma nyitástól mostanáig (Open→Most)\n")
 
-    # Watchlist – csak ahol ≥K az Open→Most
     watch_lines: List[str] = []
-    watch_lines.append("### Watchlist – Open→Most mozgások (csak ha ≥K)\n")
-
-    def fmt_open_most(value: Optional[float]) -> str:
-        if value is None:
-            return "Open→Most: n/a"
-        sign = "+" if value >= 0 else ""
-        return f"Open→Most: {sign}{value:.2f}%"
+    watch_lines.append("### Watchlist – Open→Most mozgások (csak ha ≥K vagy anyagilag lényeges hír)\n")
 
     for row in filtered:
         prev_close, last, open_px, reason = quote_map.get(row.ticker, (None, None, None, None))
         open_most = pct_change(open_px, last)
 
+        def fmt_open_most(value: Optional[float]) -> str:
+            if value is None:
+                return "Open→Most: n/a"
+            sign = "+" if value >= 0 else ""
+            return f"Open→Most: {sign}{value:.2f}%"
+
         open_most_str = fmt_open_most(open_most)
-        src_base = "árforrás: Yahoo quote (v7)"
+        src_base = "árforrás: Yahoo quote"
 
         if row.is_position:
             if open_most is None:
@@ -748,13 +691,22 @@ def run_report_3(
             else:
                 reason_str = "Mérsékelt intranapi mozgás, egyelőre nincs küszöb feletti elmozdulás."
 
-            pos_lines.append(f"{row.ticker} — {open_most_str} — {reason_str} ({src_base})")
+            if reason:
+                src_str = f"{src_base} (hiba: {reason})"
+            else:
+                src_str = src_base
+
+            pos_lines.append(f"{row.ticker} — {open_most_str} — {reason_str} ({src_str})")
         else:
             has_signal = open_most is not None and abs(open_most) >= row.k_threshold
             if not has_signal:
                 continue
             reason_str = "Watchlisten is érdemi intranapi mozgás (≥K) nyitáshoz képest."
-            watch_lines.append(f"{row.ticker} — {open_most_str} — {reason_str} ({src_base})")
+            if reason:
+                src_str = f"{src_base} (hiba: {reason})"
+            else:
+                src_str = src_base
+            watch_lines.append(f"{row.ticker} — {open_most_str} — {reason_str} ({src_str})")
 
     if len(pos_lines) > 1:
         lines.append("\n".join(pos_lines) + "\n")
