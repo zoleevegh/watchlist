@@ -3,250 +3,196 @@
 report_1_helpers.py
 --------------------
 
-Segédfüggvények az #1 – After-hours & Premarket riporthoz.
-
-Biblia-szerinti funkciók:
-- Lefedettség blokk ticker-szintű "oka: ..." bontással
-- Politika / FED / Makró blokk (--macro paraméterből + default szöveg)
-- Bejelentések & fel/lemínősítések formázása (NewsItem)
-- Közeli katalizátorok (UpcomingCatalyst)
+Segédfüggvények az #1/#2/#3 riporthoz:
+- Lefedettség blokk
+- Politika/FED (makró) blokk
+- Hírek / bejelentések & fel/lemínősítések
+- Közeli katalizátorok
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, date
+from datetime import datetime
 from typing import Dict, List, Optional
 
 
 # ---------------------------------------------------------------------------
-# Lefedettség
+# Lefedettség blokk
 # ---------------------------------------------------------------------------
-
 
 @dataclass
 class TickerStatus:
     ok: bool
-    reason: Optional[str] = None  # pl. "no_price_data", "fetch_error: ..."
+    reason: Optional[str] = None
 
 
 def build_coverage_block(status_map: Dict[str, TickerStatus]) -> str:
     """
-    Biblia:
-    - TELJES
-    - HIÁNYOS – nem elérhető ticker(ek): TICKER1 (oka: ...), TICKER2 (oka: ...)
+    Biblia: minden riport ELEJÉN:
 
-    status_map: { "NVDA": TickerStatus(ok=True), "GOLD": TickerStatus(ok=False, reason="no_price_data") }
+      • „Lefedettség: TELJES”
+      • „Lefedettség: HIÁNYOS – nem elérhető ticker(ek): AAPL (oka: rate_limited), NVDA (oka: no_price_data)…”
+
+    Itt ticker-szinten kiírjuk az okot is, de 1 sorban, tömören.
     """
-    failed = {t: s for t, s in status_map.items() if not s.ok}
+    if not status_map:
+        return "Lefedettség: HIÁNYOS – nincs feldolgozott ticker.\n"
 
-    if not failed:
-        return "**Lefedettség:** TELJES\n"
+    missing = [
+        f"{t} (oka: {s.reason})"
+        for t, s in status_map.items()
+        if not s.ok
+    ]
 
-    parts: List[str] = []
-    for ticker in sorted(failed.keys()):
-        st = failed[ticker]
-        if st.reason:
-            parts.append(f"{ticker} (oka: {st.reason})")
-        else:
-            parts.append(ticker)
+    if not missing:
+        return "Lefedettség: TELJES\n"
 
-    joined = ", ".join(parts)
-    return f"**Lefedettség:** HIÁNYOS – nem elérhető ticker(ek): {joined}\n"
+    missing_str = ", ".join(missing)
+    return f"Lefedettség: HIÁNYOS – nem elérhető ticker(ek): {missing_str}\n"
 
 
 # ---------------------------------------------------------------------------
-# Politika / FED / Makró blokk
+# Politika/FED blokk (#1 és #3 riport)
 # ---------------------------------------------------------------------------
-
 
 def build_macro_block_1(macro: Optional[str]) -> str:
     """
-    Politika/FED blokk az 1-es riport tetejére.
+    Makró blokk kezelése.
 
-    Biblia:
-    - Trump-napihír + 1–4 mondat makró / szektor hangulatról.
-    - Ha nincs külön macro szöveg megadva, akkor is legyen egy rövid default blokk.
+    macro:
+      - None / "" / "off"  → nincs blokk
+      - "auto"             → jelzés, hogy auto mód még nincs implementálva
+      - bármi más szöveg   → ezt tesszük be a blokk tartalmának
+
+    Használat:
+      workflow-ban a 'macro' inputba beírhatod a 1–4 mondatos Trump/FED/makró összefoglalót.
     """
-    header = "## Politika / FED / Makró (röviden)\n"
+    if macro is None:
+        return ""
 
-    if macro and macro.strip():
-        # A workflow-ból jövő szöveget közvetlenül beillesztjük a header alá.
-        body = macro.strip()
-    else:
-        # Default, ha nincs macro paraméter megadva – inkább legyen minimális szöveg, mint semmi.
-        body = (
-            "Nincs kiemelkedő, új makró- vagy FED-hír a vizsgált AH/PM ablakban. "
-            "A piaci hangulatot továbbra is az általános kamat–infláció narratíva "
-            "és a szektor-rotációs flow-k határozzák meg."
+    m = macro.strip()
+    if not m or m.lower() == "off":
+        return ""
+
+    if m.lower() == "auto":
+        return (
+            "### Politika/FED / Trump-napihír\n"
+            "(_Auto mód még nincs implementálva – add meg a makró összefoglalót a workflow "
+            "'macro' mezőjében._)\n"
         )
 
-    return f"{header}{body}\n"
+    return f"### Politika/FED / Trump-napihír\n{m}\n"
 
 
 # ---------------------------------------------------------------------------
-# Bejelentések & fel/lemínősítések
+# Hírek / bejelentések & fel/lemínősítések
 # ---------------------------------------------------------------------------
-
 
 @dataclass
 class NewsItem:
-    """
-    Egységes hírstruktúra az 1-es riporthoz.
-
-    Két fő kategória:
-    - 'rating'  -> elemzői lépés / célár
-    - 'pr'      -> cégközlés / PR / 8-K / earnings / guidance
-
-    A biblia szerinti formátumhoz szükséges mezők:
-    - ticker (pl. "NVDA")
-    - kind: "rating" vagy "pr"
-    - house: elemzőház neve (ratingnél), vagy hírforrás (pr-nél)
-    - action: ratingnél felminősítés / leminősítés / megerősítés; pr-nél pl. "Eredményjelentés", "Guidance", stb.
-    - new_rating: új besorolás (pl. "Buy", "Overweight", "Neutral")
-    - new_target: új célár (float, USD)
-    - headline: rövid cím / bejelentés tárgya
-    - impact: várható hatás (pl. "pozitív", "negatív", "semleges", vagy bővebben)
-    - ts: hír időpontja (CEST-ben vagy ISO stringben)
-    """
-
     ticker: str
-    kind: str  # "rating" vagy "pr"
-    house: Optional[str] = None
-    action: Optional[str] = None
-    new_rating: Optional[str] = None
-    new_target: Optional[float] = None
-    headline: Optional[str] = None
-    impact: Optional[str] = None
-    ts: Optional[datetime] = None  # ha nincs, lehet None
+    source: str                      # pl. "Yahoo", "MarketBeat", "IR"
+    when: datetime
+    headline: str
+    summary: str                     # 1–2 mondatos indoklás
+    category: str                    # "rating", "guide", "deal", "results", "other"
+    direction: Optional[str] = None  # "pozitív" / "negatív" / "semleges"
+    rating_house: Optional[str] = None
+    rating_action: Optional[str] = None   # "felminősítés" / "leminősítés" / "célár-emelés" / stb.
+    rating_from: Optional[str] = None
+    rating_to: Optional[str] = None
+    target_old: Optional[float] = None
+    target_new: Optional[float] = None
+    importance: Optional[str] = None  # "high" / "medium" / "low"
 
-    def key(self) -> tuple:
-        """Dedup kulcs merge-hez."""
-        ts_str = self.ts.isoformat() if isinstance(self.ts, datetime) else str(self.ts)
-        return (self.ticker, self.kind, (self.headline or "").strip(), ts_str or "")
 
-
-def merge_news_sources(primary: List[NewsItem], extra: List[NewsItem]) -> List[NewsItem]:
+def merge_news_sources(a: List[NewsItem], b: List[NewsItem]) -> List[NewsItem]:
     """
-    Több forrás (Yahoo RSS + egyéb feed) deduplikálása.
-
-    Simple policy:
-    - primary listának prioritása van
-    - extra elemek csak akkor kerülnek be, ha a .key() alapján nem szerepelnek már
+    Két hírlista összefésülése ticker + headline + idő alapján.
+    Deduplikál, majd idő szerint (legfrissebb elöl) rendez.
     """
-    combined: List[NewsItem] = []
     seen = set()
+    merged: List[NewsItem] = []
 
-    for item in primary + extra:
-        k = item.key()
-        if k in seen:
+    for item in (a + b):
+        key = (item.ticker, item.headline, item.when.replace(second=0, microsecond=0))
+        if key in seen:
             continue
-        seen.add(k)
-        combined.append(item)
+        seen.add(key)
+        merged.append(item)
 
-    # Rendezés idő szerint, ha van, különben ticker szerint
-    def sort_key(it: NewsItem):
-        t = it.ts or datetime.min
-        return (it.ticker, t)
-
-    combined.sort(key=sort_key)
-    return combined
+    merged.sort(key=lambda x: x.when, reverse=True)
+    return merged
 
 
-def _format_ts(ts: Optional[datetime]) -> str:
-    if isinstance(ts, datetime):
-        # egyszerű, rövid formátum CET-ben – feltételezzük, hogy már helyi időre van konvertálva
-        return ts.strftime("%Y-%m-%d %H:%M")
-    return "idő: n/a"
-
-
-def build_news_block_1(news: List[NewsItem]) -> str:
-    """
-    Biblia szerinti formázás:
-
-    Rating (elemzői lépés):
-        Ticker — Ház — Lépés (fel/lemínősítés / megerősítés) — Új besorolás/célár — rövid indok — idő
-
-    Cégközlés / PR:
-        Ticker — Bejelentés: CÍM — várható hatás: IMPACT — idő
-    """
-    header = "## Bejelentések & fel/lemínősítések (AH + Premarket)\n"
-
-    if not news:
-        return f"{header}(nincs releváns bejegyzés az ablakban)\n"
-
-    lines: List[str] = [header]
-
-    for item in news:
-        when = _format_ts(item.ts)
-        if item.kind == "rating":
-            house = item.house or "ismeretlen ház"
-            action = item.action or "rating változás"
-            new_rating = item.new_rating or "n/a"
-            if item.new_target is not None:
-                target_str = f"{item.new_target:.1f} USD"
+def _format_news_line(item: NewsItem) -> str:
+    t = item.ticker
+    dt_str = item.when.strftime("%Y-%m-%d %H:%M")
+    if item.category == "rating":
+        # Elemzői fel/lemínősítés formátuma
+        house = item.rating_house or item.source
+        action = item.rating_action or ""
+        new_rating = item.rating_to or ""
+        tgt_part = ""
+        if item.target_new is not None:
+            if item.target_old is not None:
+                tgt_part = f", célár: {item.target_old} → {item.target_new}"
             else:
-                target_str = "n/a"
+                tgt_part = f", új célár: {item.target_new}"
+        dir_part = f" [{item.direction}]" if item.direction else ""
+        return (
+            f"{t} — {house} {action} → {new_rating}{tgt_part}{dir_part} — "
+            f"{item.summary} ({dt_str})"
+        )
+    else:
+        dir_part = f" [{item.direction}]" if item.direction else ""
+        return f"{t} — {item.headline}{dir_part} — {item.summary} ({dt_str})"
 
-            reason = item.impact or (item.headline or "").strip() or "rövid indok nincs megadva"
 
-            lines.append(
-                f"- {item.ticker} — {house} — {action} — új besorolás/célár: "
-                f"{new_rating} / {target_str} — {reason} — {when}"
-            )
-        else:
-            # PR / cégközlés / earnings / guidance
-            headline = (item.headline or "").strip() or "Bejelentés"
-            impact = item.impact or "várható hatás: nincs jelölve"
-            lines.append(
-                f"- {item.ticker} — Bejelentés: {headline} — várható hatás: {impact} — {when}"
-            )
+def build_news_block_1(all_news: List[NewsItem]) -> str:
+    """
+    #1 riport alá tartozó „Bejelentések & fel/lemínősítések” blokk.
 
-    lines.append("")  # záró üres sor
-    return "\n".join(lines)
+    Ha nincs hír, üres stringet ad vissza.
+    """
+    if not all_news:
+        return ""
+
+    lines: List[str] = []
+    lines.append("### Bejelentések & fel/lemínősítések\n")
+
+    for item in all_news:
+        lines.append("- " + _format_news_line(item))
+
+    return "\n".join(lines) + "\n"
 
 
 # ---------------------------------------------------------------------------
-# Közeli katalizátorok
+# Közeli katalizátorok blokk
 # ---------------------------------------------------------------------------
-
 
 @dataclass
 class UpcomingCatalyst:
-    """
-    Közeli (pár napos) katalizátor a bibliához:
-
-    - ticker
-    - date: dátum (CE(S)T)
-    - kind: "earnings", "guidance", "investor_day", "adat", stb.
-    - description: rövid szöveg (mi ez pontosan)
-    - importance: "high", "medium", "low" (nem kötelező, de jó jelzés)
-    """
-
     ticker: str
-    date: date
-    kind: str
-    description: str
-    importance: str = "medium"
+    date: datetime
+    description: str   # pl. "Q3 gyorsjelentés", "Investor Day", "terméklaunch"
 
 
 def build_catalyst_block_1(catalysts: List[UpcomingCatalyst]) -> str:
-    header = "## Közeli katalizátorok (pár nap)\n"
-
+    """
+    #1 riporthoz: „Közeli katalizátorok (pár napos táv)”.
+    Ha nincs releváns katalizátor, üres stringet ad.
+    """
     if not catalysts:
-        return header + "Nincs automatikusan azonosított katalizátor; ha van saját listád, egészítsd ki kézzel.\n"
+        return ""
 
-    # rendezés dátum szerint
-    catalysts_sorted = sorted(catalysts, key=lambda c: (c.date, c.ticker))
+    lines: List[str] = []
+    lines.append("### Közeli katalizátorok (pár napos táv)\n")
 
-    lines: List[str] = [header]
-
+    catalysts_sorted = sorted(catalysts, key=lambda c: c.date)
     for c in catalysts_sorted:
-        date_str = c.date.strftime("%Y-%m-%d")
-        lines.append(
-            f"- {date_str} — {c.ticker} — {c.kind} — {c.description} "
-            f"(fontosság: {c.importance})"
-        )
+        d_str = c.date.strftime("%Y-%m-%d")
+        lines.append(f"- {d_str} — {c.ticker} — {c.description}")
 
-    lines.append("")
-    return "\n".join(lines)
+    return "\n".join(lines) + "\n"
