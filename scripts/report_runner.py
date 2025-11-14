@@ -554,6 +554,32 @@ def run_report_2(
     lines.append("## #2 – Tegnapi nyitástól zárásig (Open→Close) — CEST\n")
     lines.append("_Árforrás: elsődlegesen Yahoo Finance quote (v7 – previousClose → last), "
                  "fallback: Stooq EOD (q/d/l)._  \n")
+    # … eddig:
+    filtered = [r for r in tickers if r.ticker != "PKN.WA"]
+    if not filtered:
+        lines.append("Nincs feldolgozható ticker.\n")
+        return "\n".join(lines)
+
+    ticker_list = [r.ticker for r in filtered]
+    quote_map = fetch_quotes_batch_with_fallback(ticker_list)
+
+    # Forrásbontás: hány ticker jött Yahoo-ról és hány Stooq-fallbackről
+    yahoo_ok = sum(
+        1
+        for row in filtered
+        if quote_map.get(row.ticker, (None, None, None, "no_data", ""))[4] == "yahoo"
+           and quote_map[row.ticker][3] is None
+    )
+    stooq_ok = sum(
+        1
+        for row in filtered
+        if quote_map.get(row.ticker, (None, None, None, "no_data", ""))[4] == "stooq"
+           and quote_map[row.ticker][3] is None
+    )
+    lines.append(
+        f"Árforrás bontás: Yahoo = {yahoo_ok} ticker, Stooq fallback = {stooq_ok} ticker.\n"
+    )
+
 
     filtered = [r for r in tickers if r.ticker != "PKN.WA"]
     if not filtered:
@@ -641,6 +667,25 @@ def run_report_3(
 
     ticker_list = [r.ticker for r in filtered]
     quote_map = fetch_quotes_batch_with_fallback(ticker_list)
+        ticker_list = [r.ticker for r in filtered]
+    quote_map = fetch_quotes_batch_with_fallback(ticker_list)
+
+    # Forrásbontás: hány ticker jött Yahoo-ról és hány Stooq-fallbackről
+    yahoo_ok = sum(
+        1
+        for row in filtered
+        if quote_map.get(row.ticker, (None, None, None, "no_data", ""))[4] == "yahoo"
+           and quote_map[row.ticker][3] is None
+    )
+    stooq_ok = sum(
+        1
+        for row in filtered
+        if quote_map.get(row.ticker, (None, None, None, "no_data", ""))[4] == "stooq"
+           and quote_map[row.ticker][3] is None
+    )
+    lines.append(
+        f"Árforrás bontás: Yahoo = {yahoo_ok} ticker, Stooq fallback = {stooq_ok} ticker.\n"
+    )
 
     # Lefedettség a kombinált quote alapján
     status_map: Dict[str, TickerStatus] = {}
