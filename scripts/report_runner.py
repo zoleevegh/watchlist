@@ -460,8 +460,21 @@ def run_report_1(
         else:
             status_map[row.ticker] = TickerStatus(ok=False, reason=reason)
 
-    # Lefedettség blokk (biblia szerint)
-    lines.append(build_coverage_block(status_map))
+    # Lefedettség blokk (biblia szerint) – de ha MINDEN rate_limited, akkor ne falat írjunk
+    all_rate_limited = (
+        len(status_map) > 0 and
+        all((not s.ok and (s.reason or "").startswith("rate_limited") for s in status_map.values()))
+    )
+
+    if all_rate_limited:
+        lines.append(
+            "Lefedettség: HIÁNYOS – a Yahoo Finance chart API (v8) "
+            "gyakorlatilag minden tickerre 429 (rate_limited) státuszt adott, "
+            "ezért az AH/PM riport ma nem értelmezhető.\n"
+        )
+        # és kész, nem soroljuk fel a 100 tickert
+    else:
+        lines.append(build_coverage_block(status_map))
 
     # Politika/FED blokk (makró)
     macro_block = build_macro_block_1(macro)
