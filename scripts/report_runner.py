@@ -360,9 +360,8 @@ def fetch_quotes_batch(
 
     return results
 
-
 # ---------------------------------------------------------------------------
-# 1-es riport: AH + PM – HAR D STOP csak a darabszámosokra
+# 1-es riport: AH + PM – hard stop csak a darabszámosokra
 # ---------------------------------------------------------------------------
 
 def run_report_1(
@@ -385,6 +384,7 @@ def run_report_1(
         "fallback: Yahoo Finance quote (v7 pre/post)._"
     )
 
+    # PKN.WA alapból kimarad
     filtered = [r for r in tickers if r.ticker != "PKN.WA"]
     if not filtered:
         lines.append("\nNincs feldolgozható ticker.\n")
@@ -404,39 +404,25 @@ def run_report_1(
         "403",
         "429",
     )
-    HARD_STOP_POS_RATE_LIMIT = 3
 
-    hard_stop = False
-    consec_rate_limited = 0
-
-    # 1) Először CSAK a darabszámosokra kérdezünk rá
-    for idx, row in enumerate(positions):
+    # 1) MINDEN darabszámos pozíciót lekérdezünk (ez még kis mennyiség)
+    rate_limited_pos = 0
+    for row in positions:
         snap, src, reason = get_ah_pm_with_fallback(row.ticker)
         price_map[row.ticker] = (snap, src)
 
         if reason is None:
             status_map[row.ticker] = TickerStatus(ok=True)
-            consec_rate_limited = 0
         else:
             status_map[row.ticker] = TickerStatus(ok=False, reason=reason)
             if any(tok in reason for tok in RATE_LIMIT_TOKENS):
-                consec_rate_limited += 1
-            else:
-                consec_rate_limited = 0
+                rate_limited_pos += 1
 
-        if consec_rate_limited >= HARD_STOP_POS_RATE_LIMIT:
-            hard_stop = True
-            # a maradék pozíciókat már nem kérdezzük le
-            for rest in positions[idx + 1:]:
-                price_map[rest.ticker] = (PriceSnapshot(None, None, None), "none")
-                status_map[rest.ticker] = TickerStatus(
-                    ok=False,
-                    reason="not_queried_due_to_rate_limit",
-                )
-            break
+    # 2) Hard stop feltétel: ha legalább 3 darabszámos pozíció "rate_limited" jellegű hibát kap
+    hard_stop = rate_limited_pos >= 3
 
-    # 2) Ha hard stop volt, a watchlistre egyáltalán nem küldünk kérést
     if hard_stop:
+        # 2/a) A watchlistet EGYÁLTALÁN nem kérdezzük le, csak flageljük
         for row in watchlist:
             price_map[row.ticker] = (PriceSnapshot(None, None, None), "none")
             status_map[row.ticker] = TickerStatus(
@@ -444,7 +430,7 @@ def run_report_1(
                 reason="not_queried_due_to_rate_limit",
             )
     else:
-        # normál módon lekérdezzük a watchlistet is
+        # 2/b) NINCS hard stop → normál módon lekérdezzük a watchlistet is
         for row in watchlist:
             snap, src, reason = get_ah_pm_with_fallback(row.ticker)
             price_map[row.ticker] = (snap, src)
@@ -457,13 +443,13 @@ def run_report_1(
     lines.append(build_coverage_block(status_map))
     lines.append(build_macro_block_1(macro))
 
-    # Ha hard stop, itt zárjuk le
+    # Ha hard stop, itt lezárjuk a riportot – nincs értelmezhető AH/PM adat
     if hard_stop:
         lines.append(
             "\nA #1 AH/PM riportban **hard stop** lépett életbe: több darabszámos tickerre "
-            "`rate_limited` / `Unauthorized` választ adott a Yahoo Finance (chart v8 + quote v7), "
-            "ezért a többi pozíciót és az egész watchlistet már **nem kérdeztük le** "
-            "(oka: `not_queried_due_to_rate_limit`).\n"
+            "`rate_limited` / `Unauthorized` / 401/403/429 hibát adott a Yahoo Finance "
+            "(chart v8 + quote v7). A további pozíciókat és az egész watchlistet "
+            "**nem kérdeztük le** (oka: `not_queried_due_to_rate_limit`).\n"
         )
         return "\n".join(lines)
 
@@ -557,6 +543,7 @@ def run_report_1(
         lines.append(catalyst_block)
 
     return "\n".join(lines)
+
 
 
 # ---------------------------------------------------------------------------
