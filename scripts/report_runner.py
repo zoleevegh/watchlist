@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 report_runner.py
@@ -6,11 +6,11 @@ report_runner.py
 
 Egységes runner script az 1/2/3-as riportokhoz.
 
-#1: AH + PM – ELSŐDLEGESEN Yahoo Finance quote (v7 pre/post),
-    chart (v8, 2d/5m, includePrePost) csak fallback.
-    CSAK darabszámos tickerekre fut, PKN.WA kivéve.
+#1: AH + PM – Yahoo Finance quote v7 streamer (pre/post %), teljes MASTER-re.
+#2: Tegnapi Open→Close – Yahoo Finance quote v7 (previousClose → last).
+#3: Ma Open→Most – Yahoo Finance quote v7 (regularMarketOpen → regularMarketPrice).
 
-Script verzió: 1.5.1-positions-quote-first-summary
+PKN.WA – a régi szabály szerint nem szerepel a riportokban, csak ha külön kéred.
 """
 
 from __future__ import annotations
@@ -26,54 +26,65 @@ from typing import Dict, List, Optional, Tuple
 
 import requests
 
+# scripts/ mappa importálhatósága
+sys.path.append(os.path.dirname(__file__))
+
+from report_1_helpers import (
+    TickerStatus,
+    build_coverage_block,
+    build_macro_block_1,
+    NewsItem,
+    merge_news_sources,
+    build_news_block_1,
+    UpcomingCatalyst,
+    build_catalyst_block_1,
+)
+
 try:
     from zoneinfo import ZoneInfo
-except ImportError:  # Python <3.9
+except ImportError:  # Python <3.9 fallback
     from backports.zoneinfo import ZoneInfo  # type: ignore
 
 BUDAPEST = ZoneInfo("Europe/Budapest")
 US_EASTERN = ZoneInfo("America/New_York")
 
-SCRIPT_VERSION = "1.5.1-positions-quote-first-summary"
-
-# Böngészős User-Agent – így a Yahoo kevésbé tilt
-YF_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/129.0 Safari/537.36"
-    ),
-    "Accept": "application/json, text/javascript, */*; q=0.01",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Connection": "keep-alive",
-}
+# Verzió – a run summary-ban is megjelenik
+SCRIPT_VERSION = "1.7.0-yahoo-streamer-fullsheet"
 
 
 # ---------------------------------------------------------------------------
-# CSV beolvasása
+# CSV beolvasása – K küszöbbel, darabszámos flaggel
 # ---------------------------------------------------------------------------
 
 @dataclass
 class TickerRow:
     ticker: str
-    quantity: Optional[float]        # None = watchlist
-    k_threshold: float               # min. abs % mozgás (default 3.0)
-    is_position: bool                # True = darabszámos pozíció
+    quantity: Optional[float]  # None = nincs darabszám (watchlist / üres)
+    k_threshold: float         # min. abs % (3% default, ha nincs értelmes K)
+    is_position: bool          # True = darabszámos pozíció
 
 
-def _parse_float(val: Optional[str]) -> Optional[float]:
+def _parse_float(val: str) -> Optional[float]:
     if val is None:
         return None
-    val = val.strip().replace(",", ".")
-    if not val:
+    s = str(val).strip().replace(",", ".")
+    if not s:
         return None
     try:
-        return float(val)
+        return float(s)
     except ValueError:
         return None
 
 
 def load_tickers_from_csv(path: str, default_k: float = 3.0) -> List[TickerRow]:
+    """
+    MASTER CSV beolvasása.
+    Várható oszlopok (esetérzéketlen, ékezet mindegy):
+        - Ticker / Symbol
+        - Darabszám / qty / quantity / db
+        - K (küszöb %)
+    Ha K üres/hibás → default_k (3%).
+    """
     if not os.path.exists(path):
         raise FileNotFoundError(f"CSV nem található: {path}")
 
@@ -81,16 +92,18 @@ def load_tickers_from_csv(path: str, default_k: float = 3.0) -> List[TickerRow]:
 
     with open(path, "r", encoding="utf-8-sig", newline="") as f:
         reader = csv.DictReader(f)
-        headers = {h.strip().lower(): h for h in (reader.fieldnames or [])}
+        fieldnames = reader.fieldnames or []
+        headers = {h.strip().lower(): h for h in fieldnames}
 
         def get_col(*names: str) -> Optional[str]:
             for n in names:
-                if n.lower() in headers:
-                    return headers[n.lower()]
+                ln = n.lower()
+                if ln in headers:
+                    return headers[ln]
             return None
 
         ticker_col = get_col("ticker", "tiker", "symbol")
-        qty_col = get_col("darabszam", "db", "qty", "quantity")
+        qty_col = get_col("darabszám", "darabszam", "db", "qty", "quantity")
         k_col = get_col("k", "minmove", "minmovepct", "min_pct")
 
         if not ticker_col:
@@ -121,8 +134,127 @@ def load_tickers_from_csv(path: str, default_k: float = 3.0) -> List[TickerRow]:
 
 
 # ---------------------------------------------------------------------------
-# Segédfüggvény – százalékváltozás
+# Yahoo Finance – streamer (quote v7) AH/PM (pre/post) százalékok
 # ---------------------------------------------------------------------------
+
+YAHOO_QUOTE_URL = "https://query1.finance.yahoo.com/v7/finance/quote"
+
+YAHOO_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/129.0 Safari/537.36"
+    ),
+    "Accept": "application/json, text/javascript, */*; q=0.01",
+    "Accept-Language": "en-US,en;q=0.9,hu;q=0.8",
+    "Referer": "https://finance.yahoo.com/",
+}
+
+
+def fetch_ah_pm_from_yahoo_streamer(
+    tickers: List[str],
+    max_batch_size: int = 40,
+) -> Tuple[Dict[str, Dict[str, Optional[float]]], Dict[str, Optional[str]]]:
+    """
+    Yahoo Finance quote (v7) pre/post százalékok (#1 riport).
+
+    Fields:
+        - preMarketChangePercent  → PM
+        - postMarketChangePercent → AH
+
+    Visszatér:
+        data:   {ticker: {"ah": float|None, "pm": float|None}}
+        errors: {ticker: str|None}  # hiba oka (pl. 'http_429', 'no_quote_result', stb.)
+    """
+    session = requests.Session()
+    session.headers.update(YAHOO_HEADERS)
+
+    data: Dict[str, Dict[str, Optional[float]]] = {
+        t: {"ah": None, "pm": None} for t in tickers
+    }
+    errors: Dict[str, Optional[str]] = {t: None for t in tickers}
+
+    def chunks(seq, n):
+        for i in range(0, len(seq), n):
+            yield seq[i:i + n]
+
+    for batch in chunks(list(tickers), max_batch_size):
+        params = {
+            "symbols": ",".join(batch),
+            "fields": "symbol,postMarketChangePercent,preMarketChangePercent",
+        }
+
+        attempt = 0
+        resp: Optional[requests.Response] = None
+
+        while attempt < 3:
+            try:
+                resp = session.get(YAHOO_QUOTE_URL, params=params, timeout=10)
+            except Exception as e:
+                for t in batch:
+                    errors[t] = f"request_error:{e}"
+                resp = None
+                break
+
+            if resp.status_code == 200:
+                break
+
+            if resp.status_code == 429:
+                # rate limit – kicsi backoff, max 3 próbálkozás
+                time.sleep(1.5 * (attempt + 1))
+                attempt += 1
+                continue
+
+            # más HTTP hiba – nem próbálkozunk tovább
+            for t in batch:
+                errors[t] = f"http_{resp.status_code}"
+            resp = None
+            break
+
+        if resp is None or resp.status_code != 200:
+            continue
+
+        try:
+            payload = resp.json()
+            results = payload.get("quoteResponse", {}).get("result", []) or []
+        except Exception as e:
+            for t in batch:
+                errors[t] = f"json_error:{e}"
+            continue
+
+        by_symbol = {}
+        for item in results:
+            sym = (item.get("symbol") or "").upper()
+            if sym:
+                by_symbol[sym] = item
+
+        for t in batch:
+            item = by_symbol.get(t)
+            if not item:
+                if errors[t] is None:
+                    errors[t] = "no_quote_result"
+                continue
+
+            ah = item.get("postMarketChangePercent")
+            pm = item.get("preMarketChangePercent")
+
+            if isinstance(ah, (int, float)):
+                data[t]["ah"] = float(ah)
+            if isinstance(pm, (int, float)):
+                data[t]["pm"] = float(pm)
+
+    return data, errors
+
+
+# ---------------------------------------------------------------------------
+# Általános segéd – százalék formázás
+# ---------------------------------------------------------------------------
+
+def fmt_pct(x: Optional[float]) -> str:
+    if x is None:
+        return "n/a"
+    return f"{x:+.2f}%"
+
 
 def pct_change(base: Optional[float], new: Optional[float]) -> Optional[float]:
     if base is None or new is None or base == 0:
@@ -131,168 +263,189 @@ def pct_change(base: Optional[float], new: Optional[float]) -> Optional[float]:
 
 
 # ---------------------------------------------------------------------------
-# Yahoo Finance chart (v8) – fallback AH/PM-hez
+# #1 riport – AH/PM – TELJES MASTER-re, streamerrel
 # ---------------------------------------------------------------------------
 
-@dataclass
-class PriceSnapshot:
-    prev_close: Optional[float]
-    ah_last: Optional[float]
-    pm_last: Optional[float]
-
-
-def fetch_chart_2d_5m(ticker: str) -> Tuple[Optional[dict], Optional[str]]:
+def run_report_1(
+    tickers: List[TickerRow],
+    macro: Optional[str],
+) -> str:
     """
-    Nyers chart JSON (v8) 2 nap / 5 perces, includePrePost.
-    Hiba esetén (429, network, parse) None + reason-str.
+    #1 – After-hours (22:00–02:00) + Premarket (10:00–15:30).
+
+    - A teljes MASTER-re fut (pozíciók + watchlist, PKN.WA kivéve).
+    - Árforrás: Yahoo quote v7 streamer (pre/post %).
+    - Darabszámos tickerek: mindig listázva.
+    - Watchlist: csak ha abs(AH) vagy abs(PM) ≥ K (ha K hiányzik → 3.00%).
     """
-    url = (
-        f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
-        "?range=2d&interval=5m&includePrePost=true"
+    now_local = datetime.now(BUDAPEST)
+    today_str = now_local.strftime("%Y-%m-%d")
+    prev_day = (now_local - timedelta(days=1)).strftime("%Y-%m-%d")
+
+    # Fejléc
+    lines: List[str] = []
+    lines.append("#1 – After-hours (22:00–02:00) + Premarket (10:00–15:30) — CEST\n")
+    lines.append(f"Script verzió: {SCRIPT_VERSION}\n")
+    lines.append(
+        f"Vizsgált ablakok (CEST): AH {prev_day} 22:00 → {today_str} 02:00, "
+        f"PM {today_str} 10:00 → 15:30\n"
     )
-    try:
-        resp = requests.get(url, headers=YF_HEADERS, timeout=10)
-    except Exception as e:
-        return None, f"network_error(chart_v8): {e}"
+    lines.append(
+        "Árforrás: Yahoo Finance quote (v7 streamer – "
+        "preMarketChangePercent/postMarketChangePercent).\n"
+    )
 
-    if resp.status_code == 429:
-        return None, "rate_limited(chart_v8)"
+    # PKN.WA kizárás a riportból (régi szabály)
+    filtered = [r for r in tickers if r.ticker != "PKN.WA"]
 
-    try:
-        resp.raise_for_status()
-    except Exception as e:
-        return None, f"http_error(chart_v8): {e}"
+    if not filtered:
+        lines.append("Lefedettség: NINCS FELDOLGOZHATÓ TICKER (PKN.WA nélkül).")
+        return "\n".join(lines)
 
-    try:
-        data = resp.json()
-    except Exception as e:
-        return None, f"parse_error(chart_v8): {e}"
+    ticker_list = [r.ticker for r in filtered]
 
-    return data, None
+    # Yahoo streamer lekérdezés
+    ah_pm_data, errors = fetch_ah_pm_from_yahoo_streamer(ticker_list)
 
+    # Lefedettség blokk – TickerStatus + build_coverage_block (Biblia szerint)
+    status_map: Dict[str, TickerStatus] = {}
+    for r in filtered:
+        err = errors.get(r.ticker)
+        if err:
+            status_map[r.ticker] = TickerStatus(ok=False, reason=err)
+        else:
+            status_map[r.ticker] = TickerStatus(ok=True)
 
-def extract_ah_pm_from_chart(ticker: str) -> Tuple[PriceSnapshot, Optional[str]]:
-    """
-    Fallback a #1 riporthoz: AH + PM sáv utolsó ára chartból.
-    """
-    data, err = fetch_chart_2d_5m(ticker)
-    if err or data is None:
-        return PriceSnapshot(None, None, None), err
+    lines.append(build_coverage_block(status_map))
+    lines.append("")
 
-    try:
-        result = data["chart"]["result"][0]
-        meta = result.get("meta", {})
-        timestamps = result.get("timestamp", [])
-        quotes = result.get("indicators", {}).get("quote", [{}])[0]
-        closes = quotes.get("close", [])
+    # Politika/FED blokk – a helper kezeli a macro paramétert
+    macro_block = build_macro_block_1(macro)
+    if macro_block:
+        lines.append(macro_block)
+        lines.append("")
 
-        if not timestamps or not closes:
-            return PriceSnapshot(None, None, None), "no_price_data(chart_v8)"
+    # Darabszámos / watchlist szétválasztás
+    pos_lines: List[str] = []
+    pos_lines.append("Darabszámos tickerek – After-hours & Premarket mozgások\n")
 
-        prev_close = meta.get("previousClose")
+    wl_lines: List[str] = []
+    wl_lines.append(
+        "Watchlist – After-hours & Premarket mozgások (csak ha ≥K a mozgás)\n"
+    )
 
-        dt_list = [
-            datetime.fromtimestamp(ts, tz=US_EASTERN) for ts in timestamps
-        ]
+    for row in filtered:
+        t = row.ticker
+        d = ah_pm_data.get(t, {"ah": None, "pm": None})
+        ah = d.get("ah")
+        pm = d.get("pm")
 
-        if prev_close is None:
-            prev_rth = [
-                c
-                for c, dt in zip(closes, dt_list)
-                if dt.hour == 16 or (dt.hour == 15 and dt.minute >= 30)
-            ]
-            prev_close = prev_rth[0] if prev_rth else None
+        ah_txt = fmt_pct(ah)
+        pm_txt = fmt_pct(pm)
 
-        last_dt = dt_list[-1]
-        today_date = last_dt.date()
-        yesterday_date = (last_dt - timedelta(days=1)).date()
+        # K küszöb
+        k_thr = row.k_threshold if row.k_threshold and row.k_threshold > 0 else 3.0
 
-        ah_prices = [
-            c
-            for c, dt in zip(closes, dt_list)
-            if dt.date() == yesterday_date and 16 <= dt.hour < 20
-        ]
-        ah_last = ah_prices[-1] if ah_prices else None
+        max_move = max(
+            abs(ah) if isinstance(ah, (int, float)) else 0.0,
+            abs(pm) if isinstance(pm, (int, float)) else 0.0,
+        )
 
-        pm_prices = [
-            c
-            for c, dt in zip(closes, dt_list)
-            if dt.date() == today_date
-            and (
-                (4 <= dt.hour < 9)
-                or (dt.hour == 9 and dt.minute <= 30)
+        has_signal = max_move >= k_thr
+
+        if row.is_position:
+            if not (isinstance(ah, (int, float)) or isinstance(pm, (int, float))):
+                reason = "Hiányzó AH/PM adat (streamer nem adott értelmezhető változást)."
+            elif has_signal:
+                reason = f"Érdemi AH/PM elmozdulás (≥{k_thr:.2f}%)."
+            else:
+                reason = "Egyelőre nincs küszöb feletti AH/PM elmozdulás."
+
+            pos_lines.append(
+                f"{t} — AH {ah_txt} | PM {pm_txt} — {reason} "
+                "(árforrás: Yahoo quote/v7 streamer)"
             )
-        ]
-        pm_last = pm_prices[-1] if pm_prices else None
+        else:
+            # watchlist – csak jelzésnél
+            if not has_signal:
+                continue
+            reason = f"Watchlisten is érdemi AH/PM elmozdulás (≥{k_thr:.2f}%)."
+            wl_lines.append(
+                f"{t} — AH {ah_txt} | PM {pm_txt} — {reason} "
+                "(árforrás: Yahoo quote/v7 streamer)"
+            )
 
-        return PriceSnapshot(prev_close, ah_last, pm_last), None
-    except Exception as e:
-        return PriceSnapshot(None, None, None), f"parse_error(chart_v8): {e}"
+    if len(pos_lines) > 1:
+        lines.append("\n".join(pos_lines) + "\n")
+    if len(wl_lines) > 1:
+        lines.append("\n".join(wl_lines) + "\n")
+
+    # Hírek + katalizátor blokk – jelenleg üres placeholder (Biblia szerint ide fognak kerülni)
+    yahoo_news: List[NewsItem] = []
+    extra_news: List[NewsItem] = []
+    all_news = merge_news_sources(yahoo_news, extra_news)
+
+    news_block = build_news_block_1(all_news)
+    if news_block:
+        lines.append(news_block)
+
+    catalysts: List[UpcomingCatalyst] = []
+    catalyst_block = build_catalyst_block_1(catalysts)
+    if catalyst_block:
+        lines.append(catalyst_block)
+
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
-# Yahoo Finance quote (v7) – batch helper (#1)
+# #2 / #3 – Yahoo quote v7 batch (previousClose / last / open)
 # ---------------------------------------------------------------------------
-
-@dataclass
-class QuoteSnapshot:
-    prev_close: Optional[float] = None
-    last: Optional[float] = None
-    open_px: Optional[float] = None
-    post_price: Optional[float] = None
-    post_change_pct: Optional[float] = None
-    pre_price: Optional[float] = None
-    pre_change_pct: Optional[float] = None
-    error: Optional[str] = None
-
 
 def fetch_quotes_batch(
     tickers: List[str],
-    batch_size: int = 15,
-) -> Dict[str, QuoteSnapshot]:
+    batch_size: int = 20,
+) -> Dict[str, Tuple[Optional[float], Optional[float], Optional[float], Optional[str]]]:
     """
-    Yahoo quote API batch-ben az 1-es riporthoz.
+    Yahoo quote API batch-ben (#2 és #3 riporthoz).
 
     Visszaad:
-        { "AAPL": QuoteSnapshot(...), ... }
+        {
+          "AAPL": (prev_close, last, regular_open, error_reason_str_or_None),
+          ...
+        }
     """
-    results: Dict[str, QuoteSnapshot] = {}
+    results: Dict[str, Tuple[Optional[float], Optional[float], Optional[float], Optional[str]]] = {}
     if not tickers:
         return results
 
-    unique: List[str] = list(dict.fromkeys(tickers))
+    for t in tickers:
+        results[t] = (None, None, None, None)
 
-    for t in unique:
-        results[t] = QuoteSnapshot(error="no_data_yet")
-
-    for i in range(0, len(unique), batch_size):
-        batch = unique[i : i + batch_size]
+    for i in range(0, len(tickers), batch_size):
+        batch = tickers[i:i + batch_size]
         symbols_str = ",".join(batch)
-        url = (
-            "https://query1.finance.yahoo.com/v7/finance/quote"
-            f"?symbols={symbols_str}&lang=en-US&region=US"
-        )
+        url = f"{YAHOO_QUOTE_URL}?symbols={symbols_str}"
 
         try:
-            resp = requests.get(url, headers=YF_HEADERS, timeout=10)
+            resp = requests.get(url, headers=YAHOO_HEADERS, timeout=10)
         except Exception as e:
             for t in batch:
-                results[t].error = f"network_error(quote_v7): {e}"
-            time.sleep(1.2)
+                results[t] = (None, None, None, f"network_error:{e}")
+            time.sleep(2)
             continue
 
         if resp.status_code == 429:
             for t in batch:
-                results[t].error = "rate_limited(quote_v7)"
-            time.sleep(2.0)
+                results[t] = (None, None, None, "rate_limited")
+            time.sleep(5)
             continue
 
         try:
             resp.raise_for_status()
-        except Exception as e:
+        except requests.exceptions.HTTPError as e:
             for t in batch:
-                results[t].error = f"http_error(quote_v7): {e}"
-            time.sleep(1.2)
+                results[t] = (None, None, None, f"http_error:{e}")
+            time.sleep(2)
             continue
 
         try:
@@ -300,52 +453,104 @@ def fetch_quotes_batch(
             qlist = data.get("quoteResponse", {}).get("result", []) or []
         except Exception as e:
             for t in batch:
-                results[t].error = f"parse_error(quote_v7): {e}"
-            time.sleep(1.2)
+                results[t] = (None, None, None, f"parse_error:{e}")
+            time.sleep(2)
             continue
 
-        seen_in_batch = set()
+        seen = set()
         for q in qlist:
-            sym = q.get("symbol")
+            sym = (q.get("symbol") or "").upper()
             if not sym:
                 continue
-            if sym not in results:
-                results[sym] = QuoteSnapshot()
-
-            snap = results[sym]
-            snap.prev_close = q.get("regularMarketPreviousClose")
-            snap.last = q.get("regularMarketPrice")
-            snap.open_px = q.get("regularMarketOpen")
-            snap.post_price = q.get("postMarketPrice")
-            snap.post_change_pct = q.get("postMarketChangePercent")
-            snap.pre_price = q.get("preMarketPrice")
-            snap.pre_change_pct = q.get("preMarketChangePercent")
-            snap.error = None
-            results[sym] = snap
-            seen_in_batch.add(sym)
+            prev_close = q.get("regularMarketPreviousClose")
+            last = q.get("regularMarketPrice")
+            open_px = q.get("regularMarketOpen")
+            results[sym] = (prev_close, last, open_px, None)
+            seen.add(sym)
 
         for t in batch:
-            if t not in seen_in_batch and (
-                results[t].error is None or results[t].error == "no_data_yet"
-            ):
-                results[t].error = "no_quote_result(quote_v7)"
+            if t not in seen:
+                _, _, _, reason = results.get(t, (None, None, None, None))
+                if reason is None:
+                    results[t] = (None, None, None, "no_quote_result")
 
-        time.sleep(1.0)
+        time.sleep(2)
 
     return results
 
 
 # ---------------------------------------------------------------------------
-# 1-es riport: AH + PM csak pozíciókra, quote-first + chart fallback
+# #2 riport – Tegnapi Open→Close
 # ---------------------------------------------------------------------------
 
-def _fmt_pct(val: Optional[float]) -> str:
-    if val is None:
-        return "n/a"
-    return f"{val:+.2f}%"
+def run_report_2(
+    tickers: List[TickerRow],
+) -> str:
+    lines: List[str] = []
+    lines.append("#2 – Tegnapi nyitástól zárásig (Open→Close) – egyszerűsített\n")
+    lines.append(f"Script verzió: {SCRIPT_VERSION}\n")
+    lines.append(
+        "_Árforrás: Yahoo Finance quote (v7 – previousClose → regularMarketPrice)_\n"
+    )
+
+    filtered = [r for r in tickers if r.ticker != "PKN.WA"]
+    if not filtered:
+        lines.append("Lefedettség: NINCS FELDOLGOZHATÓ TICKER (PKN.WA nélkül).")
+        return "\n".join(lines)
+
+    ticker_list = [r.ticker for r in filtered]
+    quote_map = fetch_quotes_batch(ticker_list)
+
+    # Lefedettség blokk
+    status_map: Dict[str, TickerStatus] = {}
+    for row in filtered:
+        prev_close, last, open_px, reason = quote_map.get(row.ticker, (None, None, None, None))
+        if reason is None and prev_close is not None and last is not None:
+            status_map[row.ticker] = TickerStatus(ok=True)
+        else:
+            status_map[row.ticker] = TickerStatus(ok=False, reason=reason or "no_price_data")
+
+    lines.append(build_coverage_block(status_map))
+    lines.append("")
+
+    pos_lines: List[str] = []
+    pos_lines.append("Darabszámos tickerek – abs(Open→Close) becsült mozgás (≥K)\n")
+
+    watch_lines: List[str] = []
+    watch_lines.append("Watchlist – abs(Open→Close) becsült mozgás (≥K)\n")
+
+    for row in filtered:
+        prev_close, last, open_px, reason = quote_map.get(row.ticker, (None, None, None, None))
+        move = pct_change(prev_close, last)
+        if move is None:
+            continue
+
+        k_thr = row.k_threshold if row.k_threshold and row.k_threshold > 0 else 3.0
+        if abs(move) < k_thr:
+            continue
+
+        sign = "+" if move >= 0 else ""
+        src_str = "árforrás: Yahoo quote/v7"
+        line = f"{row.ticker} — Open→Close (becsült): {sign}{move:.2f}% (Küszöb: {k_thr:.2f}%) ({src_str})"
+
+        if row.is_position:
+            pos_lines.append(line)
+        else:
+            watch_lines.append(line)
+
+    if len(pos_lines) > 1:
+        lines.append("\n".join(pos_lines) + "\n")
+    if len(watch_lines) > 1:
+        lines.append("\n".join(watch_lines) + "\n")
+
+    return "\n".join(lines)
 
 
-def run_report_1(
+# ---------------------------------------------------------------------------
+# #3 riport – Ma Open→Most
+# ---------------------------------------------------------------------------
+
+def run_report_3(
     tickers: List[TickerRow],
     macro: Optional[str],
 ) -> str:
@@ -353,207 +558,162 @@ def run_report_1(
 
     now_local = datetime.now(BUDAPEST)
     today_str = now_local.strftime("%Y-%m-%d")
-    prev_day = (now_local - timedelta(days=1)).strftime("%Y-%m-%d")
 
-    lines.append("## #1 – After-hours (22:00–02:00) + Premarket (10:00–15:30) — CEST\n")
-    lines.append(f"\nScript verzió: {SCRIPT_VERSION}\n\n")
+    lines.append("## #3 – Ma nyitástól mostanáig (Open→Most) — CEST\n")
+    lines.append(f"Script verzió: {SCRIPT_VERSION}\n")
     lines.append(
-        f"Vizsgált ablakok (CEST): AH {prev_day} 22:00 → {today_str} 02:00, "
-        f"PM {today_str} 10:00 → 15:30\n\n"
+        f"Vizsgált ablak (CEST): mai USA nyitás (15:30) → lekérdezés időpontja ({today_str})\n"
     )
-    lines.append(
-        "Árforrás: elsődlegesen Yahoo Finance quote (v7 pre/post – "
-        "preMarket/postMarket mezők), fallback: Yahoo Finance chart "
-        "(v8, 2d/5m, includePrePost).\n"
-    )
+    lines.append("_Árforrás: Yahoo Finance quote (v7 – regularMarketOpen → regularMarketPrice)_\n")
 
-    positions = [
-        r for r in tickers if r.is_position and r.ticker != "PKN.WA"
-    ]
+    filtered = [r for r in tickers if r.ticker != "PKN.WA"]
+    if not filtered:
+        lines.append("Lefedettség: NINCS FELDOLGOZHATÓ TICKER (PKN.WA nélkül).")
+        return "\n".join(lines)
 
-    if not positions:
+    ticker_list = [r.ticker for r in filtered]
+    quote_map = fetch_quotes_batch(ticker_list)
+
+    # Lefedettség
+    status_map: Dict[str, TickerStatus] = {}
+    ok_count = 0
+    for row in filtered:
+        prev_close, last, open_px, reason = quote_map.get(row.ticker, (None, None, None, None))
+        if reason is None and open_px is not None and last is not None:
+            status_map[row.ticker] = TickerStatus(ok=True)
+            ok_count += 1
+        else:
+            status_map[row.ticker] = TickerStatus(ok=False, reason=reason or "no_open_or_last")
+
+    lines.append(build_coverage_block(status_map))
+    lines.append("")
+
+    # Ha minden hibás (429, stb.) → őszinte üzenet
+    if ok_count == 0:
         lines.append(
-            "\nLefedettség: NINCS DARABSZÁMOS POZÍCIÓ – az 1-es riport jelenleg csak "
-            "a pozíciókra fut.\n"
+            "\nA 3-as intranapi riport ma **nem értelmezhető**, mert a Yahoo Finance "
+            "quote API-ja minden tickerre hibát adott (pl. rate limit / nincs intranapi adat). "
+            "Ilyenkor az Open→Most mozgásokra ebből a forrásból nincs megbízható adat.\n"
         )
         return "\n".join(lines)
 
-    ticker_list = [r.ticker for r in positions]
-    quote_map = fetch_quotes_batch(ticker_list)
+    # Makró blokk
+    macro_block = build_macro_block_1(macro)
+    if macro_block:
+        lines.append(macro_block)
+        lines.append("")
 
-    coverage_missing: List[str] = []
-    coverage_reasons: Dict[str, str] = {}
-    moves: Dict[str, Tuple[Optional[float], Optional[float], float]] = {}
+    # Darabszámos – MINDEN pozíció
+    pos_lines: List[str] = []
+    pos_lines.append("### Darabszámos tickerek – Ma nyitástól mostanáig (Open→Most)\n")
 
-    for row in positions:
-        sym = row.ticker
-        snap = quote_map.get(sym, QuoteSnapshot(error="missing_from_quote_map"))
+    # Watchlist – csak jelzésnél
+    watch_lines: List[str] = []
+    watch_lines.append("### Watchlist – Open→Most mozgások (csak ha ≥K)\n")
 
-        base = snap.prev_close
-        ah_pct: Optional[float] = None
-        pm_pct: Optional[float] = None
-        reason_parts: List[str] = []
+    for row in filtered:
+        prev_close, last, open_px, reason = quote_map.get(row.ticker, (None, None, None, None))
+        open_most = pct_change(open_px, last)
 
-        if snap.error:
-            reason_parts.append(snap.error)
+        def fmt_open_most(value: Optional[float]) -> str:
+            if value is None:
+                return "Open→Most: n/a"
+            sign = "+" if value >= 0 else ""
+            return f"Open→Most: {sign}{value:.2f}%"
 
-        if snap.post_change_pct is not None:
-            ah_pct = float(snap.post_change_pct)
-        elif base is not None and snap.post_price is not None:
-            ah_pct = pct_change(base, snap.post_price)
+        open_most_str = fmt_open_most(open_most)
+        src_base = "árforrás: Yahoo quote/v7"
 
-        if snap.pre_change_pct is not None:
-            pm_pct = float(snap.pre_change_pct)
-        elif base is not None and snap.pre_price is not None:
-            pm_pct = pct_change(base, snap.pre_price)
+        k_thr = row.k_threshold if row.k_threshold and row.k_threshold > 0 else 3.0
 
-        if ah_pct is None and pm_pct is None:
-            chart_snap, chart_err = extract_ah_pm_from_chart(sym)
-            if chart_err:
-                reason_parts.append(chart_err)
+        if row.is_position:
+            # minden pozíció
+            if open_most is None:
+                if reason:
+                    reason_str = f"Hiányzó intranapi adat (oka: {reason})."
+                else:
+                    reason_str = "Hiányzó intranapi adat (nincs értelmezhető Open→Most)."
+            elif abs(open_most) >= k_thr:
+                reason_str = f"Érdemi intranapi elmozdulás (≥{k_thr:.2f}%) nyitáshoz képest."
+            else:
+                reason_str = "Mérsékelt intranapi mozgás, egyelőre nincs küszöb feletti elmozdulás."
 
-            if base is None and chart_snap.prev_close is not None:
-                base = chart_snap.prev_close
+            if reason:
+                src_str = f"{src_base} (hiba: {reason})"
+            else:
+                src_str = src_base
 
-            if base is not None and chart_snap.ah_last is not None:
-                ah_pct = pct_change(base, chart_snap.ah_last)
-            if base is not None and chart_snap.pm_last is not None:
-                pm_pct = pct_change(base, chart_snap.pm_last)
-
-        if ah_pct is None and pm_pct is None:
-            reason = "; ".join(reason_parts) if reason_parts else "no_ah_pm_data"
-            coverage_missing.append(sym)
-            coverage_reasons[sym] = reason
+            pos_lines.append(f"{row.ticker} — {open_most_str} — {reason_str} ({src_str})")
         else:
-            moves[sym] = (ah_pct, pm_pct, row.k_threshold)
+            has_signal = open_most is not None and abs(open_most) >= k_thr
+            if not has_signal:
+                continue
+            reason_str = f"Watchlisten is érdemi intranapi mozgás (≥{k_thr:.2f}%) nyitáshoz képest."
 
-    if not coverage_missing:
-        lines.append("\nLefedettség: TELJES\n")
-    else:
-        parts = []
-        for sym in coverage_missing:
-            reason = coverage_reasons.get(sym, "ismeretlen ok")
-            parts.append(f"{sym} (oka: {reason})")
-        joined = ", ".join(parts)
-        lines.append(f"\nLefedettség: HIÁNYOS – nem elérhető ticker(ek): {joined}\n")
+            if reason:
+                src_str = f"{src_base} (hiba: {reason})"
+            else:
+                src_str = src_base
 
-    lines.append("\nDarabszámos tickerek – After-hours & Premarket mozgások\n\n")
+            watch_lines.append(f"{row.ticker} — {open_most_str} — {reason_str} ({src_str})")
 
-    for row in positions:
-        sym = row.ticker
-        if sym not in moves:
-            lines.append(
-                f"{sym} — AH: n/a | PM: n/a — Nincs értelmezhető AH/PM adat "
-                f"(oka: {coverage_reasons.get(sym, 'ismeretlen ok')}).\n"
-            )
-            continue
-
-        ah_pct, pm_pct, k_thr = moves[sym]
-        ah_str = _fmt_pct(ah_pct)
-        pm_str = _fmt_pct(pm_pct)
-
-        max_abs = max(
-            abs(ah_pct) if ah_pct is not None else 0.0,
-            abs(pm_pct) if pm_pct is not None else 0.0,
-        )
-
-        if max_abs >= k_thr:
-            comment = f"Érdemi AH/PM elmozdulás (≥{k_thr:.2f}%)."
-        else:
-            comment = "Egyelőre nincs küszöb feletti AH/PM elmozdulás."
-
-        lines.append(
-            f"{sym} — AH {ah_str} | PM {pm_str} — {comment} "
-            "(árforrás: Yahoo quote/v7, chart/v8 fallback)\n"
-        )
-
-    lines.append("\nPolitika/FED / Trump-napihír\n\n")
-    if macro and macro.strip() and macro.strip().lower() != "auto":
-        lines.append(macro.strip() + "\n")
-    else:
-        lines.append(
-            "(Auto mód még nincs implementálva – add meg a makró összefoglalót "
-            "a workflow 'macro' mezőjében.)\n"
-        )
+    if len(pos_lines) > 1:
+        lines.append("\n".join(pos_lines) + "\n")
+    if len(watch_lines) > 1:
+        lines.append("\n".join(watch_lines) + "\n")
 
     return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
-# Placeholder a 2/3-as riportokra
+# CLI / main
 # ---------------------------------------------------------------------------
 
-def run_report_2(tickers: List[TickerRow], macro: Optional[str]) -> str:
-    return (
-        "## #2 – Tegnapi nyitástól zárásig\n\n"
-        "Script verzió: " + SCRIPT_VERSION + "\n\n"
-        "A #2 riport ebben a verzióban még nincs implementálva.\n"
-    )
-
-
-def run_report_3(tickers: List[TickerRow], macro: Optional[str]) -> str:
-    return (
-        "## #3 – Ma nyitástól mostanáig\n\n"
-        "Script verzió: " + SCRIPT_VERSION + "\n\n"
-        "A #3 riport ebben a verzióban még nincs implementálva.\n"
-    )
-
-
-# ---------------------------------------------------------------------------
-# CLI belépési pont
-# ---------------------------------------------------------------------------
-
-def parse_args(argv: List[str]) -> argparse.Namespace:
-    p = argparse.ArgumentParser()
-    p.add_argument(
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Részvény riport futtató (1/2/3)")
+    parser.add_argument(
         "--report",
-        type=int,
-        choices=[1, 2, 3],
+        choices=["1", "2", "3"],
         required=True,
-        help="Riport típusa: 1 / 2 / 3",
+        help="Riport típusa: 1 = AH/PM, 2 = Tegnapi O→C, 3 = Ma O→Most",
     )
-    p.add_argument(
+    parser.add_argument(
         "--csv",
-        type=str,
         required=True,
-        help="Tickerlista CSV útvonala (pl. master.csv)",
+        help="Ticker-lista CSV elérési útja (MASTER)",
     )
-    p.add_argument(
-        "--macro",
-        type=str,
-        default="auto",
-        help="Makró/FED összefoglaló szöveg, vagy 'auto'",
-    )
-    # <<< EZ HIÁNYZOTT: >>>
-    p.add_argument(
+    parser.add_argument(
         "--summary",
-        type=str,
-        default=None,
-        help="(Opcionális) kimeneti összefoglaló fájl útvonala Markdownban.",
+        required=False,
+        help="GitHub Actions GITHUB_STEP_SUMMARY elérési útja (ha megadod, oda írja ki a riportot)",
     )
-    return p.parse_args(argv)
+    parser.add_argument(
+        "--macro",
+        required=False,
+        help="Politika/FED/makró szöveg (Trump-napihír + 1–4 mondat, az 1-es/3-as riporthoz)",
+    )
+    return parser.parse_args()
 
 
 def main() -> None:
-    args = parse_args(sys.argv[1:])
+    args = parse_args()
+
     tickers = load_tickers_from_csv(args.csv)
 
-    if args.report == 1:
-        out = run_report_1(tickers, args.macro)
-    elif args.report == 2:
-        out = run_report_2(tickers, args.macro)
+    if args.report == "1":
+        report_text = run_report_1(tickers, macro=args.macro)
+    elif args.report == "2":
+        report_text = run_report_2(tickers)
+    elif args.report == "3":
+        report_text = run_report_3(tickers, macro=args.macro)
     else:
-        out = run_report_3(tickers, args.macro)
+        raise ValueError(f"Ismeretlen riport: {args.report}")
 
-    # ha --summary meg van adva, írjuk ki fájlba is
     if args.summary:
-        summary_path = args.summary
-        os.makedirs(os.path.dirname(summary_path), exist_ok=True)
-        with open(summary_path, "w", encoding="utf-8") as f:
-            f.write(out)
-
-    # stdout-ra is megy, hogy a Run summary lássa
-    sys.stdout.write(out)
+        with open(args.summary, "w", encoding="utf-8") as f:
+            f.write(report_text)
+    else:
+        print(report_text)
 
 
 if __name__ == "__main__":
