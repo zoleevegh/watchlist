@@ -90,7 +90,7 @@ def load_tickers_from_csv(path: str, default_k: float = 3.0) -> List[TickerRow]:
             return None
 
         ticker_col = get_col("ticker", "tiker", "symbol")
-        qty_col = get_col("darabszám", "db", "qty", "quantity")
+        qty_col = get_col("darabszam", "db", "qty", "quantity")
         k_col = get_col("k", "minmove", "minmovepct", "min_pct")
 
         if not ticker_col:
