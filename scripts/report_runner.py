@@ -10,9 +10,9 @@ Egységes runner script az 1/2/3-as riportokhoz.
 #2: Tegnapi Open→Close – árforrás: Yahoo Finance quote (v7 – previousClose → last)
 #3: Ma Open→Most – árforrás: Yahoo Finance quote (v7 – regularMarketOpen → regularMarketPrice)
 
-FIGYELEM:
-- #1 jelenleg csak a DARABSZÁMOS pozíciókra fut (hard stop logika, kevesebb Yahoo hívás).
-- A teljes watchlistet továbbra is a CSV-ből olvassa, de #1 csak a pozíciókat kérdezi le.
+Jelenlegi speciális logika:
+- #1 riport: csak a DARABSZÁMOS pozíciókra fut (hard stop logika a rate limit miatt),
+  DE ha a CSV-ben nem talál pozíciót, akkor fallback-ként MINDEN tickert pozíciónak tekint.
 """
 
 from __future__ import annotations
@@ -50,7 +50,7 @@ except ImportError:  # Python <3.9 fallback
 BUDAPEST = ZoneInfo("Europe/Budapest")
 US_EASTERN = ZoneInfo("America/New_York")
 
-SCRIPT_VERSION = "1.7.1-yahoo-v7-prepost-positions-only"
+SCRIPT_VERSION = "1.7.2-yahoo-v7-prepost-positions-fix"
 
 
 # ---------------------------------------------------------------------------
@@ -94,7 +94,18 @@ def load_tickers_from_csv(path: str, default_k: float = 3.0) -> List[TickerRow]:
             return None
 
         ticker_col = get_col("ticker", "tiker", "symbol")
-        qty_col = get_col("darabszám", "db", "qty", "quantity")
+
+        # <<< ITT VAN A JAVÍTÁS: Darabszam / Darabszam (db) is >>>
+        qty_col = get_col(
+            "darabszám",
+            "darabszam",
+            "darabszám (db)",
+            "darabszam (db)",
+            "db",
+            "qty",
+            "quantity",
+        )
+
         k_col = get_col("k", "minmove", "minmovepct", "min_pct")
 
         if not ticker_col:
@@ -120,6 +131,17 @@ def load_tickers_from_csv(path: str, default_k: float = 3.0) -> List[TickerRow]:
                     is_position=is_position,
                 )
             )
+
+    # <<< BIZTONSÁGI FALLBACK: ha egyetlen pozíció sincs, akkor minden legyen pozíció >>>
+    if rows and not any(r.is_position for r in rows):
+        # debug log stderr-re (Actions logban látod):
+        print(
+            "[INFO] load_tickers_from_csv: nem talált darabszámos pozíciót, "
+            "minden tickert pozíciónak jelölök fallback-ként.",
+            file=sys.stderr,
+        )
+        for r in rows:
+            r.is_position = True
 
     return rows
 
@@ -302,17 +324,14 @@ def run_report_1(
             row.ticker, (None, None, None, None, None, "no_data")
         )
 
-        # akkor tekintjük "ok"-nak, ha van previousClose ÉS van legalább pre vagy post ár
         if prev_close is not None and (pre_px is not None or post_px is not None) and reason is None:
             status_map[row.ticker] = TickerStatus(ok=True)
             ok_count += 1
         else:
             status_map[row.ticker] = TickerStatus(ok=False, reason=reason or "no_pre_or_post")
 
-    # Lefedettség blokk (csak a pozíciókra)
     lines.append(build_coverage_block(status_map))
 
-    # Ha MINDEN darabszámosnál hibás a pre/post lekérdezés → értelmezhetetlen #1
     if ok_count == 0:
         lines.append(
             "\nA #1 AH/PM riport ma **nem értelmezhető**, mert a Yahoo Finance quote (v7) "
@@ -346,7 +365,6 @@ def run_report_1(
         ah_str = fmt_pct("AH", ah_pct)
         pm_str = fmt_pct("PM", pm_pct)
 
-        # Indoklás (1–2 mondat, biblia-kompatibilis rövid narratíva)
         if ah_pct is None and pm_pct is None:
             if reason:
                 reason_str = f"Hiányzó AH/PM adat (oka: {reason})."
@@ -370,7 +388,7 @@ def run_report_1(
     if len(pos_lines) > 1:
         lines.append("\n".join(pos_lines) + "\n")
 
-    # Hírek – egyelőre üres váz (később Yahoo + extra forrás mix)
+    # Hírek – placeholder
     yahoo_news: List[NewsItem] = []
     extra_news: List[NewsItem] = []
     all_news = merge_news_sources(yahoo_news, extra_news)
@@ -379,7 +397,6 @@ def run_report_1(
     if news_block:
         lines.append(news_block)
 
-    # Közeli katalizátorok – váz, későbbre
     catalysts: List[UpcomingCatalyst] = []
     catalyst_block = build_catalyst_block_1(catalysts)
     if catalyst_block:
@@ -439,7 +456,7 @@ def run_report_2(
 
 
 # ---------------------------------------------------------------------------
-# 3-as riport: Ma nyitástól mostanáig (Open→Most, batch quote, minden pozíció)
+# 3-as riport: Ma nyitástól mostanáig (Open→Most)
 # ---------------------------------------------------------------------------
 
 def run_report_3(
@@ -465,7 +482,6 @@ def run_report_3(
     ticker_list = [r.ticker for r in filtered]
     quote_map = fetch_quotes_batch_v7(ticker_list)
 
-    # Lefedettség a quote alapján
     status_map: Dict[str, TickerStatus] = {}
     ok_count = 0
     for row in filtered:
@@ -490,11 +506,9 @@ def run_report_3(
 
     lines.append(build_macro_block_1(macro))
 
-    # Darabszámos – MINDEN pozíció listázása
     pos_lines: List[str] = []
     pos_lines.append("### Darabszámos tickerek – Ma nyitástól mostanáig (Open→Most)\n")
 
-    # Watchlist – csak ahol ≥K az Open→Most
     watch_lines: List[str] = []
     watch_lines.append("### Watchlist – Open→Most mozgások (csak ha ≥K)\n")
 
@@ -591,7 +605,6 @@ def main() -> None:
         report_text = run_report_1(tickers, macro=args.macro)
     elif args.report == "2":
         report_text = run_report_2(tickers)
-        # 2-eshez jelenleg nincs makróblokk / hírrész külön
     elif args.report == "3":
         report_text = run_report_3(tickers, macro=args.macro)
     else:
