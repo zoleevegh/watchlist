@@ -46,7 +46,7 @@ except ImportError:  # Python <3.9 fallback
 BUDAPEST = ZoneInfo("Europe/Budapest")
 US_EASTERN = ZoneInfo("America/New_York")
 
-SCRIPT_VERSION = "1.4.1-positions-only-qtyfix"
+SCRIPT_VERSION = "1.4.2-positions-only-429-logic"
 
 
 # ---------------------------------------------------------------------------
@@ -400,16 +400,36 @@ def run_report_1(
 
     status_map: Dict[str, TickerStatus] = {}
     price_map: Dict[str, PriceSnapshot] = {}
+    ok_count = 0
+    rate_limited_all = True
 
     for row in positions:
         snap, reason = get_ah_pm_snapshot(row.ticker)
         price_map[row.ticker] = snap
         if reason is None:
             status_map[row.ticker] = TickerStatus(ok=True)
+            ok_count += 1
+            rate_limited_all = False
         else:
             status_map[row.ticker] = TickerStatus(ok=False, reason=reason)
+            if "rate_limited" not in reason:
+                rate_limited_all = False
 
+    # Lefedettség blokk
     lines.append(build_coverage_block(status_map))
+
+    # Ha MINDEN pozira csak rate_limit hibát kaptunk → inkább őszinte "nincs adat" üzenet
+    if ok_count == 0 and rate_limited_all:
+        lines.append(
+            "\nA #1 AH/PM riport ma **nem értelmezhető**, mert a Yahoo Finance "
+            "chart (v8) és quote (v7 pre/post) végpontjai minden darabszámos pozíciónál "
+            "`rate_limited` (429 Too Many Requests) hibát adtak. "
+            "Ilyenkor az after-hours és premarket mozgásokra ebből a forrásból nincs "
+            "megbízható adat.\n"
+        )
+        return "\n".join(lines)
+
+    # Ha nem 100% rate_limit, mehet a makró + részletek
     lines.append(build_macro_block_1(macro))
 
     pos_lines: List[str] = []
@@ -417,6 +437,9 @@ def run_report_1(
 
     for row in positions:
         snap = price_map.get(row.ticker, PriceSnapshot(None, None, None))
+        status = status_map.get(row.ticker)
+        reason = status.reason if status else None
+
         ah_pct = pct_change(snap.prev_close, snap.ah_last)
         pm_pct = pct_change(snap.prev_close, snap.pm_last)
 
@@ -426,14 +449,28 @@ def run_report_1(
             sign = "+" if value >= 0 else ""
             return f"{label} {sign}{value:.2f}%"
 
+        ah_str = fmt_pct("AH", ah_pct)
+        pm_str = fmt_pct("PM", pm_pct)
+        src_str = "árforrás: Yahoo chart/v8 + quote/v7 fallback"
+
+        # Ha nincs egyetlen ár sem, és van hibaok → mondjuk ki, hogy nincs adat
+        if (
+            snap.prev_close is None
+            and snap.ah_last is None
+            and snap.pm_last is None
+            and reason is not None
+        ):
+            pos_lines.append(
+                f"{row.ticker} — AH: n/a | PM: n/a — AH/PM árfolyamadat nem elérhető "
+                f"(oka: {reason}). ({src_str})"
+            )
+            continue
+
+        # Van valamennyi adat → normál logika
         has_signal = (
             (ah_pct is not None and abs(ah_pct) >= row.k_threshold)
             or (pm_pct is not None and abs(pm_pct) >= row.k_threshold)
         )
-
-        ah_str = fmt_pct("AH", ah_pct)
-        pm_str = fmt_pct("PM", pm_pct)
-        src_str = "árforrás: Yahoo chart/v8 + quote/v7 fallback"
 
         if has_signal:
             reason_txt = "Érdemi AH/PM elmozdulás (≥K)."
@@ -445,6 +482,7 @@ def run_report_1(
     if len(pos_lines) > 1:
         lines.append("\n".join(pos_lines) + "\n")
 
+    # Hírek – placeholder (biblia szerinti bővítés később)
     yahoo_news: List[NewsItem] = []
     extra_news: List[NewsItem] = []
     all_news = merge_news_sources(yahoo_news, extra_news)
