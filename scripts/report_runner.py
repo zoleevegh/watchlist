@@ -446,28 +446,57 @@ def run_report_1(
             status_map[row.ticker] = TickerStatus(ok=True)
         else:
             status_map[row.ticker] = TickerStatus(ok=False, reason=reason)
-            if "rate_limited" in reason or "unauthorized" in reason:
+            if "rate_limited" in reason.lower() or "unauthorized" in reason.lower():
                 rate_limit_fails += 1
 
         attempts += 1
 
-        if attempts >= HARDSTOP_MIN_ATTEMPTS and attempts > 0:
+        if attempts >= HARDSTOP_MIN_ATTEMPTS:
             ratio = rate_limit_fails / attempts
             if ratio >= HARDSTOP_FAIL_RATIO:
                 global_rate_limited = True
                 break
 
+    # Ha globális rate limitet észlelünk, a többi darabszámos tickerhez
+    # csak jelöljük, hogy nem futtattuk le.
     if global_rate_limited:
-        # Lefedettség: csak a ténylegesen próbált darabszámos tickerek
-        lines.append(build_coverage_block(status_map))
+        for row in positions[attempts:]:
+            if row.ticker not in status_map:
+                status_map[row.ticker] = TickerStatus(
+                    ok=False,
+                    reason="nem futtatva – globális rate_limit",
+                )
+
+        # --- Saját lefedettség-blokk, CSAK darabszámosokra! ---
+        missing_parts: List[str] = []
+        for t, st in status_map.items():
+            if not st.ok:
+                if st.reason:
+                    missing_parts.append(f"{t} (oka: {st.reason})")
+                else:
+                    missing_parts.append(t)
+
+        if missing_parts:
+            lines.append(
+                "Lefedettség: HIÁNYOS – nem elérhető darabszámos ticker(ek): "
+                + ", ".join(sorted(missing_parts))
+                + "\n"
+            )
+        else:
+            lines.append(
+                "Lefedettség: TELJES – a darabszámos tickerekhez elérhető adat.\n"
+            )
+
         lines.append(
             "\nAz 1-es (AH + Premarket) riport ma **nem értelmezhető**, mert a Yahoo Finance "
-            "chart/quote API-ja a darabszámos tickerek többségére `rate_limited` / `Unauthorized` "
-            "hibát adott. A teljes watchlistet nem futtattam le, hogy ne üssem tovább a korlátot.\n"
+            "chart/quote API-ja a darabszámos tickerek többségére `rate_limited` / "
+            "`Unauthorized` hibát adott. A teljes watchlistet nem futtattam le, "
+            "hogy ne üssem tovább a korlátot.\n"
         )
         return "\n".join(lines)
 
-    # Ha nem volt globális rate limit, akkor a maradék darabszámos + watchlist is mehet
+    # --- Ha nem volt globális rate limit, a maradék darabszámos + watchlist is mehet ---
+
     for row in positions[attempts:]:
         snap, reason = get_ah_pm_snapshot(row.ticker)
         price_map[row.ticker] = snap
@@ -484,6 +513,7 @@ def run_report_1(
         else:
             status_map[row.ticker] = TickerStatus(ok=False, reason=reason)
 
+    # Itt már mehet a régi helper, mert most már tudatosan az egész listára dolgozunk
     lines.append(build_coverage_block(status_map))
     lines.append(build_macro_block_1(macro))
 
@@ -532,11 +562,10 @@ def run_report_1(
     if len(watch_lines) > 1:
         lines.append("\n".join(watch_lines) + "\n")
 
-    # Hírek – most még üresen hagyjuk (későbbi Yahoo + extra forrás integrációhoz)
+    # Hírek és katalizátorok helye – egyelőre üres
     yahoo_news: List[NewsItem] = []
     extra_news: List[NewsItem] = []
     all_news = merge_news_sources(yahoo_news, extra_news)
-
     news_block = build_news_block_1(all_news)
     if news_block:
         lines.append(news_block)
@@ -547,6 +576,7 @@ def run_report_1(
         lines.append(catalyst_block)
 
     return "\n".join(lines)
+
 
 
 # ---------------------------------------------------------------------------
