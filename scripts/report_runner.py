@@ -46,7 +46,18 @@ except ImportError:  # Python <3.9 fallback
 BUDAPEST = ZoneInfo("Europe/Budapest")
 US_EASTERN = ZoneInfo("America/New_York")
 
-SCRIPT_VERSION = "1.4.2-positions-only-429-logic"
+SCRIPT_VERSION = "1.4.3-positions-only-ua-sleep"
+
+# Egységes header minden Yahoo-híváshoz
+YF_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/130.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json, text/javascript, */*; q=0.01",
+    "Accept-Language": "en-US,en;q=0.9",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -151,7 +162,7 @@ def fetch_chart_2d_5m(ticker: str) -> dict:
         f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
         "?range=2d&interval=5m&includePrePost=true"
     )
-    resp = requests.get(url, timeout=10)
+    resp = requests.get(url, headers=YF_HEADERS, timeout=10)
     resp.raise_for_status()
     return resp.json()
 
@@ -225,7 +236,7 @@ def fetch_ah_pm_from_quote(ticker: str) -> Tuple[PriceSnapshot, Optional[str]]:
     """
     url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={ticker}&includePrePost=true"
     try:
-        resp = requests.get(url, timeout=10)
+        resp = requests.get(url, headers=YF_HEADERS, timeout=10)
     except Exception as e:
         return PriceSnapshot(None, None, None), f"quote_fetch_error: {e}"
 
@@ -305,7 +316,7 @@ def fetch_quotes_batch(
         url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={symbols_str}"
 
         try:
-            resp = requests.get(url, timeout=10)
+            resp = requests.get(url, headers=YF_HEADERS, timeout=10)
         except Exception as e:
             for t in batch:
                 results[t] = (None, None, None, f"network_error: {e}")
@@ -403,7 +414,7 @@ def run_report_1(
     ok_count = 0
     rate_limited_all = True
 
-    for row in positions:
+    for idx, row in enumerate(positions):
         snap, reason = get_ah_pm_snapshot(row.ticker)
         price_map[row.ticker] = snap
         if reason is None:
@@ -414,6 +425,10 @@ def run_report_1(
             status_map[row.ticker] = TickerStatus(ok=False, reason=reason)
             if "rate_limited" not in reason:
                 rate_limited_all = False
+
+        # Throttling: 1 call / másodperc a pozik között
+        if idx < len(positions) - 1:
+            time.sleep(1)
 
     # Lefedettség blokk
     lines.append(build_coverage_block(status_map))
