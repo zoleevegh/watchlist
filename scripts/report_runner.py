@@ -46,7 +46,7 @@ except ImportError:  # Python <3.9 fallback
 BUDAPEST = ZoneInfo("Europe/Budapest")
 US_EASTERN = ZoneInfo("America/New_York")
 
-SCRIPT_VERSION = "1.4.0-positions-only-1es"
+SCRIPT_VERSION = "1.4.1-positions-only-qtyfix"
 
 
 # ---------------------------------------------------------------------------
@@ -81,16 +81,28 @@ def load_tickers_from_csv(path: str, default_k: float = 3.0) -> List[TickerRow]:
 
     with open(path, "r", encoding="utf-8-sig", newline="") as f:
         reader = csv.DictReader(f)
-        headers = {h.strip().lower(): h for h in reader.fieldnames or []}
+        headers = {h.strip().lower(): h for h in (reader.fieldnames or [])}
+
+        # DEBUG: fejlécek naplózása a GitHub logban
+        print(f"[DEBUG] CSV oszlopok: {list(headers.keys())}", file=sys.stderr)
 
         def get_col(*names: str) -> Optional[str]:
             for n in names:
-                if n.lower() in headers:
-                    return headers[n.lower()]
+                key = n.lower()
+                if key in headers:
+                    return headers[key]
             return None
 
         ticker_col = get_col("ticker", "tiker", "symbol")
-        qty_col = get_col("darabszam", "db", "qty", "quantity")
+        qty_col = get_col(
+            "darabszám",
+            "darabszam",   # ékezet nélküli
+            "darab",
+            "db",
+            "qty",
+            "quantity",
+            "shares",
+        )
         k_col = get_col("k", "minmove", "minmovepct", "min_pct")
 
         if not ticker_col:
@@ -151,7 +163,6 @@ def extract_ah_pm_move_from_chart(ticker: str) -> Tuple[PriceSnapshot, Optional[
     try:
         data = fetch_chart_2d_5m(ticker)
     except requests.exceptions.HTTPError as e:
-        # ha 429, jelöljük külön, mert ezt jó látni a coverage blokknál
         if e.response is not None and e.response.status_code == 429:
             return PriceSnapshot(None, None, None), "rate_limited(chart_v8)"
         return PriceSnapshot(None, None, None), f"chart_http_error: {e}"
@@ -173,7 +184,6 @@ def extract_ah_pm_move_from_chart(ticker: str) -> Tuple[PriceSnapshot, Optional[
         from datetime import datetime as _dt
         dt_list = [_dt.fromtimestamp(ts, tz=US_EASTERN) for ts in timestamps]
 
-        # fallback prev_close, ha meta-ban nincs
         if prev_close is None:
             prev_rth_closes = [
                 c
@@ -182,7 +192,6 @@ def extract_ah_pm_move_from_chart(ticker: str) -> Tuple[PriceSnapshot, Optional[
             ]
             prev_close = prev_rth_closes[-1] if prev_rth_closes else None
 
-        # AH: 16:00–20:00 US idő
         ah_prices = [
             c
             for c, dt in zip(closes, dt_list)
@@ -190,7 +199,6 @@ def extract_ah_pm_move_from_chart(ticker: str) -> Tuple[PriceSnapshot, Optional[
         ]
         ah_last = ah_prices[-1] if ah_prices else None
 
-        # PM: ma 4:00–9:30 US idő
         today_date = dt_list[-1].date()
         pm_prices = [
             c
@@ -211,7 +219,6 @@ def extract_ah_pm_move_from_chart(ticker: str) -> Tuple[PriceSnapshot, Optional[
         return PriceSnapshot(None, None, None), f"chart_parse_error: {e}"
 
 
-# opcionális fallback: Yahoo quote v7 pre/post
 def fetch_ah_pm_from_quote(ticker: str) -> Tuple[PriceSnapshot, Optional[str]]:
     """
     Fallback #1-hez: Yahoo quote (v7) pre/post mezők alapján.
@@ -253,12 +260,10 @@ def get_ah_pm_snapshot(ticker: str) -> Tuple[PriceSnapshot, Optional[str]]:
     if reason_chart is None:
         return snap_chart, None
 
-    # ha a chart nem dob adatot, próbáljuk a quote-ot is
     snap_q, reason_q = fetch_ah_pm_from_quote(ticker)
     if reason_q is None:
         return snap_q, None
 
-    # mindkettő rossz – fűzzük össze az okokat
     combined = "; ".join(
         r for r in [reason_chart, reason_q] if r
     ) or "unknown_error"
@@ -286,10 +291,6 @@ def fetch_quotes_batch(
         { "AAPL": (prev_close, last, regular_open, error_reason_str_or_None), ... }
 
     Árforrás: Yahoo Finance quote (v7)
-
-    Rate limit kímélés:
-    - kisebb batch_size (20),
-    - batch-ek között 2 másodperc sleep.
     """
     results: Dict[str, Tuple[Optional[float], Optional[float], Optional[float], Optional[str]]] = {}
     if not tickers:
@@ -363,7 +364,7 @@ def fetch_quotes_batch(
 
 
 # ---------------------------------------------------------------------------
-# 1-es riport: AH + PM – MOSTANTÓL CSAK DARABSZÁMOS POZÍCIÓK
+# 1-es riport: AH + PM – CSAK DARABSZÁMOS POZÍCIÓK
 # ---------------------------------------------------------------------------
 
 def run_report_1(
@@ -388,7 +389,6 @@ def run_report_1(
         "\n"
     )
 
-    # PKN.WA-t továbbra sem riportoljuk
     filtered = [r for r in tickers if r.ticker != "PKN.WA"]
     positions = [r for r in filtered if r.is_position]
 
@@ -401,7 +401,6 @@ def run_report_1(
     status_map: Dict[str, TickerStatus] = {}
     price_map: Dict[str, PriceSnapshot] = {}
 
-    # CSAK darabszámosokra kérünk AH/PM adatot
     for row in positions:
         snap, reason = get_ah_pm_snapshot(row.ticker)
         price_map[row.ticker] = snap
@@ -410,13 +409,9 @@ def run_report_1(
         else:
             status_map[row.ticker] = TickerStatus(ok=False, reason=reason)
 
-    # Lefedettség – *csak* a darabszámosokra
     lines.append(build_coverage_block(status_map))
-
-    # Makró blokk
     lines.append(build_macro_block_1(macro))
 
-    # Darabszámos pozik listázása
     pos_lines: List[str] = []
     pos_lines.append("### Darabszámos tickerek – After-hours & Premarket mozgások\n")
 
@@ -450,7 +445,6 @@ def run_report_1(
     if len(pos_lines) > 1:
         lines.append("\n".join(pos_lines) + "\n")
 
-    # Hírek és katalizátorok – egyelőre üres, de a struktúra marad
     yahoo_news: List[NewsItem] = []
     extra_news: List[NewsItem] = []
     all_news = merge_news_sources(yahoo_news, extra_news)
@@ -462,8 +456,6 @@ def run_report_1(
     catalyst_block = build_catalyst_block_1(catalysts)
     if catalyst_block:
         lines.append(catalyst_block)
-
-    # WATCHLIST MOST NINCS AZ 1-ES RIPORTBAN, HOGY NE ÜSSÜK SZÉT A YAHOO-T
 
     return "\n".join(lines)
 
@@ -498,9 +490,7 @@ def run_report_2(
         prev_close, last, open_px, reason = quote_map.get(row.ticker, (None, None, None, None))
         move = pct_change(prev_close, last)
 
-        if move is None:
-            continue
-        if abs(move) < row.k_threshold:
+        if move is None or abs(move) < row.k_threshold:
             continue
 
         sign = "+" if move >= 0 else ""
@@ -548,7 +538,6 @@ def run_report_3(
     ticker_list = [r.ticker for r in filtered]
     quote_map = fetch_quotes_batch(ticker_list)
 
-    # Lefedettség a quote alapján
     status_map: Dict[str, TickerStatus] = {}
     ok_count = 0
     for row in filtered:
@@ -569,14 +558,11 @@ def run_report_3(
         )
         return "\n".join(lines)
 
-    # Makró blokk
     lines.append(build_macro_block_1(macro))
 
-    # Darabszámos – minden pozíció
     pos_lines: List[str] = []
     pos_lines.append("### Darabszámos tickerek – Ma nyitástól mostanáig (Open→Most)\n")
 
-    # Watchlist – csak ahol ≥K
     watch_lines: List[str] = []
     watch_lines.append("### Watchlist – Open→Most mozgások (csak ha ≥K)\n")
 
