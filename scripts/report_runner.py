@@ -49,7 +49,7 @@ except ImportError:  # Python <3.9 fallback
 BUDAPEST = ZoneInfo("Europe/Budapest")
 US_EASTERN = ZoneInfo("America/New_York")
 
-SCRIPT_VERSION = "2.1.0-biblia-yahoo-us-time"
+SCRIPT_VERSION = "2.1.1-biblia-yahoo-us-time-fix"
 
 
 # ---------------------------------------------------------------------------
@@ -77,6 +77,13 @@ def _parse_float(val: str) -> Optional[float]:
 
 
 def load_tickers_from_csv(path: str, default_k: float = 3.0) -> List[TickerRow]:
+    """
+    MASTER CSV beolvasása.
+
+    Ticker oszlop: 'Ticker', 'TIKER', 'Symbol' stb.
+    Darabszám oszlop: 'Darabszám', 'Darabszam', 'DB', 'Qty', 'Quantity'...
+    K küszöb oszlop: 'K', 'MinMove', 'MinMovePct', 'Min_pct'...
+    """
     if not os.path.exists(path):
         raise FileNotFoundError(f"CSV nem található: {path}")
 
@@ -88,13 +95,14 @@ def load_tickers_from_csv(path: str, default_k: float = 3.0) -> List[TickerRow]:
 
         def get_col(*names: str) -> Optional[str]:
             for n in names:
-                if n.lower() in headers:
-                    return headers[n.lower()]
+                key = n.lower()
+                if key in headers:
+                    return headers[key]
             return None
 
         ticker_col = get_col("ticker", "tiker", "symbol")
-        qty_col = get_col("darabszám", "db", "qty", "quantity")
-        k_col = get_col("k", "minmove", "minmovepct", "min_pct")
+        qty_col = get_col("darabszám", "darabszam", "db", "qty", "quantity")
+        k_col = get_col("k", "minmove", "minmovepct", "min_pct", "küszöb", "kuszob")
 
         if not ticker_col:
             raise ValueError("A CSV-ben nincs 'Ticker' (vagy ekvivalens) oszlop.")
@@ -129,7 +137,7 @@ def load_tickers_from_csv(path: str, default_k: float = 3.0) -> List[TickerRow]:
 
 @dataclass
 class PriceSnapshot:
-    prev_close: Optional[float]
+    prev_close: Optional[float]  # itt: UTOLSÓ RTH ZÁRÓ
     ah_last: Optional[float]
     pm_last: Optional[float]
 
@@ -142,7 +150,6 @@ def fetch_chart_2d_5m(ticker: str) -> dict:
         f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
         "?range=2d&interval=5m&includePrePost=true"
     )
-    # kicsit „emberibb” header, hogy kevésbé tiltson a Yahoo
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -166,18 +173,17 @@ def extract_ah_pm_move(
     now_local: Optional[datetime] = None,
 ) -> Tuple[PriceSnapshot, Optional[str]]:
     """
-    #1 riporthoz: AH + PM sáv utolsó ára, previousClose alapján.
+    #1 riporthoz: AH + PM sáv utolsó ára, **UTOLSÓ RTH ZÁRÓHOZ viszonyítva**.
 
     Árforrás: Yahoo Finance chart (v8, 2d/5m, includePrePost).
 
-    Logika (US időre állítva, DST-biztosabb módon):
+    Logika (US idő, DST-biztosabb):
     - Meghatározzuk az utolsó RTH-napot (last_rth_date), ahol van 9–16 óra közötti gyertya.
+    - prev_close = last_rth_date napi záró (kb. 16:00 gyertya).
     - AH: last_rth_date 16:00–20:00 közötti utolsó ár.
-    - PM: az első olyan nap (pm_date) 04:00–09:30 között,
-           amelyik > last_rth_date, ÉS a premarket már elindult
-           (US/Eastern idő szerint now_us >= pm_date 04:00).
-
-    Ha nincs RTH vagy nincs még PM-gyertya az adott napra, AH/PM None lesz.
+    - PM: az ezt követő nap(okon) 04:00–09:30 közötti utolsó ár, de
+          csak akkor, ha azon a napon a premarket már elindult
+          (US/Eastern szerint now_us ≥ 04:00).
     """
     if now_local is None:
         now_local = datetime.now(BUDAPEST)
@@ -198,12 +204,11 @@ def extract_ah_pm_move(
         if not timestamps or not closes:
             return PriceSnapshot(None, None, None), "no_price_data"
 
-        # US időzónára konvertált időpontok
         dt_list = [
             datetime.fromtimestamp(ts, tz=US_EASTERN) for ts in timestamps
         ]
 
-        # Utolsó RTH-nap (ahol 9–16 óra között van gyertya)
+        # Utolsó RTH-nap: ahol 9–16 óra között van gyertya
         rth_dates = {
             dt.date()
             for dt, c in zip(dt_list, closes)
@@ -214,17 +219,20 @@ def extract_ah_pm_move(
 
         last_rth_date = max(rth_dates)
 
-        # previousClose: ha meta-ban nincs, próbáljuk meg az utolsó RTH zárót
-        prev_close = meta.get("previousClose")
-        if prev_close is None:
-            rth_closes_last_day = [
-                c
-                for dt, c in zip(dt_list, closes)
-                if c is not None
-                and dt.date() == last_rth_date
-                and 9 <= dt.hour <= 16
-            ]
-            prev_close = rth_closes_last_day[-1] if rth_closes_last_day else None
+        # UTOLSÓ RTH ZÁRÓÁR (mindig ezt használjuk, nem a meta.previousClose-t!)
+        rth_closes_last_day = [
+            c
+            for dt, c in zip(dt_list, closes)
+            if c is not None
+            and dt.date() == last_rth_date
+            and 15 <= dt.hour <= 16  # záró környéke
+        ]
+        prev_close: Optional[float]
+        if rth_closes_last_day:
+            prev_close = rth_closes_last_day[-1]
+        else:
+            # végső fallback, de normál esetben nem kéne
+            prev_close = meta.get("regularMarketPreviousClose") or meta.get("previousClose")
 
         # AH: last_rth_date 16:00–20:00 US idő
         ah_prices = [
@@ -236,7 +244,8 @@ def extract_ah_pm_move(
         ]
         ah_last = ah_prices[-1] if ah_prices else None
 
-        # PM: azon a napon 04:00–09:30 US idő, amelyik > last_rth_date
+        # PM: bármelyik következő nap 04:00–09:30 US idő – de csak ha az adott napra
+        # már legalább 04:00 van (különben még nincs premarket).
         pm_candidate_dates = sorted(
             {
                 dt.date()
@@ -254,8 +263,6 @@ def extract_ah_pm_move(
 
         if pm_candidate_dates:
             pm_date = pm_candidate_dates[0]
-
-            # premarket csak akkor értelmezhető, ha US/Eastern szerint már legalább 04:00 van azon a napon
             pm_start_dt = datetime(
                 pm_date.year, pm_date.month, pm_date.day, 4, 0, tzinfo=US_EASTERN
             )
@@ -272,7 +279,6 @@ def extract_ah_pm_move(
                 ]
                 pm_last = pm_prices[-1] if pm_prices else None
             else:
-                # premarket még nem indult el ezen a napon
                 pm_last = None
         else:
             pm_last = None
@@ -298,10 +304,6 @@ def fetch_quotes_batch(
         { "AAPL": (prev_close, last, regular_open, error_reason_str_or_None), ... }
 
     Árforrás: Yahoo Finance quote (v7)
-
-    Rate limit kímélés:
-    - kisebb batch_size (20),
-    - batch-ek között 2 másodperc sleep.
     """
     results: Dict[str, Tuple[Optional[float], Optional[float], Optional[float], Optional[str]]] = {}
     if not tickers:
@@ -390,7 +392,6 @@ def run_report_1(
     lines.append("## #1 – After-hours (22:00–02:00) + Premarket (10:00–15:30) — CEST\n")
     lines.append(f"Script verzió: {SCRIPT_VERSION}\n")
 
-    # A BIBLIA szerinti CEST ablakot csak tájékoztató jelleggel írjuk ki
     today_local = now_local.date()
     prev_local = today_local - timedelta(days=1)
     lines.append(
@@ -398,10 +399,10 @@ def run_report_1(
         f"PM {today_local} 10:00 → 15:30\n"
     )
     lines.append(
-        "_Árforrás: Yahoo Finance chart (v8 – 2d/5m, includePrePost; previousClose → AH/PM utolsó ár alapján számolt % mozgás)_\n"
+        "_Árforrás: Yahoo Finance chart (v8 – 2d/5m, includePrePost; utolsó RTH záró → AH/PM utolsó ár alapján számolt % mozgás)_\n"
     )
 
-    # PKN.WA alapból kihagyva, ahogy korábban egyeztettük
+    # PKN.WA alapból kihagyva
     filtered = [r for r in tickers if r.ticker != "PKN.WA"]
 
     status_map: Dict[str, TickerStatus] = {}
@@ -415,28 +416,22 @@ def run_report_1(
         else:
             status_map[row.ticker] = TickerStatus(ok=False, reason=reason)
 
-    # Lefedettség blokk a BIBLIA szerint
     lines.append(build_coverage_block(status_map))
-
-    # Makró / Trump-napihír blokk (egyelőre macro paraméterből)
     lines.append(build_macro_block_1(macro))
 
-    # Darabszámosak és watchlist külön, BIBLIA-sorrendben
     pos_lines: List[str] = []
     pos_lines.append("### Darabszámos tickerek – After-hours & Premarket mozgások\n")
 
     watch_lines: List[str] = []
     watch_lines.append("### Watchlist – After-hours & Premarket mozgások (csak ha ≥K)\n")
 
-    # US premarket már elindult?
-    # (US/Eastern 04:00-tól számoljuk érvényesnek a „mai PM”-et)
-    # Ha még nincs 04:00, PM = n/a lesz.
+    # US premarket indult-e már ma?
     us_premarket_started = (now_us.hour > 4) or (now_us.hour == 4 and now_us.minute >= 0)
 
     for row in filtered:
         snap = price_map[row.ticker]
 
-        # ha premarket még nem indult el, a pm_last-ot nullázzuk
+        # ha PM még nincs elindulva ma, akkor ne számoljunk rá százalékot
         if not us_premarket_started:
             pm_last = None
         else:
@@ -445,7 +440,7 @@ def run_report_1(
         ah_pct = pct_change(snap.prev_close, snap.ah_last)
         pm_pct = pct_change(snap.prev_close, pm_last)
 
-        def fmt_pct(label: str, value: Optional[float], pm_flag: bool = False) -> str:
+        def fmt_pct(label: str, value: Optional[float]) -> str:
             if label == "PM" and not us_premarket_started:
                 return "PM: n/a (a mai premarket még nem indult el US/Eastern)"
             if value is None:
@@ -459,15 +454,14 @@ def run_report_1(
         )
 
         ah_str = fmt_pct("AH", ah_pct)
-        pm_str = fmt_pct("PM", pm_pct, pm_flag=True)
-
+        pm_str = fmt_pct("PM", pm_pct)
         src_str = "árforrás: Yahoo chart/v8 2d/5m, includePrePost"
 
         if row.is_position:
             if ah_pct is None and (pm_pct is None or not us_premarket_started):
                 reason = "Hiányzó vagy nem értelmezhető AH/PM adat (nincs elérhető gyertya a megfelelő sávban)."
             elif has_signal:
-                reason = "Érdemi AH/PM elmozdulás (≥K) a záróárhoz képest."
+                reason = "Érdemi AH/PM elmozdulás (≥K) az utolsó RTH záróhoz képest."
             else:
                 reason = "Egyelőre nincs küszöb feletti AH/PM elmozdulás."
 
@@ -475,7 +469,7 @@ def run_report_1(
         else:
             if not has_signal:
                 continue
-            reason = "Watchlisten is érdemi AH/PM elmozdulás (≥K) a záróárhoz képest."
+            reason = "Watchlisten is érdemi AH/PM elmozdulás (≥K) az utolsó RTH záróhoz képest."
             watch_lines.append(f"{row.ticker} — {ah_str} | {pm_str} — {reason} ({src_str})")
 
     if len(pos_lines) > 1:
@@ -483,7 +477,7 @@ def run_report_1(
     if len(watch_lines) > 1:
         lines.append("\n".join(watch_lines) + "\n")
 
-    # Hírek / katalizátorok – a BIBLIA szerint itt jönnének
+    # (Hírek / katalizátorok – placeholder, BIBLIA szerint itt jönnek)
     yahoo_news: List[NewsItem] = []
     extra_news: List[NewsItem] = []
     all_news = merge_news_sources(yahoo_news, extra_news)
@@ -500,7 +494,7 @@ def run_report_1(
 
 
 # ---------------------------------------------------------------------------
-# 2-es riport: Tegnapi Open→Close (batch quote, egyszerűsített)
+# 2-es riport: Tegnapi Open→Close (egyszerűsített)
 # ---------------------------------------------------------------------------
 
 def run_report_2(
@@ -528,9 +522,7 @@ def run_report_2(
         prev_close, last, open_px, reason = quote_map.get(row.ticker, (None, None, None, None))
         move = pct_change(prev_close, last)
 
-        if move is None:
-            continue
-        if abs(move) < row.k_threshold:
+        if move is None or abs(move) < row.k_threshold:
             continue
 
         sign = "+" if move >= 0 else ""
@@ -551,7 +543,7 @@ def run_report_2(
 
 
 # ---------------------------------------------------------------------------
-# 3-as riport: Ma nyitástól mostanáig (Open→Most, batch quote)
+# 3-as riport: Ma nyitástól mostanáig
 # ---------------------------------------------------------------------------
 
 def run_report_3(
@@ -577,7 +569,6 @@ def run_report_3(
     ticker_list = [r.ticker for r in filtered]
     quote_map = fetch_quotes_batch(ticker_list)
 
-    # Lefedettség a quote alapján
     status_map: Dict[str, TickerStatus] = {}
     ok_count = 0
     for row in filtered:
@@ -600,11 +591,9 @@ def run_report_3(
 
     lines.append(build_macro_block_1(macro))
 
-    # Darabszámos – MINDEN pozíció listázása
     pos_lines: List[str] = []
     pos_lines.append("### Darabszámos tickerek – Ma nyitástól mostanáig (Open→Most)\n")
 
-    # Watchlist – csak ahol ≥K az Open→Most
     watch_lines: List[str] = []
     watch_lines.append("### Watchlist – Open→Most mozgások (csak ha ≥K vagy anyagilag lényeges hír)\n")
 
