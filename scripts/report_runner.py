@@ -293,24 +293,41 @@ def extract_ah_pm_move(
 # Quote batch helper (#2 és #3 riporthoz)
 # ---------------------------------------------------------------------------
 
-def fetch_quotes_batch(
+def _safe_float(val) -> Optional[float]:
+    if val is None:
+        return None
+    if isinstance(val, (int, float)):
+        return float(val)
+    if isinstance(val, dict):
+        raw = val.get("raw")
+        if isinstance(raw, (int, float)):
+            return float(raw)
+    try:
+        return float(val)
+    except Exception:
+        return None
+
+
+def fetch_ah_pm_from_quote_batch(
     tickers: List[str],
     batch_size: int = 20,
-) -> Dict[str, Tuple[Optional[float], Optional[float], Optional[float], Optional[str]]]:
+) -> Dict[str, Tuple[Optional[float], Optional[float], Optional[str]]]:
     """
-    Yahoo quote API batch-ben (#2 és #3 riporthoz).
+    #1 riporthoz: pre-/post-market százalékos elmozdulás a Yahoo quote (v7) API-ból.
 
     Visszaad:
-        { "AAPL": (prev_close, last, regular_open, error_reason_str_or_None), ... }
+        { "AAPL": (ah_pct, pm_pct, error_reason_str_or_None), ... }
 
-    Árforrás: Yahoo Finance quote (v7)
+    ahol:
+        - ah_pct = postMarketChangePercent  (After-hours)
+        - pm_pct = preMarketChangePercent   (Premarket)
     """
-    results: Dict[str, Tuple[Optional[float], Optional[float], Optional[float], Optional[str]]] = {}
+    results: Dict[str, Tuple[Optional[float], Optional[float], Optional[str]]] = {}
     if not tickers:
         return results
 
     for t in tickers:
-        results[t] = (None, None, None, None)
+        results[t] = (None, None, None)
 
     for i in range(0, len(tickers), batch_size):
         batch = tickers[i:i + batch_size]
@@ -321,34 +338,26 @@ def fetch_quotes_batch(
             resp = requests.get(url, timeout=10)
         except Exception as e:
             for t in batch:
-                results[t] = (None, None, None, f"network_error: {e}")
-            print(f"[WARN] fetch_quotes_batch network error for {symbols_str}: {e}", file=sys.stderr)
+                results[t] = (None, None, f"network_error: {e}")
+            print(f"[WARN] fetch_ah_pm_from_quote_batch network error for {symbols_str}: {e}", file=sys.stderr)
             time.sleep(2)
             continue
 
         if resp.status_code == 429:
             for t in batch:
-                results[t] = (None, None, None, "rate_limited")
-            print(f"[WARN] fetch_quotes_batch rate limited (429) for {symbols_str}", file=sys.stderr)
+                results[t] = (None, None, "rate_limited")
+            print(f"[WARN] fetch_ah_pm_from_quote_batch rate limited (429) for {symbols_str}", file=sys.stderr)
             time.sleep(5)
             continue
 
         try:
             resp.raise_for_status()
-        except requests.exceptions.HTTPError as e:
-            for t in batch:
-                results[t] = (None, None, None, f"http_error: {e}")
-            print(f"[WARN] fetch_quotes_batch HTTP error for {symbols_str}: {e}", file=sys.stderr)
-            time.sleep(2)
-            continue
-
-        try:
             data = resp.json()
             qlist = data.get("quoteResponse", {}).get("result", []) or []
         except Exception as e:
             for t in batch:
-                results[t] = (None, None, None, f"parse_error: {e}")
-            print(f"[WARN] fetch_quotes_batch parse error for {symbols_str}: {e}", file=sys.stderr)
+                results[t] = (None, None, f"parse_error: {e}")
+            print(f"[WARN] fetch_ah_pm_from_quote_batch parse error for {symbols_str}: {e}", file=sys.stderr)
             time.sleep(2)
             continue
 
@@ -358,18 +367,17 @@ def fetch_quotes_batch(
             if not sym:
                 continue
 
-            prev_close = q.get("regularMarketPreviousClose")
-            last = q.get("regularMarketPrice")
-            open_px = q.get("regularMarketOpen")
+            ah_pct = _safe_float(q.get("postMarketChangePercent"))
+            pm_pct = _safe_float(q.get("preMarketChangePercent"))
 
-            results[sym] = (prev_close, last, open_px, None)
+            results[sym] = (ah_pct, pm_pct, None)
             seen_in_batch.add(sym)
 
         for t in batch:
             if t not in seen_in_batch:
-                _, _, _, reason = results.get(t, (None, None, None, None))
+                _ah, _pm, reason = results.get(t, (None, None, None))
                 if reason is None:
-                    results[t] = (None, None, None, "no_quote_result")
+                    results[t] = (None, None, "no_quote_result")
 
         time.sleep(2)
 
