@@ -46,7 +46,13 @@ except ImportError:  # Python <3.9 fallback
 BUDAPEST = ZoneInfo("Europe/Budapest")
 US_EASTERN = ZoneInfo("America/New_York")
 
-SCRIPT_VERSION = "2.1.2-biblia-yahoo-us-time-quote-ahpm"
+SCRIPT_VERSION = "2.1.3-biblia-yahoo-us-time-quote-ahpm-retry"
+
+YAHOO_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/129.0 Safari/537.36"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -129,7 +135,7 @@ def load_tickers_from_csv(path: str, default_k: float = 3.0) -> List[TickerRow]:
 
 
 # ---------------------------------------------------------------------------
-# Yahoo Finance chart / quote helper-ek (általános)
+# Yahoo chart helper (tartalék)
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -148,13 +154,7 @@ def fetch_chart_2d_5m(ticker: str) -> dict:
         f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
         "?range=2d&interval=5m&includePrePost=true"
     )
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/129.0 Safari/537.36"
-        )
-    }
+    headers = {"User-Agent": YAHOO_UA}
     resp = requests.get(url, headers=headers, timeout=10)
     resp.raise_for_status()
     return resp.json()
@@ -173,6 +173,7 @@ def pct_change(base: Optional[float], new: Optional[float]) -> Optional[float]:
 def fetch_quotes_batch(
     tickers: List[str],
     batch_size: int = 20,
+    max_retries: int = 3,
 ) -> Dict[str, Tuple[Optional[float], Optional[float], Optional[float], Optional[str]]]:
     """
     Yahoo quote API batch-ben (#2 és #3 riporthoz).
@@ -189,64 +190,86 @@ def fetch_quotes_batch(
     for t in tickers:
         results[t] = (None, None, None, None)
 
+    headers = {"User-Agent": YAHOO_UA}
+
     for i in range(0, len(tickers), batch_size):
         batch = tickers[i:i + batch_size]
         symbols_str = ",".join(batch)
         url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={symbols_str}"
 
-        try:
-            resp = requests.get(url, timeout=10)
-        except Exception as e:
-            for t in batch:
-                results[t] = (None, None, None, f"network_error: {e}")
-            print(f"[WARN] fetch_quotes_batch network error for {symbols_str}: {e}", file=sys.stderr)
-            time.sleep(2)
-            continue
-
-        if resp.status_code == 429:
-            for t in batch:
-                results[t] = (None, None, None, "rate_limited")
-            print(f"[WARN] fetch_quotes_batch rate limited (429) for {symbols_str}", file=sys.stderr)
-            time.sleep(5)
-            continue
-
-        try:
-            resp.raise_for_status()
-        except requests.exceptions.HTTPError as e:
-            for t in batch:
-                results[t] = (None, None, None, f"http_error: {e}")
-            print(f"[WARN] fetch_quotes_batch HTTP error for {symbols_str}: {e}", file=sys.stderr)
-            time.sleep(2)
-            continue
-
-        try:
-            data = resp.json()
-            qlist = data.get("quoteResponse", {}).get("result", []) or []
-        except Exception as e:
-            for t in batch:
-                results[t] = (None, None, None, f"parse_error: {e}")
-            print(f"[WARN] fetch_quotes_batch parse error for {symbols_str}: {e}", file=sys.stderr)
-            time.sleep(2)
-            continue
-
-        seen_in_batch = set()
-        for q in qlist:
-            sym = q.get("symbol")
-            if not sym:
+        retries_left = max_retries
+        while retries_left > 0:
+            try:
+                resp = requests.get(url, headers=headers, timeout=10)
+            except Exception as e:
+                retries_left -= 1
+                if retries_left == 0:
+                    for t in batch:
+                        results[t] = (None, None, None, f"network_error: {e}")
+                    print(f"[WARN] fetch_quotes_batch network error for {symbols_str}: {e}", file=sys.stderr)
+                    break
+                print(f"[INFO] fetch_quotes_batch retry after network error for {symbols_str}: {e}", file=sys.stderr)
+                time.sleep(3)
                 continue
 
-            prev_close = q.get("regularMarketPreviousClose")
-            last = q.get("regularMarketPrice")
-            open_px = q.get("regularMarketOpen")
+            if resp.status_code == 429:
+                retries_left -= 1
+                if retries_left == 0:
+                    for t in batch:
+                        results[t] = (None, None, None, "rate_limited")
+                    print(f"[WARN] fetch_quotes_batch rate limited (429) for {symbols_str}", file=sys.stderr)
+                    break
+                print(f"[INFO] fetch_quotes_batch 429, retrying for {symbols_str}", file=sys.stderr)
+                time.sleep(5)
+                continue
 
-            results[sym] = (prev_close, last, open_px, None)
-            seen_in_batch.add(sym)
+            try:
+                resp.raise_for_status()
+            except requests.exceptions.HTTPError as e:
+                retries_left -= 1
+                if retries_left == 0:
+                    for t in batch:
+                        results[t] = (None, None, None, f"http_error: {e}")
+                    print(f"[WARN] fetch_quotes_batch HTTP error for {symbols_str}: {e}", file=sys.stderr)
+                    break
+                print(f"[INFO] fetch_quotes_batch HTTP error, retrying for {symbols_str}: {e}", file=sys.stderr)
+                time.sleep(3)
+                continue
 
-        for t in batch:
-            if t not in seen_in_batch:
-                _, _, _, reason = results.get(t, (None, None, None, None))
-                if reason is None:
-                    results[t] = (None, None, None, "no_quote_result")
+            try:
+                data = resp.json()
+                qlist = data.get("quoteResponse", {}).get("result", []) or []
+            except Exception as e:
+                retries_left -= 1
+                if retries_left == 0:
+                    for t in batch:
+                        results[t] = (None, None, None, f"parse_error: {e}")
+                    print(f"[WARN] fetch_quotes_batch parse error for {symbols_str}: {e}", file=sys.stderr)
+                    break
+                print(f"[INFO] fetch_quotes_batch parse error, retrying for {symbols_str}: {e}", file=sys.stderr)
+                time.sleep(3)
+                continue
+
+            seen_in_batch = set()
+            for q in qlist:
+                sym = q.get("symbol")
+                if not sym:
+                    continue
+
+                prev_close = q.get("regularMarketPreviousClose")
+                last = q.get("regularMarketPrice")
+                open_px = q.get("regularMarketOpen")
+
+                results[sym] = (prev_close, last, open_px, None)
+                seen_in_batch.add(sym)
+
+            for t in batch:
+                if t not in seen_in_batch:
+                    _, _, _, reason = results.get(t, (None, None, None, None))
+                    if reason is None:
+                        results[t] = (None, None, None, "no_quote_result")
+
+            break  # sikeres batch
 
         time.sleep(2)
 
@@ -279,6 +302,7 @@ def _safe_float(val) -> Optional[float]:
 def fetch_ah_pm_from_quote_batch(
     tickers: List[str],
     batch_size: int = 20,
+    max_retries: int = 3,
 ) -> Dict[str, Tuple[Optional[float], Optional[float], Optional[str]]]:
     """
     #1 riporthoz: pre-/post-market százalékos elmozdulás a Yahoo quote (v7) API-ból.
@@ -300,55 +324,72 @@ def fetch_ah_pm_from_quote_batch(
     for t in tickers:
         results[t] = (None, None, None)
 
+    headers = {"User-Agent": YAHOO_UA}
+
     for i in range(0, len(tickers), batch_size):
         batch = tickers[i:i + batch_size]
         symbols_str = ",".join(batch)
         url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={symbols_str}"
 
-        try:
-            resp = requests.get(url, timeout=10)
-        except Exception as e:
-            for t in batch:
-                results[t] = (None, None, f"network_error: {e}")
-            print(f"[WARN] fetch_ah_pm_from_quote_batch network error for {symbols_str}: {e}", file=sys.stderr)
-            time.sleep(2)
-            continue
-
-        if resp.status_code == 429:
-            for t in batch:
-                results[t] = (None, None, "rate_limited")
-            print(f"[WARN] fetch_ah_pm_from_quote_batch rate limited (429) for {symbols_str}", file=sys.stderr)
-            time.sleep(5)
-            continue
-
-        try:
-            resp.raise_for_status()
-            data = resp.json()
-            qlist = data.get("quoteResponse", {}).get("result", []) or []
-        except Exception as e:
-            for t in batch:
-                results[t] = (None, None, f"parse_error: {e}")
-            print(f"[WARN] fetch_ah_pm_from_quote_batch parse error for {symbols_str}: {e}", file=sys.stderr)
-            time.sleep(2)
-            continue
-
-        seen_in_batch = set()
-        for q in qlist:
-            sym = q.get("symbol")
-            if not sym:
+        retries_left = max_retries
+        while retries_left > 0:
+            try:
+                resp = requests.get(url, headers=headers, timeout=10)
+            except Exception as e:
+                retries_left -= 1
+                if retries_left == 0:
+                    for t in batch:
+                        results[t] = (None, None, f"network_error: {e}")
+                    print(f"[WARN] fetch_ah_pm_from_quote_batch network error for {symbols_str}: {e}", file=sys.stderr)
+                    break
+                print(f"[INFO] fetch_ah_pm_from_quote_batch retry after network error for {symbols_str}: {e}", file=sys.stderr)
+                time.sleep(3)
                 continue
 
-            ah_pct = _safe_float(q.get("postMarketChangePercent"))
-            pm_pct = _safe_float(q.get("preMarketChangePercent"))
+            if resp.status_code == 429:
+                retries_left -= 1
+                if retries_left == 0:
+                    for t in batch:
+                        results[t] = (None, None, "rate_limited")
+                    print(f"[WARN] fetch_ah_pm_from_quote_batch rate limited (429) for {symbols_str}", file=sys.stderr)
+                    break
+                print(f"[INFO] fetch_ah_pm_from_quote_batch 429, retrying for {symbols_str}", file=sys.stderr)
+                time.sleep(5)
+                continue
 
-            results[sym] = (ah_pct, pm_pct, None)
-            seen_in_batch.add(sym)
+            try:
+                resp.raise_for_status()
+                data = resp.json()
+                qlist = data.get("quoteResponse", {}).get("result", []) or []
+            except Exception as e:
+                retries_left -= 1
+                if retries_left == 0:
+                    for t in batch:
+                        results[t] = (None, None, f"parse_or_http_error: {e}")
+                    print(f"[WARN] fetch_ah_pm_from_quote_batch parse/HTTP error for {symbols_str}: {e}", file=sys.stderr)
+                    break
+                print(f"[INFO] fetch_ah_pm_from_quote_batch parse/HTTP error, retrying for {symbols_str}: {e}", file=sys.stderr)
+                time.sleep(3)
+                continue
 
-        for t in batch:
-            if t not in seen_in_batch:
+            seen_in_batch = set()
+            for q in qlist:
+                sym = q.get("symbol")
+                if not sym:
+                    continue
+
+                ah_pct = _safe_float(q.get("postMarketChangePercent"))
+                pm_pct = _safe_float(q.get("preMarketChangePercent"))
+
+                results[sym] = (ah_pct, pm_pct, None)
+                seen_in_batch.add(sym)
+
+            for t in batch:
                 _ah, _pm, reason = results.get(t, (None, None, None))
-                if reason is None:
+                if t not in seen_in_batch and reason is None:
                     results[t] = (None, None, "no_quote_result")
+
+            break  # sikeres batch
 
         time.sleep(2)
 
