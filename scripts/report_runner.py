@@ -1,18 +1,14 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-report_runner.py
------------------
+report_runner.py 2.1.6
+-----------------------
 
 Egységes runner script az 1/2/3-as riportokhoz.
 
-#1: AH + PM (pre/post-market %) – árforrás: Yahoo quote (v7)
-    - AH: postMarketChangePercent (utolsó RTH záróhoz viszonyított %)
-    - PM: preMarketChangePercent (utolsó RTH záróhoz viszonyított %, csak ha már elindult a premarket)
-    - Fallback: Yahoo chart (v8, 2d/5m, includePrePost)
-
-#2: Tegnapi Open→Close (batch quote) – árforrás: Yahoo quote (v7)
-#3: Ma Open→Most (batch quote, regularMarketOpen→regularMarketPrice) – árforrás: Yahoo quote (v7)
+#1: AH + PM (pre/post-market %) – árforrás: Yahoo chart (v8, meta.pre/postMarketChangePercent)
+#2: Tegnapi Open→Close – árforrás: Yahoo quote (v7)
+#3: Ma Open→Most – árforrás: Yahoo quote (v7)
 """
 
 from __future__ import annotations
@@ -28,7 +24,6 @@ from typing import Dict, List, Optional, Tuple
 import time
 import requests
 
-# scripts/ mappa importálhatósága
 sys.path.append(os.path.dirname(__file__))
 
 from report_1_helpers import (
@@ -44,15 +39,14 @@ from report_1_helpers import (
 
 try:
     from zoneinfo import ZoneInfo
-except ImportError:  # Python <3.9 fallback
+except ImportError:  # Python <3.9
     from backports.zoneinfo import ZoneInfo  # type: ignore
 
 BUDAPEST = ZoneInfo("Europe/Budapest")
 US_EASTERN = ZoneInfo("America/New_York")
 
-SCRIPT_VERSION = "2.1.5-biblia-yahoo-us-time-quote-chart-fallback"
+SCRIPT_VERSION = "2.1.6-biblia-yahoo-us-time-chart-meta-prepost"
 
-# Egységes Yahoo header (401 / UA hibák elkerülésére)
 HEADERS_YF = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -88,13 +82,6 @@ def _parse_float(val: str) -> Optional[float]:
 
 
 def load_tickers_from_csv(path: str, default_k: float = 3.0) -> List[TickerRow]:
-    """
-    MASTER CSV beolvasása.
-
-    Ticker oszlop: 'Ticker', 'TIKER', 'Symbol' stb.
-    Darabszám oszlop: 'Darabszám', 'Darabszam', 'DB', 'Qty', 'Quantity'...
-    K küszöb oszlop: 'K', 'MinMove', 'MinMovePct', 'Min_pct'...
-    """
     if not os.path.exists(path):
         raise FileNotFoundError(f"CSV nem található: {path}")
 
@@ -142,172 +129,86 @@ def load_tickers_from_csv(path: str, default_k: float = 3.0) -> List[TickerRow]:
     return rows
 
 # ---------------------------------------------------------------------------
-# Yahoo Finance chart / quote helper-ek
-# ---------------------------------------------------------------------------
-
-@dataclass
-class PriceSnapshot:
-    prev_close: Optional[float]  # itt: UTOLSÓ RTH ZÁRÓ
-    ah_last: Optional[float]
-    pm_last: Optional[float]
-
-
-def fetch_chart_2d_5m(ticker: str) -> dict:
-    """
-    Yahoo Finance chart v8: 2 nap, 5 perces gyertyák, pre/post sessionnel.
-    Fallback-ként használjuk az AH/PM %-okhoz, ha a quote v7 hibázik.
-    """
-    url = (
-        f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
-        "?range=2d&interval=5m&includePrePost=true"
-    )
-    resp = requests.get(url, headers=HEADERS_YF, timeout=10)
-    resp.raise_for_status()
-    return resp.json()
-
 
 def pct_change(base: Optional[float], new: Optional[float]) -> Optional[float]:
     if base is None or new is None or base == 0:
         return None
     return (new - base) / base * 100.0
 
+# ---------------------------------------------------------------------------
+# Yahoo chart meta alapú AH/PM (#1 riport)
+# ---------------------------------------------------------------------------
 
-def extract_ah_pm_move(
-    ticker: str,
-    now_local: Optional[datetime] = None,
-) -> Tuple[PriceSnapshot, Optional[str]]:
+def fetch_ahpm_chart_batch(
+    tickers: List[str],
+    delay_sec: float = 1.2,
+) -> Dict[str, Tuple[Optional[float], Optional[float], Optional[str]]]:
     """
-    Fallback #1 riporthoz: AH + PM sáv utolsó ára, **UTOLSÓ RTH ZÁRÓHOZ viszonyítva**,
-    ha a quote v7 pre/postMarketChangePercent nem elérhető.
+    Yahoo Finance chart (v8) alapján lekéri az AH/PM százalékokat (#1 riport).
 
-    Árforrás: Yahoo Finance chart (v8, 2d/5m, includePrePost).
+    meta.preMarketChangePercent
+    meta.postMarketChangePercent
 
-    Logika (US idő, DST-biztosabb):
-    - Meghatározzuk az utolsó RTH-napot (last_rth_date), ahol van 9–16 óra közötti gyertya.
-    - prev_close = last_rth_date napi záró (kb. 16:00 gyertya).
-    - AH: last_rth_date 16:00–20:00 közötti utolsó ár.
-    - PM: az ezt követő nap(okon) 04:00–09:30 közötti utolsó ár, de
-          csak akkor, ha azon a napon a premarket már elindult
-          (US/Eastern szerint now_us ≥ 04:00).
+    Visszaad:
+        { "AAPL": (ah_pct, pm_pct, error_or_None), ... }
     """
-    if now_local is None:
-        now_local = datetime.now(BUDAPEST)
-    now_us = now_local.astimezone(US_EASTERN)
+    results: Dict[str, Tuple[Optional[float], Optional[float], Optional[str]]] = {}
+    if not tickers:
+        return results
 
-    try:
-        data = fetch_chart_2d_5m(ticker)
-    except Exception as e:
-        return PriceSnapshot(None, None, None), f"fetch_error: {e}"
+    uniq = list(dict.fromkeys(tickers))
+    for t in uniq:
+        results[t] = (None, None, None)
 
-    try:
-        result = data["chart"]["result"][0]
-        meta = result.get("meta", {})
-        timestamps = result.get("timestamp", [])
-        quotes = result.get("indicators", {}).get("quote", [{}])[0]
-        closes = quotes.get("close", [])
-
-        if not timestamps or not closes:
-            return PriceSnapshot(None, None, None), "no_price_data"
-
-        dt_list = [
-            datetime.fromtimestamp(ts, tz=US_EASTERN) for ts in timestamps
-        ]
-
-        # Utolsó RTH-nap: ahol 9–16 óra között van gyertya
-        rth_dates = {
-            dt.date()
-            for dt, c in zip(dt_list, closes)
-            if c is not None and 9 <= dt.hour <= 16
-        }
-        if not rth_dates:
-            return PriceSnapshot(None, None, None), "no_rth_session"
-
-        last_rth_date = max(rth_dates)
-
-        # UTOLSÓ RTH ZÁRÓÁR (mindig ezt használjuk, nem a meta.previousClose-t!)
-        rth_closes_last_day = [
-            c
-            for dt, c in zip(dt_list, closes)
-            if c is not None
-            and dt.date() == last_rth_date
-            and 15 <= dt.hour <= 16  # záró környéke
-        ]
-        if rth_closes_last_day:
-            prev_close = rth_closes_last_day[-1]
-        else:
-            # végső fallback, de normál esetben nem kéne
-            prev_close = meta.get("regularMarketPreviousClose") or meta.get("previousClose")
-
-        # AH: last_rth_date 16:00–20:00 US idő
-        ah_prices = [
-            c
-            for dt, c in zip(dt_list, closes)
-            if c is not None
-            and dt.date() == last_rth_date
-            and 16 <= dt.hour < 20
-        ]
-        ah_last = ah_prices[-1] if ah_prices else None
-
-        # PM: bármelyik következő nap 04:00–09:30 US idő – de csak ha az adott napra
-        # már legalább 04:00 van (különben még nincs premarket).
-        pm_candidate_dates = sorted(
-            {
-                dt.date()
-                for dt, c in zip(dt_list, closes)
-                if c is not None
-                and dt.date() > last_rth_date
-                and (
-                    4 <= dt.hour < 9
-                    or (dt.hour == 9 and dt.minute <= 30)
-                )
-            }
+    for sym in uniq:
+        url = (
+            f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}"
+            "?range=1d&interval=1m&includePrePost=true"
         )
+        try:
+            resp = requests.get(url, headers=HEADERS_YF, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+            result = data.get("chart", {}).get("result")
+            if not result:
+                results[sym] = (None, None, "no_chart_result")
+                continue
+            meta = result[0].get("meta", {})
 
-        pm_last: Optional[float] = None
+            ah_raw = meta.get("postMarketChangePercent")
+            pm_raw = meta.get("preMarketChangePercent")
 
-        if pm_candidate_dates:
-            pm_date = pm_candidate_dates[0]
-            pm_start_dt = datetime(
-                pm_date.year, pm_date.month, pm_date.day, 4, 0, tzinfo=US_EASTERN
-            )
-            if now_us >= pm_start_dt:
-                pm_prices = [
-                    c
-                    for dt, c in zip(dt_list, closes)
-                    if c is not None
-                    and dt.date() == pm_date
-                    and (
-                        4 <= dt.hour < 9
-                        or (dt.hour == 9 and dt.minute <= 30)
-                    )
-                ]
-                pm_last = pm_prices[-1] if pm_prices else None
+            def _norm(v):
+                if v is None:
+                    return None
+                try:
+                    return float(v)
+                except Exception:
+                    return None
+
+            ah_pct = _norm(ah_raw)
+            pm_pct = _norm(pm_raw)
+
+            if ah_pct is None and pm_pct is None:
+                results[sym] = (None, None, "no_prepost_data")
             else:
-                pm_last = None
-        else:
-            pm_last = None
+                results[sym] = (ah_pct, pm_pct, None)
 
-        return PriceSnapshot(prev_close, ah_last, pm_last), None
+        except Exception as e:
+            results[sym] = (None, None, f"chart_error: {e}")
 
-    except Exception as e:
-        return PriceSnapshot(None, None, None), f"parse_error: {e}"
+        time.sleep(delay_sec)
+
+    return results
 
 # ---------------------------------------------------------------------------
-# Quote batch helper (#2 és #3 riporthoz)
+# Quote batch helper (#2/#3)
 # ---------------------------------------------------------------------------
 
 def fetch_quotes_batch(
     tickers: List[str],
     batch_size: int = 20,
 ) -> Dict[str, Tuple[Optional[float], Optional[float], Optional[float], Optional[str]]]:
-    """
-    Yahoo quote API batch-ben (#2 és #3 riporthoz).
-
-    Visszaad:
-        { "AAPL": (prev_close, last, regular_open, error_reason_str_or_None), ... }
-
-    Árforrás: Yahoo Finance quote (v7)
-    """
     results: Dict[str, Tuple[Optional[float], Optional[float], Optional[float], Optional[str]]] = {}
     if not tickers:
         return results
@@ -325,14 +226,12 @@ def fetch_quotes_batch(
         except Exception as e:
             for t in batch:
                 results[t] = (None, None, None, f"network_error: {e}")
-            print(f"[WARN] fetch_quotes_batch network error for {symbols_str}: {e}", file=sys.stderr)
             time.sleep(2)
             continue
 
         if resp.status_code == 429:
             for t in batch:
                 results[t] = (None, None, None, "rate_limited")
-            print(f"[WARN] fetch_quotes_batch rate limited (429) for {symbols_str}", file=sys.stderr)
             time.sleep(5)
             continue
 
@@ -341,7 +240,6 @@ def fetch_quotes_batch(
         except requests.exceptions.HTTPError as e:
             for t in batch:
                 results[t] = (None, None, None, f"http_error: {e}")
-            print(f"[WARN] fetch_quotes_batch HTTP error for {symbols_str}: {e}", file=sys.stderr)
             time.sleep(2)
             continue
 
@@ -351,7 +249,6 @@ def fetch_quotes_batch(
         except Exception as e:
             for t in batch:
                 results[t] = (None, None, None, f"parse_error: {e}")
-            print(f"[WARN] fetch_quotes_batch parse error for {symbols_str}: {e}", file=sys.stderr)
             time.sleep(2)
             continue
 
@@ -379,99 +276,7 @@ def fetch_quotes_batch(
     return results
 
 # ---------------------------------------------------------------------------
-# AH/PM batch helper (#1 riporthoz)
-# ---------------------------------------------------------------------------
-
-def fetch_ahpm_batch(
-    tickers: List[str],
-    batch_size: int = 10,
-) -> Dict[str, Tuple[Optional[float], Optional[float], Optional[str]]]:
-    """
-    Yahoo quote API batch-ben az AH/PM %-okra (#1 riporthoz).
-
-    Visszaad:
-        { "AAPL": (ah_pct, pm_pct, error_reason_str_or_None), ... }
-
-    ahol:
-        ah_pct = postMarketChangePercent (float, pl. -0.85)
-        pm_pct = preMarketChangePercent (float, pl. +0.07)
-    """
-    results: Dict[str, Tuple[Optional[float], Optional[float], Optional[str]]] = {}
-    if not tickers:
-        return results
-
-    uniq = list(dict.fromkeys(tickers))  # sorrend tartása, duplikátumok szűrése
-    for t in uniq:
-        results[t] = (None, None, None)
-
-    for i in range(0, len(uniq), batch_size):
-        batch = uniq[i:i + batch_size]
-        symbols_str = ",".join(batch)
-        url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={symbols_str}"
-
-        try:
-            resp = requests.get(url, headers=HEADERS_YF, timeout=10)
-        except Exception as e:
-            err = f"network_error: {e}"
-            for t in batch:
-                results[t] = (None, None, err)
-            print(f"[WARN] fetch_ahpm_batch network error for {symbols_str}: {e}", file=sys.stderr)
-            time.sleep(2)
-            continue
-
-        if resp.status_code == 429:
-            for t in batch:
-                results[t] = (None, None, "rate_limited")
-            print(f"[WARN] fetch_ahpm_batch rate limited (429) for {symbols_str}", file=sys.stderr)
-            time.sleep(5)
-            continue
-
-        try:
-            resp.raise_for_status()
-        except requests.exceptions.HTTPError as e:
-            err = f"http_error: {e}"
-            for t in batch:
-                results[t] = (None, None, err)
-            print(f"[WARN] fetch_ahpm_batch HTTP error for {symbols_str}: {e}", file=sys.stderr)
-            time.sleep(2)
-            continue
-
-        try:
-            data = resp.json()
-            qlist = data.get("quoteResponse", {}).get("result", []) or []
-        except Exception as e:
-            err = f"parse_error: {e}"
-            for t in batch:
-                results[t] = (None, None, err)
-            print(f"[WARN] fetch_ahpm_batch parse error for {symbols_str}: {e}", file=sys.stderr)
-            time.sleep(2)
-            continue
-
-        seen_in_batch = set()
-        for q in qlist:
-            sym = q.get("symbol")
-            if not sym:
-                continue
-
-            # Yahoo raw mezők – % egységben (pl. -0.85)
-            ah_pct = q.get("postMarketChangePercent")
-            pm_pct = q.get("preMarketChangePercent")
-
-            results[sym] = (ah_pct, pm_pct, None)
-            seen_in_batch.add(sym)
-
-        for t in batch:
-            if t not in seen_in_batch:
-                _a, _p, err = results.get(t, (None, None, None))
-                if err is None:
-                    results[t] = (None, None, "no_quote_result")
-
-        time.sleep(2)
-
-    return results
-
-# ---------------------------------------------------------------------------
-# 1-es riport: AH + PM (BIBLIA mag, quote + chart fallback)
+# 1-es riport
 # ---------------------------------------------------------------------------
 
 def run_report_1(
@@ -493,21 +298,17 @@ def run_report_1(
         f"PM {today_local} 10:00 → 15:30\n"
     )
     lines.append(
-        "_Árforrás: Yahoo Finance quote (v7 – postMarketChangePercent / "
-        "preMarketChangePercent; chart/v8 2d/5m, includePrePost fallback-pal, "
-        "mindegyik az utolsó RTH záróhoz viszonyított %)_\n"
+        "_Árforrás: Yahoo Finance chart (v8 – meta.postMarketChangePercent / "
+        "meta.preMarketChangePercent; mindegyik az utolsó RTH záróhoz viszonyított %)_\n"
     )
 
-    # PKN.WA alapból kihagyva
     filtered = [r for r in tickers if r.ticker != "PKN.WA"]
 
     status_map: Dict[str, TickerStatus] = {}
 
-    # Quote-based AH/PM adatok lekérése
     symbols = [r.ticker for r in filtered]
-    ahpm_map = fetch_ahpm_batch(symbols)
+    ahpm_map = fetch_ahpm_chart_batch(symbols)
 
-    # US premarket indult-e már ma?
     us_premarket_started = (now_us.hour > 4) or (now_us.hour == 4 and now_us.minute >= 0)
 
     pos_lines: List[str] = []
@@ -516,54 +317,23 @@ def run_report_1(
     watch_lines: List[str] = []
     watch_lines.append("### Watchlist – After-hours & Premarket mozgások (csak ha ≥K)\n")
 
-    # Első kör: lefedettség státusz
     for row in filtered:
-        base_ah, base_pm, base_err = ahpm_map.get(row.ticker, (None, None, "no_quote_entry"))
-        ah_pct: Optional[float] = base_ah
-        pm_pct: Optional[float] = base_pm
-        final_err: Optional[str] = None
-        used_fallback = False
-
-        # Ha a quote v7 hibás, fallback a chartra
-        if base_err is not None:
-            snap, fb_err = extract_ah_pm_move(row.ticker, now_local=now_local)
-            if fb_err is None:
-                used_fallback = True
-                ah_pct = pct_change(snap.prev_close, snap.ah_last)
-                pm_val = snap.pm_last if us_premarket_started else None
-                pm_pct = pct_change(snap.prev_close, pm_val)
-            else:
-                final_err = f"quote_error: {base_err}; chart_error: {fb_err}"
-
-        if final_err is None and ((ah_pct is not None) or (pm_pct is not None)):
+        ah_pct, pm_pct, err = ahpm_map.get(row.ticker, (None, None, "no_chart_entry"))
+        if err is None and ((ah_pct is not None) or (pm_pct is not None)):
             status_map[row.ticker] = TickerStatus(ok=True)
         else:
-            status_map[row.ticker] = TickerStatus(ok=False, reason=final_err or base_err)
+            status_map[row.ticker] = TickerStatus(ok=False, reason=err or "no_prepost_data")
 
-    # Lefedettség blokk
     lines.append(build_coverage_block(status_map))
     lines.append(build_macro_block_1(macro))
 
-    # Második kör: riport sorok felépítése
     for row in filtered:
-        base_ah, base_pm, base_err = ahpm_map.get(row.ticker, (None, None, "no_quote_entry"))
-        ah_pct: Optional[float] = base_ah
-        pm_pct: Optional[float] = base_pm
-        used_fallback = False
-        final_err: Optional[str] = None
+        ah_pct, pm_pct, err = ahpm_map.get(row.ticker, (None, None, "no_chart_entry"))
 
-        if base_err is not None:
-            snap, fb_err = extract_ah_pm_move(row.ticker, now_local=now_local)
-            if fb_err is None:
-                used_fallback = True
-                ah_pct = pct_change(snap.prev_close, snap.ah_last)
-                pm_val = snap.pm_last if us_premarket_started else None
-                pm_pct = pct_change(snap.prev_close, pm_val)
-            else:
-                final_err = f"quote_error: {base_err}; chart_error: {fb_err}"
-
-        # PM csak akkor értelmezett, ha a mai premarket már elindult
-        effective_pm = pm_pct if us_premarket_started else None
+        if not us_premarket_started:
+            effective_pm = None
+        else:
+            effective_pm = pm_pct
 
         def fmt_pct(label: str, value: Optional[float]) -> str:
             if label == "PM" and not us_premarket_started:
@@ -581,33 +351,23 @@ def run_report_1(
             (effective_pm is not None and abs(effective_pm) >= row.k_threshold)
         )
 
-        src_base = "árforrás: Yahoo quote/v7 (pre-/post-market %)"
-        if used_fallback:
-            src_str = src_base + " + chart/v8 2d/5m fallback"
-        else:
-            src_str = src_base
+        src_str = "árforrás: Yahoo chart/v8 meta (pre-/post-market %)"
 
         if row.is_position:
-            if final_err is not None:
-                reason = f"Hiányzó vagy nem értelmezhető AH/PM adat (oka: {final_err})."
-            elif ah_pct is None and (effective_pm is None):
-                if base_err is not None:
-                    reason = f"Hiányzó vagy nem értelmezhető AH/PM adat (oka: {base_err})."
-                else:
-                    reason = "Hiányzó vagy nem értelmezhető AH/PM adat."
+            if err is not None and (ah_pct is None and effective_pm is None):
+                reason = f"Hiányzó vagy nem értelmezhető AH/PM adat (oka: {err})."
             elif has_signal:
                 reason = "Érdemi AH/PM elmozdulás (≥K) az utolsó RTH záróhoz képest."
             else:
                 reason = "Egyelőre nincs küszöb feletti AH/PM elmozdulás."
-
             pos_lines.append(f"{row.ticker} — {ah_str} | {pm_str} — {reason} ({src_str})")
         else:
             if not has_signal:
                 continue
-            if final_err is not None:
+            if err is not None and (ah_pct is None and effective_pm is None):
                 reason = (
                     "Watchlisten is érdemi AH/PM elmozdulás (≥K), "
-                    f"de adatminőségi hiba: {final_err}."
+                    f"de adatminőségi hiba: {err}."
                 )
             else:
                 reason = (
@@ -621,7 +381,6 @@ def run_report_1(
     if len(watch_lines) > 1:
         lines.append("\n".join(watch_lines) + "\n")
 
-    # (Hírek / katalizátorok – placeholder, BIBLIA szerint itt jönnek)
     yahoo_news: List[NewsItem] = []
     extra_news: List[NewsItem] = []
     all_news = merge_news_sources(yahoo_news, extra_news)
@@ -637,7 +396,7 @@ def run_report_1(
     return "\n".join(lines)
 
 # ---------------------------------------------------------------------------
-# 2-es riport: Tegnapi Open→Close (egyszerűsített)
+# 2-es riport
 # ---------------------------------------------------------------------------
 
 def run_report_2(
@@ -688,7 +447,7 @@ def run_report_2(
     return "\n".join(lines)
 
 # ---------------------------------------------------------------------------
-# 3-as riport: Ma nyitástól mostanáig
+# 3-as riport
 # ---------------------------------------------------------------------------
 
 def run_report_3(
@@ -729,8 +488,7 @@ def run_report_3(
     if ok_count == 0:
         lines.append(
             "\nA 3-as intranapi riport ma **nem értelmezhető**, mert a Yahoo Finance "
-            "quote API-ja minden tickerre hibát adott (rate limit vagy hiányzó Open/Last). "
-            "Ilyenkor az Open→Most mozgásokra nincs megbízható adat ebből a forrásból.\n"
+            "quote API-ja minden tickerre hibát adott (rate limit vagy hiányzó Open/Last).\n"
         )
         return "\n".join(lines)
 
@@ -786,7 +544,7 @@ def run_report_3(
     return "\n".join(lines)
 
 # ---------------------------------------------------------------------------
-# CLI / main
+# CLI
 # ---------------------------------------------------------------------------
 
 def parse_args() -> argparse.Namespace:
@@ -805,19 +563,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--summary",
         required=False,
-        help="GitHub Actions GITHUB_STEP_SUMMARY elérési útja (ha megadod, oda írja ki a riportot)",
+        help="GitHub Actions GITHUB_STEP_SUMMARY elérési útja",
     )
     parser.add_argument(
         "--macro",
         required=False,
-        help="Politika/FED/makró szöveg (Trump-napihír + 1–4 mondat, az 1-es/3-as riporthoz)",
+        help="Politika/FED/makró szöveg az 1-es/3-as riporthoz",
     )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-
     tickers = load_tickers_from_csv(args.csv)
 
     if args.report == "1":
