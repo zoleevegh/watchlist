@@ -137,9 +137,21 @@ def load_tickers_from_csv(path: str, default_k: float = 3.0) -> List[TickerRow]:
 
 @dataclass
 class PriceSnapshot:
-    prev_close: Optional[float]  # utolsó RTH záró
-    ah_last: Optional[float]
-    pm_last: Optional[float]
+    ah_pct, pm_pct, pm_not_started = compute_ah_pm_from_chart(
+    meta, chart_data["timestamp"], chart_data["close"]
+)
+
+# formázás (két tized + n/a + „premarket még nem indult” szöveg, ahogy most is csinálod)
+def fmt(x):
+    return "n/a" if x is None else f"{x:+.2f}%"
+
+ah_str = fmt(ah_pct)
+
+if pm_not_started:
+    pm_str = "n/a (a mai premarket még nem indult el US/Eastern)"
+else:
+    pm_str = fmt(pm_pct)
+
 
 
 def fetch_chart_2d_5m(ticker: str) -> dict:
@@ -168,91 +180,79 @@ def pct_change(base: Optional[float], new: Optional[float]) -> Optional[float]:
     return (new - base) / base * 100.0
 
 
-def extract_ah_pm_move(
-    ticker: str,
-    now_local: Optional[datetime] = None,
-) -> Tuple[PriceSnapshot, Optional[str]]:
+from datetime import datetime, time, timedelta, timezone
+
+def compute_ah_pm_from_chart(meta: dict, timestamps: list, closes: list):
     """
-    #1 riporthoz: AH + PM sáv utolsó ára, UTOLSÓ RTH ZÁRÓHOZ viszonyítva.
-
-    Árforrás: Yahoo Finance chart (v8, 2d/5m, includePrePost).
-
-    Logika (US idő, meta-alapú):
-    - prev_close: meta.regularMarketPreviousClose (ha nincs, akkor meta.previousClose)
-    - last_rth_date: meta.regularMarketTime dátuma (Yahoo szerinti utolsó RTH-nap)
-    - AH: last_rth_date 16:00–20:00 közötti utolsó ár.
-    - PM: a következő nap 04:00–09:30 közötti utolsó ár,
-          de csak akkor, ha azon a napon a premarket már elindult
-          (US/Eastern szerint now_us ≥ 04:00).
+    AH/PM % mozgás kiszámítása a 2d/5m chartból.
+    Mindig a LEGUTOLSÓ RTH záróhoz viszonyít (tegnapi regular close).
+    Visszaad: (ah_pct, pm_pct, pm_not_started_flag)
     """
-    if now_local is None:
-        now_local = datetime.now(BUDAPEST)
-    now_us = now_local.astimezone(US_EASTERN)
 
-    try:
-        data = fetch_chart_2d_5m(ticker)
-    except Exception as e:
-        return PriceSnapshot(None, None, None), f"fetch_error: {e}"
+    if not timestamps or not closes:
+        return None, None, False
 
-    try:
-        result_list = data.get("chart", {}).get("result", [])
-        if not result_list:
-            return PriceSnapshot(None, None, None), "no_chart_result"
+    # Yahoo chart timezone offset (sec)
+    gmtoffset = meta.get("gmtoffset", 0) or 0
+    tz = timezone(timedelta(seconds=gmtoffset))
 
-        result = result_list[0]
-        meta = result.get("meta", {})
-        timestamps = result.get("timestamp", []) or []
-        quotes = result.get("indicators", {}).get("quote", [{}])[0]
-        closes = quotes.get("close", []) or []
+    def to_local(ts):
+        return datetime.fromtimestamp(ts, tz)
 
-        if not timestamps or not closes:
-            return PriceSnapshot(None, None, None), "no_price_data"
+    # Legutóbbi regular session dátuma a meta.regularMarketTime alapján
+    regular_ts = meta.get("regularMarketTime")
+    if not regular_ts:
+        return None, None, False
 
-        prev_close = meta.get("regularMarketPreviousClose") or meta.get("previousClose")
-        reg_mkt_time = meta.get("regularMarketTime")
+    regular_dt = datetime.fromtimestamp(regular_ts, tz)
+    rth_date = regular_dt.date()
 
-        if prev_close is None or reg_mkt_time is None:
-            return PriceSnapshot(None, None, None), "no_prevclose_or_regtime"
+    # Időablakok US helyi időben
+    rth_start = datetime.combine(rth_date, time(9, 30), tz)
+    rth_end   = datetime.combine(rth_date, time(16, 0), tz)
 
-        # Utolsó RTH-nap a meta.regularMarketTime alapján
-        last_rth_dt = datetime.fromtimestamp(reg_mkt_time, tz=US_EASTERN)
-        last_rth_date = last_rth_dt.date()
+    ah_start  = rth_end
+    ah_end    = rth_end + timedelta(hours=4)
 
-        dt_list = [datetime.fromtimestamp(ts, tz=US_EASTERN) for ts in timestamps]
+    pm_start  = datetime.combine(rth_date + timedelta(days=1), time(4, 0), tz)
+    pm_end    = datetime.combine(rth_date + timedelta(days=1), time(9, 30), tz)
 
-        # AH: last_rth_date 16:00–20:00 US idő
-        ah_prices = [
-            c
-            for dt, c in zip(dt_list, closes)
-            if c is not None
-            and dt.date() == last_rth_date
-            and 16 <= dt.hour < 20
-        ]
-        ah_last = ah_prices[-1] if ah_prices else None
+    last_rth_close = None
+    last_ah_price  = None
+    last_pm_price  = None
 
-        # PM: következő nap 04:00–09:30 – csak ha már elindult a premarket
-        pm_date = last_rth_date + timedelta(days=1)
-        pm_start_dt = datetime(pm_date.year, pm_date.month, pm_date.day, 4, 0, tzinfo=US_EASTERN)
+    for ts, px in zip(timestamps, closes):
+        if px is None:
+            continue
+        dt = to_local(ts)
 
-        pm_last: Optional[float] = None
-        if now_us >= pm_start_dt:
-            pm_prices = [
-                c
-                for dt, c in zip(dt_list, closes)
-                if c is not None
-                and dt.date() == pm_date
-                and (
-                    4 <= dt.hour < 9
-                    or (dt.hour == 9 and dt.minute <= 30)
-                )
-            ]
-            pm_last = pm_prices[-1] if pm_prices else None
+        if rth_start <= dt <= rth_end:
+            last_rth_close = px
 
-        return PriceSnapshot(prev_close, ah_last, pm_last), None
+        elif ah_start <= dt <= ah_end:
+            last_ah_price = px
 
-    except Exception as e:
-        return PriceSnapshot(None, None, None), f"parse_error: {e}"
+        elif pm_start <= dt <= pm_end:
+            last_pm_price = px
 
+    if last_rth_close is None:
+        # ha nincs regular close, inkább ne mondjunk semmit
+        return None, None, False
+
+    ah_pct = None
+    pm_pct = None
+
+    if last_ah_price is not None:
+        ah_pct = (last_ah_price / last_rth_close - 1.0) * 100.0
+
+    if last_pm_price is not None:
+        pm_pct = (last_pm_price / last_rth_close - 1.0) * 100.0
+
+    # Flag: ha még el sem indult ma a premarket (US/Eastern szerint)
+    now_local = datetime.now(tz)
+    pm_not_started = (last_pm_price is None and now_local < pm_start)
+
+    return ah_pct, pm_pct, pm_not_started
 
 # ---------------------------------------------------------------------------
 # Quote batch helper (#2 és #3 riporthoz)
