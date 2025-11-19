@@ -45,7 +45,8 @@ except ImportError:  # Python <3.9
 BUDAPEST = ZoneInfo("Europe/Budapest")
 US_EASTERN = ZoneInfo("America/New_York")
 
-SCRIPT_VERSION = "2.1.6-biblia-yahoo-us-time-chart-meta-prepost"
+SCRIPT_VERSION = "2.1.7-biblia-yahoo-us-time-chart-meta-prevclose"
+
 
 HEADERS_YF = {
     "User-Agent": (
