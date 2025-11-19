@@ -213,7 +213,7 @@ def fmt_pct(value: Optional[float]) -> str:
     return f"{value:+.2f}%"
 
 
-def generate_mode1_report(
+def generate_model_report(
     positions_path: Optional[str],
     watchlist_path: Optional[str],
     script_version: str,
@@ -224,7 +224,8 @@ def generate_mode1_report(
     positions = load_positions(positions_path)
     watch = load_watchlist(watchlist_path)
 
-    all_symbols = sorted(set(list(watch.keys()) | set(positions.keys())))
+    # <<< Itt volt a bug, javítva >>>
+    all_symbols = sorted(set(watch.keys()) | set(positions.keys()))
 
     missing: Dict[str, str] = {}
     darab_results: List[dict] = []
@@ -272,7 +273,6 @@ def generate_mode1_report(
             + " (oka: lásd belső logot / forráshibát)"
         )
 
-    # CEST/CET – nem kritikus, csak bélyeg
     now = dt.datetime.now(dt.timezone(dt.timedelta(hours=1)))
 
     header_lines = [
@@ -388,7 +388,7 @@ def main() -> None:
     if mode == 1:
         summary_path = args.summary or "reports/summary_report_1.md"
         json_path = "reports/latest_1.json"
-        text = generate_mode1_report(
+        text = generate_model_report(
             positions_path=positions_path,
             watchlist_path=watchlist_path,
             script_version=script_version,
@@ -398,7 +398,6 @@ def main() -> None:
         )
         print(text)
     else:
-        # Stub a #2/#3-hoz – legalább nem dob hibát
         msg = f"# Report mód {mode} még nincs implementálva ebben a verzióban."
         print(msg)
 
