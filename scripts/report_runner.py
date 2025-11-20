@@ -157,9 +157,11 @@ def compute_ah_pm_move(
     """
     Visszaadja: (rth_close_price, ah_pct, pm_pct)
 
-    - RTH: 09:30–16:00 exchange time
-    - AH:  RTH záró utáni 16:00–20:00, ugyanazon a napon
-    - PM:  RTH záró utáni 04:00–09:30 (következő kereskedési nap)
+    Logika (biblia-kompatibilis #1-hez):
+    - Kizárólag az UTOLSÓ teljes RTH szakasz záróára a bázis.
+    - After-hours: az ehhez tartozó nap 16:00–20:00 közötti gyertyák.
+    - Premarket: a rákövetkező nap 04:00–09:30 közötti gyertyák.
+    - A Yahoo 2d/5m + includePrePost adatsorból dolgozunk.
     """
     if not timestamps or not closes:
         return None, None, None
@@ -172,53 +174,68 @@ def compute_ah_pm_move(
 
     dts = [dt.datetime.fromtimestamp(t, tz) for t in timestamps]
 
-    # RTH: 09:30–16:00
     rth_points: List[Tuple[dt.datetime, float]] = []
+    ah_points: List[Tuple[dt.datetime, float]] = []
+    pm_points: List[Tuple[dt.datetime, float]] = []
+
     for d, c in zip(dts, closes):
         if c is None:
             continue
-        if (d.hour > 9 or (d.hour == 9 and d.minute >= 30)) and d.hour < 16:
-            rth_points.append((d, float(c)))
+        c = float(c)
+        time = d.time()
+
+        # RTH: 09:30–16:00
+        if (time.hour > 9 or (time.hour == 9 and time.minute >= 30)) and time.hour < 16:
+            rth_points.append((d, c))
+        # After-hours: 16:00–20:00
+        elif time.hour >= 16 and time.hour <= 20:
+            ah_points.append((d, c))
+        # Premarket: 04:00–09:30
+        elif (time.hour > 4 or (time.hour == 4 and time.minute >= 0)) and (
+            time.hour < 9 or (time.hour == 9 and time.minute <= 30)
+        ):
+            pm_points.append((d, c))
 
     if not rth_points:
         return None, None, None
 
-    last_rth_dt, rth_close_price = rth_points[-1]
+    # Ha nincs egyáltalán pre/post adat, akkor tényleg nincs mit jelenteni
+    if not ah_points and not pm_points:
+        return None, None, None
 
-    # After-hours: ugyanaz a nap, >16:00–20:00
-    ah_points: List[Tuple[dt.datetime, float]] = []
-    for d, c in zip(dts, closes):
-        if c is None:
-            continue
-        if d.date() == last_rth_dt.date() and d > last_rth_dt and d.hour <= 20:
-            ah_points.append((d, float(c)))
-
+    # 1) Keressük meg az IDŐBEN LEGHAMARABB érkező pre/post gyertyát
+    first_prepost_dt: Optional[dt.datetime] = None
     if ah_points:
-        ah_last_price = ah_points[-1][1]
+        first_prepost_dt = ah_points[0][0]
+    if pm_points and (first_prepost_dt is None or pm_points[0][0] < first_prepost_dt):
+        first_prepost_dt = pm_points[0][0]
+
+    # 2) Ehhez képest az utolsó megelőző RTH-gyertya a bázis
+    base_candidates = [p for p in rth_points if p[0] < first_prepost_dt] if first_prepost_dt else rth_points
+    if not base_candidates:
+        base_candidates = rth_points  # fallback: összes közül az utolsó
+    last_rth_dt, rth_close_price = base_candidates[-1]
+
+    base_date = last_rth_dt.date()
+
+    # 3) After-hours: ugyanarra a napra, a záró utáni 16:00–20:00 tartományból
+    ah_for_base = [p for p in ah_points if p[0].date() == base_date and p[0] > last_rth_dt]
+    if ah_for_base:
+        ah_last_price = ah_for_base[-1][1]
         ah_pct = (ah_last_price - rth_close_price) / rth_close_price * 100.0
     else:
         ah_pct = None
 
-    # Premarket: >RTH záró, 04:00–09:30
-    pm_points: List[Tuple[dt.datetime, float]] = []
-    for d, c in zip(dts, closes):
-        if c is None:
-            continue
-        if d <= last_rth_dt:
-            continue
-        if d.hour < 4:
-            continue
-        if d.hour > 9 or (d.hour == 9 and d.minute > 30):
-            continue
-        pm_points.append((d, float(c)))
-
-    if pm_points:
-        pm_last_price = pm_points[-1][1]
+    # 4) Premarket: a bázis nap utáni napra eső 04:00–09:30 közötti gyertyák
+    pm_for_base = [p for p in pm_points if p[0] > last_rth_dt]
+    if pm_for_base:
+        pm_last_price = pm_for_base[-1][1]
         pm_pct = (pm_last_price - rth_close_price) / rth_close_price * 100.0
     else:
         pm_pct = None
 
     return rth_close_price, ah_pct, pm_pct
+
 
 
 def fmt_pct(value: Optional[float]) -> str:
