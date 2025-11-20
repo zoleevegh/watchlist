@@ -137,7 +137,7 @@ jobs:
           if ($null -eq $obj.html_url) { Write-Error "Gist create failed: $resp"; exit 1 }
           "Gist URL: $($obj.html_url)"
 
-            - name: Update fixed Gist with latest summary
+      - name: Update fixed Gist with latest summary
         if: always()
         shell: pwsh
         env:
