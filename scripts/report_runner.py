@@ -6,7 +6,7 @@ import json
 import math
 import os
 import sys
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Tuple
 
 try:
     from zoneinfo import ZoneInfo
@@ -32,7 +32,6 @@ except ImportError:
     pass
 
 
-
 SESSION = requests.Session()
 SESSION.headers.update(
     {
@@ -44,12 +43,12 @@ SESSION.headers.update(
 )
 
 DEFAULT_K = 3.0
-DEFAULT_SCRIPT_VERSION = "2.2.1-biblia-yahoo-us-time-chart-meta-prevclose-helper"
+DEFAULT_SCRIPT_VERSION = "2.2.2-biblia-yahoo-us-time-chart-meta-prevclose-helper"
 
 
 def debug(msg: str) -> None:
-    """Simple stderr logger so the MD remains clean."""
-    sys.stderr.write(msg + "\n")
+    \"\"\"Simple stderr logger so the MD remains clean.\"\"\"
+    sys.stderr.write(msg + "\\n")
     sys.stderr.flush()
 
 
@@ -61,62 +60,15 @@ def find_col(headers: List[str], candidates: List[str]) -> Optional[str]:
     return None
 
 
-def load_positions(path: Optional[str]) -> Dict[str, Dict]:
-    """Load explicit positions CSV if present (ticker + quantity).
-
-    This is the legacy/default behaviour: if the file exists and has the right
-    columns, we treat every non‑zero quantity as a darabszámos pozíció.
-    """
-    positions: Dict[str, Dict] = {}
-    if not path or not os.path.exists(path):
-        debug(f"[WARN] Positions file not found: {path}")
-        return positions
-
-    with open(path, newline="", encoding="utf-8-sig") as f:
-        reader = csv.DictReader(f)
-        if not reader.fieldnames:
-            return positions
-        headers = [h.strip() for h in reader.fieldnames]
-        ticker_col = find_col(headers, ["ticker", "symbol", "szimbólum"])
-        qty_col = find_col(
-            headers,
-            ["shares", "quantity", "qty", "darabszám", "darabszam", "db"],
-        )
-
-        if not ticker_col:
-            debug("[WARN] No ticker column found in positions.")
-            return positions
-        if not qty_col:
-            debug("[WARN] No quantity column found in positions.")
-            return positions
-
-        for row in reader:
-            sym = (row.get(ticker_col) or "").strip().upper()
-            if not sym:
-                continue
-            qty_raw = row.get(qty_col)
-            try:
-                qty = float(qty_raw) if qty_raw not in (None, "") else 0.0
-            except ValueError:
-                qty = 0.0
-            if qty <= 0:
-                continue
-            positions[sym] = {
-                "ticker": sym,
-                "quantity": qty,
-            }
-    return positions
-
-
 def infer_positions_from_watchlist(path: Optional[str]) -> Dict[str, Dict]:
-    """Ha nincs külön positions.csv, próbáljuk a watchlist/master CSV‑ből kinyerni
-    a darabszámos sorokat (pl. Darabszam, db).
+    \"\"\"Darabszámos pozíciók kinyerése a MASTER / watchlist CSV-ből.
 
     Logika:
     - ticker oszlop: ticker/symbol/szimbólum/Ticker
-    - quantity oszlop: shares/quantity/qty/darabszám/darabszam/db
+    - quantity oszlop: shares/quantity/qty/darabszám/darabszam/db/Darabszam
     - csak >0 értékű sorok kerülnek be pozícióként.
-    """
+    - ha ugyanaz a ticker többször szerepel, összegezzük a darabszámot.
+    \"\"\"
     positions: Dict[str, Dict] = {}
     if not path or not os.path.exists(path):
         debug(f"[WARN] Cannot infer positions – watchlist file not found: {path}")
@@ -148,7 +100,6 @@ def infer_positions_from_watchlist(path: Optional[str]) -> Dict[str, Dict]:
                 qty = 0.0
             if qty <= 0:
                 continue
-            # Ha ugyanaz a ticker többször szerepel, összegezzük a darabszámot
             prev = positions.get(sym, {}).get("quantity", 0.0)
             positions[sym] = {
                 "ticker": sym,
@@ -156,28 +107,10 @@ def infer_positions_from_watchlist(path: Optional[str]) -> Dict[str, Dict]:
             }
 
     if positions:
-        debug(f"[INFO] Inferred {len(positions)} darabszámos pozíció a watchlist/master CSV‑ből.")
+        debug(f"[INFO] Inferred {len(positions)} darabszámos pozíció a watchlist/master CSV-ből.")
     else:
         debug("[INFO] No darabszámos pozíció inferred from watchlist.")
     return positions
-
-
-def load_positions_with_fallback(
-    positions_path: Optional[str],
-    watchlist_path: Optional[str],
-) -> Dict[str, Dict]:
-    """Elsődlegesen próbálja a külön positions CSV‑t, ha az nincs/üres,
-    akkor a watchlist/master alapján inferál darabszámos sorokat.
-
-    Így a darabszámos tickerek dinamikusan követik a mastert, nem kell
-    külön positions fájlt karbantartani.
-    """
-    positions = load_positions(positions_path)
-    if positions:
-        return positions
-    debug("[INFO] Positions üres vagy nincs külön positions.csv – próbálunk inferálni a watchlistből.")
-    inferred = infer_positions_from_watchlist(watchlist_path)
-    return inferred
 
 
 def load_watchlist(path: Optional[str]) -> Dict[str, Dict]:
@@ -239,7 +172,7 @@ def fetch_chart(symbol: str) -> Tuple[dict, List[int], List[Optional[float]]]:
 def compute_ah_pm_move(
     meta: dict, timestamps: List[int], closes: List[Optional[float]]
 ) -> Tuple[Optional[float], Optional[float], Optional[float]]:
-    """Visszaadja: (rth_close_price, ah_pct, pm_pct)
+    \"\"\"Visszaadja: (rth_close_price, ah_pct, pm_pct)
 
     Haladó, bíblia-kompatibilis logika #1-hez:
 
@@ -252,7 +185,7 @@ def compute_ah_pm_move(
       (utolsó teljes RTH záró).
     - AH és PM mozgást ehhez a bázishoz viszonyítjuk, függetlenül attól,
       hogy mikor fut a script (nyitás előtt, közben, után).
-    """
+    \"\"\"
     if not timestamps or not closes:
         return None, None, None
 
@@ -334,15 +267,14 @@ def fmt_pct(value: Optional[float]) -> str:
 
 
 def generate_model_report(
-    positions_path: Optional[str],
     watchlist_path: Optional[str],
     script_version: str,
     k_default: float,
     output_md: str,
     output_json: str,
 ) -> str:
-    # Pozíciók: külön positions CSV-ből, vagy ha nincs, akkor a master/watchlist alapján inferálva
-    positions = load_positions_with_fallback(positions_path, watchlist_path)
+    # Pozíciók: a master/watchlist alapján inferálva (nincs külön positions.csv)
+    positions = infer_positions_from_watchlist(watchlist_path)
     watch = load_watchlist(watchlist_path)
 
     all_symbols = sorted(set(watch.keys()) | set(positions.keys()))
@@ -363,7 +295,6 @@ def generate_model_report(
             missing[sym] = str(e)
             continue
 
-        # Ha csak az a gond, hogy nincs pre/post gyertya, azt nem tekintjük lefedettség-hibának.
         is_position = sym in positions and positions[sym].get("quantity", 0) > 0
         k_val = watch.get(sym, {}).get("k") or k_default
 
@@ -378,6 +309,7 @@ def generate_model_report(
             "pm_pct": pm_pct,
             "is_position": is_position,
             "k": k_val,
+            "max_move": max_move,
         }
 
         if is_position:
@@ -419,7 +351,14 @@ def generate_model_report(
     lines.append("Darabszámos tickerek – After-hours & Premarket mozgások")
     lines.append("")
 
-    for entry in sorted(darab_results, key=lambda x: x["ticker"]):
+    # Darabszámosok rendezése max abs mozgás szerint (csökkenő)
+    darab_sorted = sorted(
+        darab_results,
+        key=lambda x: x.get("max_move", 0.0),
+        reverse=True,
+    )
+
+    for entry in darab_sorted:
         sym = entry["ticker"]
         ah_pct = entry["ah_pct"]
         pm_pct = entry["pm_pct"]
@@ -429,10 +368,18 @@ def generate_model_report(
         )
         lines.append(line)
 
-    if watch_results:
+    # Watchlist – max(|AH|,|PM|) szerint csökkenő
+    watch_sorted = sorted(
+        watch_results,
+        key=lambda x: x.get("max_move", 0.0),
+        reverse=True,
+    )
+
+    if watch_sorted:
+        lines.append("")
         lines.append("Watchlist – After-hours & Premarket mozgások (csak ha ≥K)")
         lines.append("")
-        for entry in sorted(watch_results, key=lambda x: x["ticker"]):
+        for entry in watch_sorted:
             sym = entry["ticker"]
             ah_pct = entry["ah_pct"]
             pm_pct = entry["pm_pct"]
@@ -445,7 +392,7 @@ def generate_model_report(
 
     lines.append(f"Job summary generated at run-time ({now.isoformat(timespec='minutes')})")
 
-    md_text = "\n".join(lines)
+    md_text = "\\n".join(lines)
 
     os.makedirs(os.path.dirname(output_md), exist_ok=True)
     with open(output_md, "w", encoding="utf-8") as f:
@@ -455,8 +402,8 @@ def generate_model_report(
         "generated_at": now.isoformat(),
         "script_version": script_version,
         "coverage_missing": missing,
-        "positions": darab_results,
-        "watchlist_moves": watch_results,
+        "positions": darab_sorted,
+        "watchlist_moves": watch_sorted,
     }
     os.makedirs(os.path.dirname(output_json), exist_ok=True)
     with open(output_json, "w", encoding="utf-8") as f:
@@ -471,11 +418,6 @@ def main() -> None:
     # ÚJ interfész
     parser.add_argument("--mode", type=int, choices=[1, 2, 3], help="1/2/3-as jelentés mód")
 
-    parser.add_argument(
-        "--positions",
-        help="Pozíciók CSV (darabszámos tickerek)",
-        default="reports/positions.csv",
-    )
     parser.add_argument(
         "--watchlist",
         help="MASTER / watchlist CSV",
@@ -503,7 +445,6 @@ def main() -> None:
 
     mode = args.mode or args.report or 1
     watchlist_path = args.watchlist or args.csv or "reports/master.csv"
-    positions_path = args.positions or "reports/positions.csv"
     script_version = args.script_version or DEFAULT_SCRIPT_VERSION
     k_default = args.k_default or DEFAULT_K
 
@@ -511,7 +452,6 @@ def main() -> None:
         summary_path = args.summary or "reports/summary_report_1.md"
         json_path = "reports/latest_1.json"
         text = generate_model_report(
-            positions_path=positions_path,
             watchlist_path=watchlist_path,
             script_version=script_version,
             k_default=k_default,
