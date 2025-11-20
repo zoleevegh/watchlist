@@ -137,7 +137,7 @@ jobs:
           if ($null -eq $obj.html_url) { Write-Error "Gist create failed: $resp"; exit 1 }
           "Gist URL: $($obj.html_url)"
 
-      - name: Update fixed Gist with latest summary
+            - name: Update fixed Gist with latest summary
         if: always()
         shell: pwsh
         env:
@@ -154,13 +154,13 @@ jobs:
             files = @{}
           }
           foreach ($f in $files) {
-            $name = Split-Path $f -Leaf
+            $name    = Split-Path $f -Leaf
             $content = Get-Content -Raw $f
             $payload.files[$name] = @{ content = $content }
           }
           $json = $payload | ConvertTo-Json -Depth 10
 
-          $url = "https://api.github.com/gists/$env:HC_GIST_ID"
+          $url  = "https://api.github.com/gists/$env:HC_GIST_ID"
           $resp = curl.exe -s -X PATCH $url `
             -H "Authorization: token $env:GH_GIST_TOKEN" `
             -H "Content-Type: application/json" `
@@ -168,6 +168,16 @@ jobs:
           $obj = $resp | ConvertFrom-Json
           if ($null -eq $obj.html_url) { Write-Error "Fixed Gist update failed: $resp"; exit 1 }
           "Gist updated: $($obj.html_url)"
+
+          # CDN PURGE a raw gist URL-re, hogy mindig a legfrissebb tartalom jöjjön
+          $rawUrl = "https://gist.githubusercontent.com/zoleevegh/$env:HC_GIST_ID/raw/summary_report_1.md"
+          Write-Host "Purging raw gist cache: $rawUrl"
+          try {
+            curl.exe -s -X PURGE $rawUrl | Out-Null
+          } catch {
+            Write-Warning "PURGE failed (ignored): $_"
+          }
+
 
       - name: Upload artifacts
         if: always()
