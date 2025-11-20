@@ -43,12 +43,12 @@ SESSION.headers.update(
 )
 
 DEFAULT_K = 3.0
-DEFAULT_SCRIPT_VERSION = "2.2.2-biblia-yahoo-us-time-chart-meta-prevclose-helper"
+DEFAULT_SCRIPT_VERSION = "2.2.3-biblia-yahoo-us-time-chart-meta-prevclose-helper"
 
 
 def debug(msg: str) -> None:
-    \"\"\"Simple stderr logger so the MD remains clean.\"\"\"
-    sys.stderr.write(msg + "\\n")
+    """Simple stderr logger so the MD remains clean."""
+    sys.stderr.write(msg + "\n")
     sys.stderr.flush()
 
 
@@ -61,14 +61,14 @@ def find_col(headers: List[str], candidates: List[str]) -> Optional[str]:
 
 
 def infer_positions_from_watchlist(path: Optional[str]) -> Dict[str, Dict]:
-    \"\"\"Darabszámos pozíciók kinyerése a MASTER / watchlist CSV-ből.
+    """Darabszámos pozíciók kinyerése a MASTER / watchlist CSV-ből.
 
     Logika:
     - ticker oszlop: ticker/symbol/szimbólum/Ticker
     - quantity oszlop: shares/quantity/qty/darabszám/darabszam/db/Darabszam
     - csak >0 értékű sorok kerülnek be pozícióként.
     - ha ugyanaz a ticker többször szerepel, összegezzük a darabszámot.
-    \"\"\"
+    """
     positions: Dict[str, Dict] = {}
     if not path or not os.path.exists(path):
         debug(f"[WARN] Cannot infer positions – watchlist file not found: {path}")
@@ -172,7 +172,7 @@ def fetch_chart(symbol: str) -> Tuple[dict, List[int], List[Optional[float]]]:
 def compute_ah_pm_move(
     meta: dict, timestamps: List[int], closes: List[Optional[float]]
 ) -> Tuple[Optional[float], Optional[float], Optional[float]]:
-    \"\"\"Visszaadja: (rth_close_price, ah_pct, pm_pct)
+    """Visszaadja: (rth_close_price, ah_pct, pm_pct)
 
     Haladó, bíblia-kompatibilis logika #1-hez:
 
@@ -185,7 +185,7 @@ def compute_ah_pm_move(
       (utolsó teljes RTH záró).
     - AH és PM mozgást ehhez a bázishoz viszonyítjuk, függetlenül attól,
       hogy mikor fut a script (nyitás előtt, közben, után).
-    \"\"\"
+    """
     if not timestamps or not closes:
         return None, None, None
 
@@ -392,7 +392,7 @@ def generate_model_report(
 
     lines.append(f"Job summary generated at run-time ({now.isoformat(timespec='minutes')})")
 
-    md_text = "\\n".join(lines)
+    md_text = "\n".join(lines)
 
     os.makedirs(os.path.dirname(output_md), exist_ok=True)
     with open(output_md, "w", encoding="utf-8") as f:
