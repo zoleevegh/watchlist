@@ -19,6 +19,20 @@ except ImportError:
 
 import requests
 
+# Biblia checklist helper (placeholder).
+# These functions will later hold the canonical #1/#2/#3 reporting rules.
+try:
+    from biblia_helper import (
+        get_report1_checklist,
+        get_report2_checklist,
+        get_report3_checklist,
+    )  # noqa: F401
+except ImportError:
+    # Optional helper; the script works without this file present.
+    pass
+
+
+
 SESSION = requests.Session()
 SESSION.headers.update(
     {
@@ -30,7 +44,7 @@ SESSION.headers.update(
 )
 
 DEFAULT_K = 3.0
-DEFAULT_SCRIPT_VERSION = "2.1.8-biblia-yahoo-us-time-chart-meta-prevclose"
+DEFAULT_SCRIPT_VERSION = "2.1.9-biblia-yahoo-us-time-chart-meta-prevclose-helper"
 
 
 def debug(msg: str) -> None:
