@@ -6,7 +6,7 @@ import json
 import math
 import os
 import sys
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 
 try:
     from zoneinfo import ZoneInfo
@@ -44,7 +44,7 @@ SESSION.headers.update(
 )
 
 DEFAULT_K = 3.0
-DEFAULT_SCRIPT_VERSION = "2.2.0-biblia-yahoo-us-time-chart-meta-prevclose-helper"
+DEFAULT_SCRIPT_VERSION = "2.2.1-biblia-yahoo-us-time-chart-meta-prevclose-helper"
 
 
 def debug(msg: str) -> None:
@@ -62,6 +62,11 @@ def find_col(headers: List[str], candidates: List[str]) -> Optional[str]:
 
 
 def load_positions(path: Optional[str]) -> Dict[str, Dict]:
+    """Load explicit positions CSV if present (ticker + quantity).
+
+    This is the legacy/default behaviour: if the file exists and has the right
+    columns, we treat every non‑zero quantity as a darabszámos pozíció.
+    """
     positions: Dict[str, Dict] = {}
     if not path or not os.path.exists(path):
         debug(f"[WARN] Positions file not found: {path}")
@@ -73,26 +78,106 @@ def load_positions(path: Optional[str]) -> Dict[str, Dict]:
             return positions
         headers = [h.strip() for h in reader.fieldnames]
         ticker_col = find_col(headers, ["ticker", "symbol", "szimbólum"])
-        qty_col = find_col(headers, ["shares", "quantity", "qty", "darabszám", "db"])
+        qty_col = find_col(
+            headers,
+            ["shares", "quantity", "qty", "darabszám", "darabszam", "db"],
+        )
 
         if not ticker_col:
             debug("[WARN] No ticker column found in positions.")
+            return positions
+        if not qty_col:
+            debug("[WARN] No quantity column found in positions.")
             return positions
 
         for row in reader:
             sym = (row.get(ticker_col) or "").strip().upper()
             if not sym:
                 continue
-            qty_raw = row.get(qty_col) if qty_col else None
+            qty_raw = row.get(qty_col)
             try:
                 qty = float(qty_raw) if qty_raw not in (None, "") else 0.0
             except ValueError:
                 qty = 0.0
+            if qty <= 0:
+                continue
             positions[sym] = {
                 "ticker": sym,
                 "quantity": qty,
             }
     return positions
+
+
+def infer_positions_from_watchlist(path: Optional[str]) -> Dict[str, Dict]:
+    """Ha nincs külön positions.csv, próbáljuk a watchlist/master CSV‑ből kinyerni
+    a darabszámos sorokat (pl. Darabszam, db).
+
+    Logika:
+    - ticker oszlop: ticker/symbol/szimbólum/Ticker
+    - quantity oszlop: shares/quantity/qty/darabszám/darabszam/db
+    - csak >0 értékű sorok kerülnek be pozícióként.
+    """
+    positions: Dict[str, Dict] = {}
+    if not path or not os.path.exists(path):
+        debug(f"[WARN] Cannot infer positions – watchlist file not found: {path}")
+        return positions
+
+    with open(path, newline="", encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f)
+        if not reader.fieldnames:
+            return positions
+        headers = [h.strip() for h in reader.fieldnames]
+        ticker_col = find_col(headers, ["ticker", "symbol", "szimbólum", "Ticker"])
+        qty_col = find_col(
+            headers,
+            ["shares", "quantity", "qty", "darabszám", "darabszam", "db", "Darabszam"],
+        )
+
+        if not ticker_col or not qty_col:
+            debug("[INFO] Cannot infer positions from watchlist – ticker or quantity column missing.")
+            return positions
+
+        for row in reader:
+            sym = (row.get(ticker_col) or "").strip().upper()
+            if not sym:
+                continue
+            qty_raw = row.get(qty_col)
+            try:
+                qty = float(qty_raw.replace(",", ".")) if qty_raw not in (None, "") else 0.0
+            except Exception:
+                qty = 0.0
+            if qty <= 0:
+                continue
+            # Ha ugyanaz a ticker többször szerepel, összegezzük a darabszámot
+            prev = positions.get(sym, {}).get("quantity", 0.0)
+            positions[sym] = {
+                "ticker": sym,
+                "quantity": prev + qty,
+            }
+
+    if positions:
+        debug(f"[INFO] Inferred {len(positions)} darabszámos pozíció a watchlist/master CSV‑ből.")
+    else:
+        debug("[INFO] No darabszámos pozíció inferred from watchlist.")
+    return positions
+
+
+def load_positions_with_fallback(
+    positions_path: Optional[str],
+    watchlist_path: Optional[str],
+) -> Dict[str, Dict]:
+    """Elsődlegesen próbálja a külön positions CSV‑t, ha az nincs/üres,
+    akkor a watchlist/master alapján inferál darabszámos sorokat.
+
+    Így a darabszámos tickerek dinamikusan követik a mastert, nem kell
+    külön positions fájlt karbantartani.
+    """
+    positions = load_positions(positions_path)
+    if positions:
+        return positions
+    debug("[INFO] Positions üres vagy nincs külön positions.csv – próbálunk inferálni a watchlistből.")
+    inferred = infer_positions_from_watchlist(watchlist_path)
+    return inferred
 
 
 def load_watchlist(path: Optional[str]) -> Dict[str, Dict]:
@@ -106,7 +191,7 @@ def load_watchlist(path: Optional[str]) -> Dict[str, Dict]:
         if not reader.fieldnames:
             return watch
         headers = [h.strip() for h in reader.fieldnames]
-        ticker_col = find_col(headers, ["ticker", "symbol", "szimbólum"])
+        ticker_col = find_col(headers, ["ticker", "symbol", "szimbólum", "Ticker"])
         k_col = find_col(headers, ["k", "k_move", "k_threshold"])
 
         if not ticker_col:
@@ -154,17 +239,19 @@ def fetch_chart(symbol: str) -> Tuple[dict, List[int], List[Optional[float]]]:
 def compute_ah_pm_move(
     meta: dict, timestamps: List[int], closes: List[Optional[float]]
 ) -> Tuple[Optional[float], Optional[float], Optional[float]]:
-    """
-    Visszaadja: (rth_close_price, ah_pct, pm_pct)
+    """Visszaadja: (rth_close_price, ah_pct, pm_pct)
 
-    Haladóbb biblia-kompatibilis logika #1-hez:
+    Haladó, bíblia-kompatibilis logika #1-hez:
 
-    - Az alap mindig az UTOLSÓ teljes RTH (09:30–16:00) záróár,
-      mégpedig azé, amelyik IDŐBEN megelőzi az első pre/post (AH/PM) gyertyát.
-    - After-hours: az ehhez tartozó nap 16:00–20:00 közötti gyertyák.
-    - Premarket: a rákövetkező nap 04:00–09:30 közötti gyertyák.
-    - A Yahoo 2d/5m + includePrePost adatsorból dolgozunk, így független attól,
-      hogy a scriptet nyitás előtt, közben vagy zárás után futtatjuk.
+    - A Yahoo 2d/5m + includePrePost sorozatából külön gyűjtjük:
+      * RTH: 09:30–16:00
+      * After-hours: 16:00–20:00
+      * Premarket: 04:00–09:30
+    - Megkeressük az IDŐBEN LEGHAMARABB érkező pre/post (AH vagy PM) gyertyát.
+    - Az ehhez képest UTOLSÓ MEGELŐZŐ RTH gyertya záróára a bázis
+      (utolsó teljes RTH záró).
+    - AH és PM mozgást ehhez a bázishoz viszonyítjuk, függetlenül attól,
+      hogy mikor fut a script (nyitás előtt, közben, után).
     """
     if not timestamps or not closes:
         return None, None, None
@@ -187,7 +274,7 @@ def compute_ah_pm_move(
         c = float(c)
         time = d.time()
 
-        # RTH: 09:30–16:00 (tőzsdei rendes kereskedés)
+        # Regular trading hours: 09:30–16:00
         if (time.hour > 9 or (time.hour == 9 and time.minute >= 30)) and time.hour < 16:
             rth_points.append((d, c))
         # After-hours: 16:00–20:00
@@ -202,30 +289,26 @@ def compute_ah_pm_move(
     if not rth_points:
         return None, None, None
 
-    # Ha nincs egyáltalán pre/post adat, akkor tényleg nincs mit jelenteni.
+    # Ha nincs egyáltalán pre/post adat, akkor tényleg nincs mit jelenteni
     if not ah_points and not pm_points:
         return None, None, None
 
-    # 1) Keressük meg az IDŐBEN LEGHAMARABB érkező pre/post gyertyát.
+    # 1) Keressük meg az IDŐBEN LEGHAMARABB érkező pre/post gyertyát
     first_prepost_dt: Optional[dt.datetime] = None
     if ah_points:
         first_prepost_dt = ah_points[0][0]
     if pm_points and (first_prepost_dt is None or pm_points[0][0] < first_prepost_dt):
         first_prepost_dt = pm_points[0][0]
 
-    # 2) Ehhez képest az utolsó megelőző RTH-gyertya a bázis.
-    if first_prepost_dt is not None:
-        base_candidates = [p for p in rth_points if p[0] < first_prepost_dt]
-    else:
-        base_candidates = rth_points
-
+    # 2) Ehhez képest az utolsó megelőző RTH-gyertya a bázis
+    base_candidates = [p for p in rth_points if p[0] < first_prepost_dt] if first_prepost_dt else rth_points
     if not base_candidates:
-        base_candidates = rth_points  # fallback: ha valamiért nincs megelőző, akkor az összes közül az utolsó
-
+        base_candidates = rth_points  # fallback: összes közül az utolsó
     last_rth_dt, rth_close_price = base_candidates[-1]
+
     base_date = last_rth_dt.date()
 
-    # 3) After-hours: ugyanarra a napra, a záró utáni 16:00–20:00 tartományból.
+    # 3) After-hours: ugyanarra a napra, a záró utáni 16:00–20:00 tartományból
     ah_for_base = [p for p in ah_points if p[0].date() == base_date and p[0] > last_rth_dt]
     if ah_for_base:
         ah_last_price = ah_for_base[-1][1]
@@ -233,7 +316,7 @@ def compute_ah_pm_move(
     else:
         ah_pct = None
 
-    # 4) Premarket: a bázis nap utáni napra eső 04:00–09:30 közötti gyertyák.
+    # 4) Premarket: a bázis nap utáni napra eső 04:00–09:30 közötti gyertyák
     pm_for_base = [p for p in pm_points if p[0] > last_rth_dt]
     if pm_for_base:
         pm_last_price = pm_for_base[-1][1]
@@ -258,32 +341,29 @@ def generate_model_report(
     output_md: str,
     output_json: str,
 ) -> str:
-    positions = load_positions(positions_path)
+    # Pozíciók: külön positions CSV-ből, vagy ha nincs, akkor a master/watchlist alapján inferálva
+    positions = load_positions_with_fallback(positions_path, watchlist_path)
     watch = load_watchlist(watchlist_path)
 
-    # <<< Itt volt a bug, javítva >>>
     all_symbols = sorted(set(watch.keys()) | set(positions.keys()))
 
     missing: Dict[str, str] = {}
     darab_results: List[dict] = []
     watch_results: List[dict] = []
 
-    
     for sym in all_symbols:
-        ah_pct = None
-        pm_pct = None
+        ah_pct: Optional[float] = None
+        pm_pct: Optional[float] = None
 
         try:
             meta, ts, closes = fetch_chart(sym)
             _, ah_pct, pm_pct = compute_ah_pm_move(meta, ts, closes)
         except Exception as e:
-            # Valódi forráshiba / HTTP hiba esetén jelöljük hiányzónak.
+            # Valódi forráshiba / HTTP hiba / stb. – ez lefedettség-hiba
             missing[sym] = str(e)
             continue
 
-        # FONTOS: ha csak az a gond, hogy nincs AH/PM gyertya (ah_pct és pm_pct None),
-        # azt NEM tekintjük lefedettség-hibának. A ticker akkor is bekerül a riportba,
-        # és "n/a" értékként jelenik meg.
+        # Ha csak az a gond, hogy nincs pre/post gyertya, azt nem tekintjük lefedettség-hibának.
         is_position = sym in positions and positions[sym].get("quantity", 0) > 0
         k_val = watch.get(sym, {}).get("k") or k_default
 
