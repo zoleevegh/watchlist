@@ -165,8 +165,12 @@ jobs:
             -H "Authorization: token $env:GH_GIST_TOKEN" `
             -H "Content-Type: application/json" `
             -d $json
+
+          Write-Host "PATCH response raw:"
+          Write-Host $resp
+
           $obj = $resp | ConvertFrom-Json
-          if ($null -eq $obj.html_url) { Write-Error "Fixed Gist update failed: $resp"; exit 1 }
+          if ($null -eq $obj.html_url) { Write-Error "Fixed Gist update failed"; exit 1 }
           "Gist updated: $($obj.html_url)"
 
           # CDN PURGE a raw gist URL-re, hogy mindig a legfrissebb tartalom jöjjön
