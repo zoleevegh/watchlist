@@ -304,3 +304,13 @@ def get_report3_checklist() -> List[str]:
         "Blokksorrend: Lefedettség → Makró/FED (intraday) → Darabszámos → Watchlist → Bejelentések & fel/lemínősítések → Közeli katalizátorok (pl. zárás utáni jelentés) → High-conviction.",
         "Intraday Bejelentések & fel/lemínősítések: minden friss, material event, ami látványos intraday mozgást okoz.",
     ]
+
+
+def format_macro_block(macro_text, yahoo_news):
+    block = ["**Politika / FED / Piaci hangulat**"]
+    if macro_text:
+        block.append(macro_text.strip())
+    if yahoo_news:
+        for item in yahoo_news[:3]:
+            block.append(f"- {item.get('title','')}")
+    return "\n".join(block)
