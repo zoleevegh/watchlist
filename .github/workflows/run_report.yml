@@ -11,10 +11,6 @@ on:
         description: 'MASTER CSV URL (üres = DEFAULT_CSV_URL)'
         default: ''
         required: false
-      macro:
-        description: 'Politika/FED blokk: auto | off | strict'
-        default: 'auto'
-        required: false
   repository_dispatch:
     types: [run_report]
 
@@ -112,7 +108,6 @@ jobs:
             --report $report `
             --csv "$csv" `
             --summary "$summaryPath" `
-            --macro $macro
 
           if (Test-Path $summaryPath) {
             Get-Content $summaryPath | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8
