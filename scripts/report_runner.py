@@ -466,3 +466,8 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+    # Politika / FED / Piaci hangulat blokk
+    macro_block = format_macro_block(macro_text, yahoo_news)
+    if macro_block:
+        summary_lines.append(macro_block)
