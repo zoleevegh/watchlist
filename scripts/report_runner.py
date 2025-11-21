@@ -32,25 +32,33 @@ try:
         format_analyst_block,
         fetch_catalyst_events,
         format_catalyst_block,
+        fetch_highconviction_events,
+        format_highconviction_block,
     )  # noqa: F401
 except ImportError:
-    # Optional helper; a script működik helper nélkül is, de a makró/elemző/katalizátor blokkok ilyenkor üresek maradnak.
+    # Optional helper; a script működik helper nélkül is, de a makró/elemző/katalizátor/high-conviction blokkok ilyenkor üresek maradnak.
     def fetch_yahoo_macro_news():
         return []
 
     def format_macro_block(macro_text, yahoo_news):
         return ""
 
-    def fetch_analyst_events():
+    def fetch_analyst_events(path=None):
         return []
 
     def format_analyst_block(events):
         return []
 
-    def fetch_catalyst_events():
+    def fetch_catalyst_events(path=None):
         return []
 
     def format_catalyst_block(events):
+        return []
+
+    def fetch_highconviction_events(path=None):
+        return []
+
+    def format_highconviction_block(events):
         return []
 
 
@@ -523,4 +531,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
