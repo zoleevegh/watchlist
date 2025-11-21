@@ -65,10 +65,12 @@ SESSION.headers.update(
 )
 
 DEFAULT_K = 3.0
-DEFAULT_SCRIPT_VERSION = "2.2.5-biblia-yahoo-us-time-chart-meta-prevclose-helper-macro-analyst-catalyst-hc"
+DEFAULT_SCRIPT_VERSION = "2.2.6-biblia-yahoo-us-time-chart-meta-prevclose-helper-macro-analyst-catalyst-hc-hiconv"
+
 WATCHLIST_DEFAULT_PATH = "reports/master.csv"
 ANALYST_EVENTS_PATH = "reports/analyst_1.json"
 CATALYST_EVENTS_PATH = "reports/catalysts_1.json"
+HIGHCONV_EVENTS_PATH = "reports/highconviction_1.json"
 
 
 
@@ -370,7 +372,7 @@ def generate_model_report(
         coverage_line,
     ]
 
-        # Politika/FED / Piaci hangulat + Elemzői lépések + Közeli katalizátorok blokkok
+        # Politika/FED / Piaci hangulat + Elemzői lépések + Közeli katalizátorok + High-conviction blokkok
     yahoo_macro_news = fetch_yahoo_macro_news()
     macro_block = format_macro_block(macro_text or "", yahoo_macro_news)
 
@@ -379,6 +381,9 @@ def generate_model_report(
 
     catalyst_events = fetch_catalyst_events(CATALYST_EVENTS_PATH)
     catalyst_block = format_catalyst_block(catalyst_events)
+
+    highconv_events = fetch_highconviction_events(HIGHCONV_EVENTS_PATH)
+    highconv_block = format_highconviction_block(highconv_events)
     lines: List[str] = []
     lines.extend(header_lines)
 
@@ -393,6 +398,10 @@ def generate_model_report(
     if catalyst_block:
         lines.append("")
         lines.append(catalyst_block)
+
+    if highconv_block:
+        lines.append("")
+        lines.append(highconv_block)
 
     lines.append("")
     lines.append("Darabszámos tickerek – After-hours & Premarket mozgások")
@@ -514,3 +523,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
