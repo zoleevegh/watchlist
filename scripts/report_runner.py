@@ -73,7 +73,7 @@ SESSION.headers.update(
 )
 
 DEFAULT_K = 3.0
-DEFAULT_SCRIPT_VERSION = "2.2.9-biblia-yahoo-us-time-chart-meta-prevclose-helper-macro-analyst-catalyst-hc-hiconv-auto-r2r3stub"
+DEFAULT_SCRIPT_VERSION = "2.3.0-biblia-yahoo-us-time-chart-meta-prevclose-helper-macro-analyst-catalyst-hc-hiconv-auto-r2r3finom"
 
 WATCHLIST_DEFAULT_PATH = "reports/master.csv"
 ANALYST_EVENTS_PATH = "reports/analyst_1.json"
@@ -426,10 +426,20 @@ def generate_model_report(
         sym = entry["ticker"]
         ah_pct = entry["ah_pct"]
         pm_pct = entry["pm_pct"]
-        line = (
-            f"{sym} — AH {fmt_pct(ah_pct)} | PM {fmt_pct(pm_pct)} — "
-            "Egyelőre nincs küszöb feletti AH/PM elmozdulás."
-        )
+        max_move = entry.get("max_move")
+        base = f"{sym} — AH {fmt_pct(ah_pct)} | PM {fmt_pct(pm_pct)}"
+        comment = ""
+
+        if max_move is None:
+            comment = "Nincs AH/PM adat az adott ablakokra."
+        else:
+            abs_mv = abs(max_move)
+            if abs_mv >= 3.0:
+                comment = "Küszöb feletti AH/PM elmozdulás (≥3%)."
+            elif abs_mv >= 1.0:
+                comment = "Küszöb alatti AH/PM elmozdulás (<3%)."
+
+        line = base if not comment else f"{base} — {comment}"
         lines.append(line)
 
     # Watchlist – max(|AH|,|PM|) szerint csökkenő
