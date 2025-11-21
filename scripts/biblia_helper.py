@@ -375,3 +375,32 @@ def format_analyst_block(events):
     for e in events:
         lines.append(f"- {e}")
     return "\n".join(lines)
+
+
+def fetch_catalyst_events(path: str = "reports/catalysts_1.json"):
+    """Közeli (pár napos) katalizátorok betöltése opcionális JSON-fájlból.
+    A JSON formátuma legyen pl.: ["TSLA – earnings holnap", "NVDA – GTC keynote március 18."].
+    Ha a fájl nem létezik vagy hibás, üres listát ad vissza."""
+    import json
+    from pathlib import Path
+
+    p = Path(path)
+    if not p.exists():
+        return []
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            return [str(x) for x in data]
+    except Exception:
+        return []
+    return []
+
+
+def format_catalyst_block(events):
+    """Közeli katalizátorok blokk formázása markdownba."""
+    if not events:
+        return ""
+    lines = ["**Közeli katalizátorok (pár napon belül)**"]
+    for e in events:
+        lines.append(f"- {e}")
+    return "\n".join(lines)
