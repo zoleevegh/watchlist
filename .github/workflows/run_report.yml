@@ -176,5 +176,6 @@ jobs:
           Write-Host $resp
 
           # ⬇⬇ Itt írjuk ki a cache-bontó raw URL-t az aktuális run ID-val
-          Write-Host "Raw URL for this run:"
-          Write-Host "https://gist.githubusercontent.com/zoleevegh/5df443b8a46ef863cdc97aad62756510/raw/summary_report_1.md?run=$env:GITHUB_RUN_ID"
+          "Raw URL for this run:" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          "https://gist.githubusercontent.com/zoleevegh/5df443b8a46ef863cdc97aad62756510/raw/summary_report_1.md?run=$env:GITHUB_RUN_ID" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
