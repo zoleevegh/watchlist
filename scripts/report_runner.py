@@ -73,7 +73,7 @@ SESSION.headers.update(
 )
 
 DEFAULT_K = 3.0
-DEFAULT_SCRIPT_VERSION = "2.2.8-biblia-yahoo-us-time-chart-meta-prevclose-helper-macro-analyst-catalyst-hc-hiconv-r2r3stub"
+DEFAULT_SCRIPT_VERSION = "2.2.9-biblia-yahoo-us-time-chart-meta-prevclose-helper-macro-analyst-catalyst-hc-hiconv-auto-r2r3stub"
 
 WATCHLIST_DEFAULT_PATH = "reports/master.csv"
 ANALYST_EVENTS_PATH = "reports/analyst_1.json"
@@ -380,7 +380,7 @@ def generate_model_report(
         coverage_line,
     ]
 
-        # Politika/FED / Piaci hangulat + Elemzői lépések + Közeli katalizátorok + High-conviction blokkok
+    # Politika/FED / Piaci hangulat + Elemzői lépések + Közeli katalizátorok + High-conviction blokkok
     yahoo_macro_news = fetch_yahoo_macro_news()
     macro_block = format_macro_block(macro_text or "", yahoo_macro_news)
 
