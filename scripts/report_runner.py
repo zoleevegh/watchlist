@@ -30,9 +30,11 @@ try:
         format_macro_block,
         fetch_analyst_events,
         format_analyst_block,
+        fetch_catalyst_events,
+        format_catalyst_block,
     )  # noqa: F401
 except ImportError:
-    # Optional helper; a script működik helper nélkül is, de a makró/elemző blokkok ilyenkor üresek maradnak.
+    # Optional helper; a script működik helper nélkül is, de a makró/elemző/katalizátor blokkok ilyenkor üresek maradnak.
     def fetch_yahoo_macro_news():
         return []
 
@@ -43,6 +45,12 @@ except ImportError:
         return []
 
     def format_analyst_block(events):
+        return []
+
+    def fetch_catalyst_events():
+        return []
+
+    def format_catalyst_block(events):
         return []
 
 
@@ -57,7 +65,7 @@ SESSION.headers.update(
 )
 
 DEFAULT_K = 3.0
-DEFAULT_SCRIPT_VERSION = "2.2.3-biblia-yahoo-us-time-chart-meta-prevclose-helper"
+DEFAULT_SCRIPT_VERSION = "2.2.4-biblia-yahoo-us-time-chart-meta-prevclose-helper-macro-analyst-catalyst"
 
 
 def debug(msg: str) -> None:
@@ -358,12 +366,15 @@ def generate_model_report(
         coverage_line,
     ]
 
-    # Politika/FED / Piaci hangulat + Elemzői lépések blokkok (makró + elemzői eventek)
+    # Politika/FED / Piaci hangulat + Elemzői lépések + Közeli katalizátorok blokkok
     yahoo_macro_news = fetch_yahoo_macro_news()
     macro_block = format_macro_block(macro_text or "", yahoo_macro_news)
 
     analyst_events = fetch_analyst_events()
     analyst_block = format_analyst_block(analyst_events)
+
+    catalyst_events = fetch_catalyst_events()
+    catalyst_block = format_catalyst_block(catalyst_events)
 
     lines: List[str] = []
     lines.extend(header_lines)
@@ -375,6 +386,10 @@ def generate_model_report(
     if analyst_block:
         lines.append("")
         lines.append(analyst_block)
+
+    if catalyst_block:
+        lines.append("")
+        lines.append(catalyst_block)
 
     lines.append("")
     lines.append("Darabszámos tickerek – After-hours & Premarket mozgások")
