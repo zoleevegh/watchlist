@@ -306,11 +306,37 @@ def get_report3_checklist() -> List[str]:
     ]
 
 
+# --- AUTO-ADDED: Yahoo macro news + macro block formatter (UPDATED2) ---
+
+def fetch_yahoo_macro_news():
+    import requests
+    url = "https://query1.finance.yahoo.com/v1/finance/search?q=markets"
+    try:
+        r = requests.get(url, timeout=8)
+        data = r.json()
+        news = []
+        for item in data.get("news", []):
+            title = item.get("title", "")
+            if any(kw in title.lower() for kw in [
+                "fed","rate","inflation","treasury","yield","futures","stocks",
+                "market","jobs","opec","oil"
+            ]):
+                news.append({
+                    "title": item.get("title",""),
+                    "summary": item.get("summary","")
+                })
+        return news[:3]
+    except:
+        return []
+
+
 def format_macro_block(macro_text, yahoo_news):
     block = ["**Politika / FED / Piaci hangulat**"]
     if macro_text:
         block.append(macro_text.strip())
     if yahoo_news:
         for item in yahoo_news[:3]:
-            block.append(f"- {item.get('title','')}")
+            t = item.get("title","")
+            if t:
+                block.append(f"- {t}")
     return "\n".join(block)
