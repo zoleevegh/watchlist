@@ -340,3 +340,31 @@ def format_macro_block(macro_text, yahoo_news):
             if t:
                 block.append(f"- {t}")
     return "\n".join(block)
+
+
+# --- AUTO-ADDED: Analyst steps block (stub) ---
+
+def fetch_analyst_events():
+    # Placeholder: to be replaced with real API calls in GH Actions environment.
+    try:
+        import requests
+        url = "https://api.marketbeat.com/v1/ratings/recent"  # placeholder; may require key
+        r = requests.get(url, timeout=8)
+        if r.status_code==200:
+            data=r.json()
+            events=[]
+            for item in data.get("ratings",[])[:10]:
+                events.append(f"{item.get('symbol')} – {item.get('action')} – {item.get('price_target','')}")
+            return events
+    except:
+        return []
+    return []
+
+
+def format_analyst_block(events):
+    if not events:
+        return ""
+    out=["**Elemzői lépések / fel-lemínősítések**"]
+    for e in events[:10]:
+        out.append(f"- {e}")
+    return "\n".join(out)
