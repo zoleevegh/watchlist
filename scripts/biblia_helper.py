@@ -14,7 +14,7 @@ EZ A FÁJL tartalmazza, hogy:
 - honnan vesszük az adatokat (árak, hírek, elemzői ratingek),
 - hogyan számoljuk a százalékos mozgásokat,
 - hogyan kezeljük a MASTER sheetet (K/L/M, darabszámos vs. watchlist),
-- hogyan használjuk az „Eladasi ar” oszlopot (exit árhoz viszonyított % eltérés),
+- hogyan használjuk az „Eladasi ar” oszlopot,
 - hogyan működik a „listán kívüli, 3–12 hónapos high-conviction jelöltek” blokk.
 
 FIX GIST LINK – #1 JELENTÉS (AH+PM)
@@ -27,18 +27,18 @@ Ezt a GitHub Action minden #1-es futás után automatikusan frissíti a
 `reports/summary_report_1.md` tartalmával. Ha bármi elveszne, innen bármikor
 lekérhető a legutolsó #1-es riport.
 
-FONTOS ALAPELVEK
-----------------
+FONTOS ALAPELVEK (MINDEN JELENTÉSRE)
+------------------------------------
 - Időzóna: Europe/Budapest (CET/CEST).
 - Csak US kereskedési napokon fut a #1/#2/#3 jelentés.
-- Árforrás: Yahoo Finance chart v8 (2d/5m, includePrePost=true) és szükség esetén
-  intraday / quote API (Open, High, Low, Close, Last).
-- Ticker-sorrend minden jelentésben:
+- Árforrás alapvetően: Yahoo Finance chart v8 (2d/5m, includePrePost=true) +
+  szükség esetén intraday / quote API (Open, High, Low, Close, Last).
+- Ticker-sorrend:
     1) darabszámos pozíciók (quantity > 0),
     2) utána watchlist-tickerek (csak ha a feltételek teljesülnek).
 - Küszöb a jelentendő mozgásokra: alapértelmezett K = ±3,00%,
   ticker-szintű felülírás a MASTER „K” oszlopából.
-- K/L/M oszlopok a MASTER-ben:
+- MASTER K/L/M oszlopok:
     K  = min. intraday % mozgás (abszolút értékben), default 3,
     L  = unusual volume szorzó (× 20 napos átlagforgalom), default 2,
     M  = max. távolság a 52 hetes csúcstól/mélyponttól (%), default 1.
@@ -50,9 +50,6 @@ FONTOS ALAPELVEK
       Ez később re-entry / túlértékeltség / alulértékeltség jelzéshez használható.
     - Ha a cella üres vagy nem számszerű, a diff_pct nem kötelező,
       a jelentés többi része ettől függetlenül lefuthat.
-
-- PKN.WA: nincs speciális szabály – ha valaha visszakerülne a
-  MASTER-be, normál tickerként kezelendő (nincs automatikus kihagyás).
 
 HÍRFORRÁS-PRIORITÁS
 -------------------
@@ -125,9 +122,13 @@ IDŐABLAKOK – KIVONAT
 #1 – After-hours (22:00–02:00) + Premarket (10:00–15:30)
     - Bázis: az utolsó teljes RTH (Regular Trading Hours) záróár,
       az első pre/post gyertya előtti utolsó 5m candle close.
-    - AH% = (AH utolsó ár - RTH close) / RTH close * 100.
-    - PM% = (PM utolsó ár - RTH close) / RTH close * 100.
-    - Ha nincs releváns pre/post gyertya: AH/PM = n/a.
+    - AH_zár: a 22:00–02:00 CEST ablakban elérhető utolsó pre/post
+      5m gyertya záróára. Ha nincs ilyen, AH = n/a.
+    - PM_zár: a 10:00–15:30 CEST ablakban elérhető utolsó pre/post
+      5m gyertya záróára. Ha nincs ilyen, PM = n/a.
+    - AH% = (AH_zár - RTH_zár) / RTH_zár * 100.
+    - PM% = (PM_zár - RTH_zár) / RTH_zár * 100.
+    - Jelentésben két tizedesre kerekítve jelenik meg.
 
 #2 – Tegnapi nyitástól zárásig (Open→Close)
     - Időablak: előző kereskedési nap US RTH, 15:30–22:00 CEST.
@@ -138,14 +139,75 @@ IDŐABLAKOK – KIVONAT
     - Open→Most% = (Last - Open) / Open * 100.
     - Opcionálisan: High/Open és Low/Open %.
 
-CHECKLIST-FÜGGVÉNYEK
---------------------
-Az alábbi get_report*_checklist() függvények rövid, gép- és ember-olvasható
-checklistákat adnak vissza. Ezeket:
+MI FUT JELENLEG PYTHON-SCRIPTBŐL (#1, VERZIÓ ~2.2.3)
+----------------------------------------------------
+A #1-es jelentésben jelenleg a Python-script (report_runner.py) feladata:
 
-- használhatja a script belső „önellenőrzésre” (minden blokk megvan-e),
-- vagy hibakeresésnél / debug során össze lehet vetni az aktuális,
-  legenerált jelentéssel.
+- MASTER CSV beolvasása:
+    - darabszámos pozíciók azonosítása (quantity > 0),
+    - watchlist-tickerek azonosítása (nincs darabszám vagy <= 0),
+    - K/L/M/Eladasi ar oszlopok numeric parse + defaultok.
+
+- Árfolyamok lekérése Yahoo v8 2d/5m includePrePost alapján:
+    - RTH_zár (utolsó RTH 5m candle close),
+    - AH_zár (utolsó pre/post candle 22:00–02:00 között),
+    - PM_zár (utolsó pre/post candle 10:00–15:30 között).
+
+- Százalékos mozgások számítása:
+    - AH% = (AH_zár - RTH_zár) / RTH_zár * 100 (ha van AH_zár, különben n/a),
+    - PM% = (PM_zár - RTH_zár) / RTH_zár * 100 (ha van PM_zár, különben n/a),
+    - két tizedesre kerekítve.
+
+- Küszöbkezelés:
+    - K-t a MASTER-ből olvassa; ha hiányzik: K=3,
+    - darabszámos blokk: MINDEN pozíció szerepel, jelzi, ha van ≥K mozgás,
+    - watchlist blokk: CSAK azok kerülnek be, ahol max(|AH%|, |PM%|) ≥ K.
+
+- Lefedettség:
+    - ha minden tickerre sikerült adatot húzni → „Lefedettség: TELJES”,
+    - ha bármelyiknél forráshiba van (HTTP error, chart_error, no_result) → HIÁNYOS,
+      és felsorolja az érintett tickereket.
+
+- Jelentés struktúra:
+    - Lefedettség-blokk,
+    - „Politika/FED / Trump-napihír” címke + makró szöveg (ha a workflow-ból érkezik),
+    - Darabszámos blokk,
+    - Watchlist blokk (csak ≥K),
+    - Időbélyeg: „Job summary generated at run-time (...)”.
+
+MI NEM FUT MÉG AUTOMATÁN, CSAK WEBES / MANUÁLIS RÉTEGBEN
+--------------------------------------------------------
+A #1-es jelentés célállapota a biblia szerint, de JELENLEG (2.2.3 környékén)
+ezeket még nem a Python-script intézi:
+
+- Politika/FED / „Trump-napihír” tartalmi kitöltése:
+    - most a workflow `macro` paraméteréből jön egy szöveg,
+      amit ember ír (Reuters/AP/FED hírek alapján).
+
+- „Bejelentések & fel/lemínősítések” blokk:
+    - MarketBeat / StreetInsider / TipRanks alapján,
+    - automata összefűzés még nincs leprogramozva.
+
+- „Közeli katalizátorok” (earnings, guidemódosítás, események):
+    - earnings-calendar alapú automata kigyűjtés még nincs scriptben.
+
+- „Listán kívüli, 3–12 hó high-conviction jelöltek”:
+    - Yahoo + MarketBeat kombó alapján,
+    - jelenleg manuális összeállítás, scriptben TODO.
+
+- „Eladott pozíciók – aktuális ár az eladási árhoz képest” blokk:
+    - az Eladasi ar oszlop beolvasása már elképzelhető,
+      de dedikált riportblokk (pl. „X% alá/fölé jött az exithez képest”)
+      még NINCS generálva Pythonból.
+
+A KÖVETKEZŐ LÉPÉSEK #1-HEZ
+---------------------------
+Ha a script fejlesztése tovább halad, a fenti PYTHON- vs. MANUÁLIS-lista
+szolgál kiindulópontként. A cél, hogy:
+
+- a teljes #1-es biblia logika (makró, bejelentések, katalizátorok,
+  high-conviction, Eladasi ar-blokk) fokozatosan átköltözzön a Python-scriptbe,
+- a webes / manuális réteg legfeljebb finomhangolásra, magyarázatra kelljen.
 
 """
 
@@ -159,29 +221,41 @@ GIST_REPORT1_RAW_URL = "https://gist.githubusercontent.com/zoleevegh/5df443b8a46
 def get_report1_checklist() -> List[str]:
     """
     #1 – After-hours (22:00–02:00) + Premarket (10:00–15:30) — CEST
-    Fő fókusz: előző napi RTH záróhoz képest az AH + mai premarket mozgások.
+
+    Rövid ellenőrző lista ahhoz, hogy a script által generált #1-es jelentés
+    megfelel-e a bibliának. A lista elemei végigzongorázhatók debug során.
     """
     return [
+        # Időzóna és árforrás
         "Időzóna: Europe/Budapest (CET/CEST).",
-        "After-hours 22:00–02:00, Premarket 10:00–15:30 CEST; Yahoo v8 2d/5m includePrePost.",
-        "Bázis: első pre/post gyertya előtti utolsó RTH 5m záró (utolsó teljes RTH close).",
-        "Lefedettség-blokk a jelentés elején: TELJES / HIÁNYOS.",
-        "Hiányosnak csak valódi forráshiba számít (HTTP error, chart_error, no_result).",
-        "Politika/FED / Trump-napihír blokk a lefedettség után (max ~4 mondat).",
-        "AH% és PM% mindig a bázis RTH close-hoz képest, két tizedesre kerekítve.",
-        "Ha nincs pre/post gyertya egy sávban, AH/PM = n/a (nem lefedettség hiba).",
-        "Darabszámos pozíció: MASTER-ben quantity/darabszám/db > 0.",
-        "Watchlist: ahol nincs quantity vagy az <= 0.",
-        "K oszlop: ticker-specifikus % küszöb; üres/hibás: K=3.",
-        "Eladasi ar diff_pct = (aktuális ár - Eladasi ar) / Eladasi ar * 100, ha van eladási ár.",
-        "Darabszámos blokk mindig megjelenik, max(|AH|,|PM|) szerinti csökkenő sorrendben.",
-        "Darabszámos sor-formátum: 'TICKER — AH +x.xx% | PM -y.yy% — komment / vagy: Egyelőre nincs küszöb feletti AH/PM elmozdulás.'",
-        "Minden 3%+ mozgásnál kötelező pontos % és 1 mondatos ok.",
-        "Watchlist-blokk: csak ahol max(|AH|,|PM|) ≥ K.",
-        "Watchlist-sorrend: max(|AH|,|PM|) szerinti csökkenő.",
+        "Árforrás: Yahoo Finance v8 2d/5m, includePrePost=true, US trading day.",
+        "Bázisár: RTH_zár = első pre/post gyertya előtti utolsó RTH 5m candle close.",
+        # AH/PM számolás
+        "AH_zár: 22:00–02:00 CEST közötti utolsó pre/post 5m candle záróára (ha nincs: AH=n/a).",
+        "PM_zár: 10:00–15:30 CEST közötti utolsó pre/post 5m candle záróára (ha nincs: PM=n/a).",
+        "AH% = (AH_zár - RTH_zár) / RTH_zár * 100, két tizedesre kerekítve.",
+        "PM% = (PM_zár - RTH_zár) / RTH_zár * 100, két tizedesre kerekítve.",
+        "Ha nincs releváns AH/PM candle, akkor a reportban 'AH n/a' vagy 'PM n/a' szerepel, ez nem lefedettség-hiba.",
+        # Lefedettség, sorrend
+        "Jelentés elején kötelező a Lefedettség-blokk: TELJES vagy HIÁNYOS + tickerek okaival.",
+        "Darabszámos pozíció: MASTER-ben quantity > 0 → mindig megjelenik a darabszámos blokkban.",
+        "Watchlist: ahol nincs quantity vagy az <= 0 → csak a watchlist-blokkban jelenik meg.",
+        # Küszöbök
+        "K oszlop: ticker-specifikus % küszöb; ha üres/hibás, implicit K=3.",
+        "Darabszámos blokk: minden pozíció szerepel, de jelölve, ha max(|AH%|,|PM%|) ≥ K.",
+        "Watchlist-blokk: CSAK azok a tickerek szerepelnek, ahol max(|AH%|,|PM%|) ≥ K.",
+        # Sor-formátumok
+        "Darabszámos sor-formátum: 'TICKER — AH +x.xx% | PM -y.yy% — komment / vagy: Egyelőre nincs küszöb feletti AH/PM elmozdulás.'.",
         "Watchlist sor-formátum: 'TICKER — AH +x.xx% | PM -y.yy% — Watchlisten is érdemi AH/PM elmozdulás (≥K=...) az utolsó RTH záróhoz képest.'.",
-        "Ha van közeli katalizátor (pár nap), külön blokkban jelezni.",
-        "A végén (ha van jelölt): 'Listán kívüli, 3–12 hónapos high-conviction jelöltek' blokk, csak portfólión/watchlisten kívüli nevekkel.",
+        # Eladasi ar
+        "Eladasi ar diff_pct = (aktuális ár - Eladasi ar) / Eladasi ar * 100, ha van eladási ár – jelenleg opcionális, külön blokk még nincs implementálva.",
+        # Híres blokkok – target állapot
+        "Politika/FED / Trump-napihír blokk: jelenleg a workflow 'macro' paramétere adja a szöveget (nem automata scraping).",
+        "Bejelentések & fel/lemínősítések blokk: biblia szerint MarketBeat/StreetInsider alapú, de Pythonban még TODO.",
+        "Közeli katalizátorok blokk: earnings / események listázása – jelenleg manuális, Pythonban TODO.",
+        "Listán kívüli, 3–12 hónapos high-conviction blokk: csak portfólión/watchlisten kívüli nevekkel – jelenleg manuális, Pythonban TODO.",
+        # Időbélyeg
+        "Jelentés végén kötelező az időbélyeg: 'Job summary generated at run-time (ISO8601 CEST)'.",
     ]
 
 
@@ -193,7 +267,7 @@ def get_report2_checklist() -> List[str]:
         "Időablak: előző kereskedési nap US RTH, 15:30–22:00 CEST (Open→Close).",
         "Árforrás: Yahoo Finance OHLC / intraday chart; Open és Close elegendő.",
         "Open→Close% = (Close - Open) / Open * 100, két tizedesre.",
-        "Lefedettség-blokk a jelentés elején: TELJES / HIÁNYOS.",
+        "Lefedettség-blokk a jelentés elején: TELJES / HIÁNYOS a biblia szerint.",
         "Makró/FED/politika blokk a lefedettség után (előző napra).",
         "Darabszámos & watchlist tickerek forrása: MASTER (ugyanaz, mint #1-nél).",
         "K oszlop: ticker-specifikus % mozgás küszöb; üres/hibás: K=3.",
@@ -205,7 +279,7 @@ def get_report2_checklist() -> List[str]:
         "Opcionális: High/Open és Low/Open százalékok hozzáírása.",
         "Blokksorrend: Lefedettség → Makró/FED → Darabszámos → Watchlist → Bejelentések & fel/lemínősítések → Katalizátorok → High-conviction.",
         "Bejelentések & fel/lemínősítések: darabszámosaknál minden material event; watchlisten csak anyagilag lényeges.",
-        "Eladasi ar (ha használjuk): diff_pct = (Close - Eladasi ar) / Eladasi ar * 100, kiegészítő infóként.",
+        "Eladasi ar diff_pct (ha használjuk): (Close - Eladasi ar) / Eladasi ar * 100, kiegészítő infóként.",
     ]
 
 
