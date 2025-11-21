@@ -8,6 +8,7 @@ import os
 import sys
 from typing import Dict, List, Optional, Tuple
 
+from biblia_helper import format_macro_block, fetch_yahoo_macro_news
 try:
     from zoneinfo import ZoneInfo
 except ImportError:
@@ -466,8 +467,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-    # Politika / FED / Piaci hangulat blokk
-    macro_block = format_macro_block(macro_text, yahoo_news)
-    if macro_block:
-        summary_lines.append(macro_block)
