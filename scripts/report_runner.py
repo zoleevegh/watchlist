@@ -9,6 +9,10 @@ import sys
 from typing import Dict, List, Optional, Tuple
 
 from biblia_helper import format_macro_block, fetch_yahoo_macro_news  # UPDATED3
+    analyst_events = fetch_analyst_events()
+    analyst_block = format_analyst_block(analyst_events)
+    if analyst_block:
+        summary_lines.append(analyst_block)
 try:
     from zoneinfo import ZoneInfo
 except ImportError:
@@ -344,6 +348,7 @@ def generate_model_report(
         coverage_line,
         "Politika/FED / Trump-napihír",
         "",
+        "(Auto mód még nincs implementálva – add meg a makró összefoglalót a workflow 'macro' mezőjében.)",
     ]
 
     lines: List[str] = []
