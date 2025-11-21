@@ -65,7 +65,11 @@ SESSION.headers.update(
 )
 
 DEFAULT_K = 3.0
-DEFAULT_SCRIPT_VERSION = "2.2.4-biblia-yahoo-us-time-chart-meta-prevclose-helper-macro-analyst-catalyst"
+DEFAULT_SCRIPT_VERSION = "2.2.5-biblia-yahoo-us-time-chart-meta-prevclose-helper-macro-analyst-catalyst-hc"
+WATCHLIST_DEFAULT_PATH = "reports/master.csv"
+ANALYST_EVENTS_PATH = "reports/analyst_1.json"
+CATALYST_EVENTS_PATH = "reports/catalysts_1.json"
+
 
 
 def debug(msg: str) -> None:
@@ -366,16 +370,15 @@ def generate_model_report(
         coverage_line,
     ]
 
-    # Politika/FED / Piaci hangulat + Elemzői lépések + Közeli katalizátorok blokkok
+        # Politika/FED / Piaci hangulat + Elemzői lépések + Közeli katalizátorok blokkok
     yahoo_macro_news = fetch_yahoo_macro_news()
     macro_block = format_macro_block(macro_text or "", yahoo_macro_news)
 
-    analyst_events = fetch_analyst_events()
+    analyst_events = fetch_analyst_events(ANALYST_EVENTS_PATH)
     analyst_block = format_analyst_block(analyst_events)
 
-    catalyst_events = fetch_catalyst_events()
+    catalyst_events = fetch_catalyst_events(CATALYST_EVENTS_PATH)
     catalyst_block = format_catalyst_block(catalyst_events)
-
     lines: List[str] = []
     lines.extend(header_lines)
 
