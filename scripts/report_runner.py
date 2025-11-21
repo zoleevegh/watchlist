@@ -8,7 +8,7 @@ import os
 import sys
 from typing import Dict, List, Optional, Tuple
 
-from biblia_helper import format_macro_block, fetch_yahoo_macro_news
+from biblia_helper import format_macro_block, fetch_yahoo_macro_news  # UPDATED3
 try:
     from zoneinfo import ZoneInfo
 except ImportError:
