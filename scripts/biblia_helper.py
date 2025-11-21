@@ -306,65 +306,72 @@ def get_report3_checklist() -> List[str]:
     ]
 
 
-# --- AUTO-ADDED: Yahoo macro news + macro block formatter (UPDATED2) ---
+# --- AUTO-ADDED (UPDATED4): Makró + elemzői blokkokhoz szükséges helper függvények ---
+
+import requests
 
 def fetch_yahoo_macro_news():
-    import requests
+    """Yahoo Finance makró/piaci hangulat hírek lekérése #1-es jelentéshez.
+    Visszatérés: max. 3 releváns hír dict formában (title, summary)."""
     url = "https://query1.finance.yahoo.com/v1/finance/search?q=markets"
     try:
         r = requests.get(url, timeout=8)
         data = r.json()
         news = []
         for item in data.get("news", []):
-            title = item.get("title", "")
-            if any(kw in title.lower() for kw in [
-                "fed","rate","inflation","treasury","yield","futures","stocks",
-                "market","jobs","opec","oil"
+            title = item.get("title", "") or ""
+            lower = title.lower()
+            if any(kw in lower for kw in [
+                "fed", "rate", "interest", "inflation", "cpi", "ppi",
+                "treasury", "yield", "bond", "futures", "stocks", "market",
+                "jobs", "payrolls", "opec", "oil"
             ]):
-                news.append({
-                    "title": item.get("title",""),
-                    "summary": item.get("summary","")
-                })
+                news.append(
+                    {
+                        "title": title.strip(),
+                        "summary": (item.get("summary") or "").strip(),
+                    }
+                )
         return news[:3]
-    except:
+    except Exception:
         return []
 
 
 def format_macro_block(macro_text, yahoo_news):
-    block = ["**Politika / FED / Piaci hangulat**"]
-    if macro_text:
-        block.append(macro_text.strip())
+    """Politika/FED/piaci hangulat blokk formázása markdownba."""
+    lines = []
+    header = "**Politika / FED / Piaci hangulat**"
+    lines.append(header)
+
+    macro_clean = (macro_text or "").strip()
+    if macro_clean:
+        lines.append(macro_clean)
+
     if yahoo_news:
         for item in yahoo_news[:3]:
-            t = item.get("title","")
-            if t:
-                block.append(f"- {t}")
-    return "\n".join(block)
+            title = (item.get("title") or "").strip()
+            if not title:
+                continue
+            lines.append(f"- {title}")
 
+    # Ha csak a header maradt üres tartalommal, ne jelenjen meg
+    if len(lines) == 1:
+        return ""
+    return "\n".join(lines)
 
-# --- AUTO-ADDED: Analyst steps block (stub) ---
 
 def fetch_analyst_events():
-    # Placeholder: to be replaced with real API calls in GH Actions environment.
-    try:
-        import requests
-        url = "https://api.marketbeat.com/v1/ratings/recent"  # placeholder; may require key
-        r = requests.get(url, timeout=8)
-        if r.status_code==200:
-            data=r.json()
-            events=[]
-            for item in data.get("ratings",[])[:10]:
-                events.append(f"{item.get('symbol')} – {item.get('action')} – {item.get('price_target','')}")
-            return events
-    except:
-        return []
+    """Elemzői fel/lemínősítésekhez szükséges események helye.
+    Jelenleg csak placeholder – a tényleges API-hívást a workflow-ban érdemes megoldani,
+    és az eredményt JSON-ból betölteni."""
     return []
 
 
 def format_analyst_block(events):
+    """Elemzői lépések blokk formázása markdownba."""
     if not events:
         return ""
-    out=["**Elemzői lépések / fel-lemínősítések**"]
-    for e in events[:10]:
-        out.append(f"- {e}")
-    return "\n".join(out)
+    lines = ["**Elemzői lépések / fel-lemínősítések**"]
+    for e in events:
+        lines.append(f"- {e}")
+    return "\n".join(lines)
