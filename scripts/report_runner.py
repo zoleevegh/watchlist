@@ -8,11 +8,6 @@ import os
 import sys
 from typing import Dict, List, Optional, Tuple
 
-from biblia_helper import format_macro_block, fetch_yahoo_macro_news  # UPDATED3
-    analyst_events = fetch_analyst_events()
-    analyst_block = format_analyst_block(analyst_events)
-    if analyst_block:
-        summary_lines.append(analyst_block)
 try:
     from zoneinfo import ZoneInfo
 except ImportError:
@@ -31,10 +26,24 @@ try:
         get_report1_checklist,
         get_report2_checklist,
         get_report3_checklist,
+        fetch_yahoo_macro_news,
+        format_macro_block,
+        fetch_analyst_events,
+        format_analyst_block,
     )  # noqa: F401
 except ImportError:
-    # Optional helper; the script works without this file present.
-    pass
+    # Optional helper; a script működik helper nélkül is, de a makró/elemző blokkok ilyenkor üresek maradnak.
+    def fetch_yahoo_macro_news():
+        return []
+
+    def format_macro_block(macro_text, yahoo_news):
+        return ""
+
+    def fetch_analyst_events():
+        return []
+
+    def format_analyst_block(events):
+        return []
 
 
 SESSION = requests.Session()
@@ -277,6 +286,7 @@ def generate_model_report(
     k_default: float,
     output_md: str,
     output_json: str,
+    macro_text: Optional[str] = None,
 ) -> str:
     # Pozíciók: a master/watchlist alapján inferálva (nincs külön positions.csv)
     positions = infer_positions_from_watchlist(watchlist_path)
@@ -346,13 +356,27 @@ def generate_model_report(
         "utolsó RTH záró → AH/PM utolsó ár alapján számolt % mozgás)",
         "",
         coverage_line,
-        "Politika/FED / Trump-napihír",
-        "",
-        "(Auto mód még nincs implementálva – add meg a makró összefoglalót a workflow 'macro' mezőjében.)",
     ]
+
+    # Politika/FED / Piaci hangulat + Elemzői lépések blokkok (makró + elemzői eventek)
+    yahoo_macro_news = fetch_yahoo_macro_news()
+    macro_block = format_macro_block(macro_text or "", yahoo_macro_news)
+
+    analyst_events = fetch_analyst_events()
+    analyst_block = format_analyst_block(analyst_events)
 
     lines: List[str] = []
     lines.extend(header_lines)
+
+    if macro_block:
+        lines.append("")
+        lines.append(macro_block)
+
+    if analyst_block:
+        lines.append("")
+        lines.append(analyst_block)
+
+    lines.append("")
     lines.append("Darabszámos tickerek – After-hours & Premarket mozgások")
     lines.append("")
 
@@ -462,6 +486,7 @@ def main() -> None:
             k_default=k_default,
             output_md=summary_path,
             output_json=json_path,
+            macro_text=args.macro,
         )
         print(text)
     else:
