@@ -73,7 +73,7 @@ SESSION.headers.update(
 )
 
 DEFAULT_K = 3.0
-DEFAULT_SCRIPT_VERSION = "2.2.6-biblia-yahoo-us-time-chart-meta-prevclose-helper-macro-analyst-catalyst-hc-hiconv"
+DEFAULT_SCRIPT_VERSION = "2.2.8-biblia-yahoo-us-time-chart-meta-prevclose-helper-macro-analyst-catalyst-hc-hiconv-r2r3stub"
 
 WATCHLIST_DEFAULT_PATH = "reports/master.csv"
 ANALYST_EVENTS_PATH = "reports/analyst_1.json"
@@ -476,6 +476,152 @@ def generate_model_report(
     return md_text
 
 
+
+
+def generate_report2_macro_only(
+    script_version: str,
+    output_md: str,
+    output_json: str,
+    macro_text: Optional[str] = None,
+) -> str:
+    """#2 – Tegnapi nyitástól zárásig – makró/elemző/katalizátor/high-conviction váz."""
+    coverage_line = (
+        "Lefedettség: HIÁNYOS – ticker-szintű #2 modul még fejlesztés alatt ebben a verzióban."
+    )
+
+    header_lines = [
+        "#2 – Előző kereskedési nap: nyitástól zárásig (15:30–22:00) — CEST",
+        "",
+        f"Script verzió: {script_version}",
+        "",
+        "Időablak (CEST): előző kereskedési nap 15:30 → 22:00 (US RTH Open→Close).",
+        "",
+        coverage_line,
+    ]
+
+    yahoo_macro_news = fetch_yahoo_macro_news()
+    macro_block = format_macro_block(macro_text or "", yahoo_macro_news)
+
+    analyst_events = fetch_analyst_events(ANALYST_EVENTS_PATH)
+    analyst_block = format_analyst_block(analyst_events)
+
+    catalyst_events = fetch_catalyst_events(CATALYST_EVENTS_PATH)
+    catalyst_block = format_catalyst_block(catalyst_events)
+
+    highconv_events = fetch_highconviction_events(HIGHCONV_EVENTS_PATH)
+    highconv_block = format_highconviction_block(highconv_events)
+
+    lines: List[str] = []
+    lines.extend(header_lines)
+
+    if macro_block:
+        lines.append("")
+        lines.append(macro_block)
+
+    if analyst_block:
+        lines.append("")
+        lines.append(analyst_block)
+
+    if catalyst_block:
+        lines.append("")
+        lines.append(catalyst_block)
+
+    if highconv_block:
+        lines.append("")
+        lines.append(highconv_block)
+
+    text = "\n".join(lines)
+
+    # JSON váz – makró + event-listák
+    payload = {
+        "mode": 2,
+        "script_version": script_version,
+        "coverage": coverage_line,
+        "macro_text": macro_text or "",
+        "analyst_events": analyst_events,
+        "catalyst_events": catalyst_events,
+        "highconviction_events": highconv_events,
+    }
+    with open(output_json, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+    with open(output_md, "w", encoding="utf-8") as f:
+        f.write(text)
+
+    return text
+
+
+def generate_report3_macro_only(
+    script_version: str,
+    output_md: str,
+    output_json: str,
+    macro_text: Optional[str] = None,
+) -> str:
+    """#3 – Ma nyitástól mostanáig – makró/elemző/katalizátor/high-conviction váz."""
+    coverage_line = (
+        "Lefedettség: HIÁNYOS – ticker-szintű #3 modul még fejlesztés alatt ebben a verzióban."
+    )
+
+    header_lines = [
+        "#3 – Mai kereskedési nap: nyitástól mostanáig (15:30-tól) — CEST",
+        "",
+        f"Script verzió: {script_version}",
+        "",
+        "Időablak (CEST): mai kereskedési nap 15:30 → mostanáig (US RTH Open→Most).",
+        "",
+        coverage_line,
+    ]
+
+    yahoo_macro_news = fetch_yahoo_macro_news()
+    macro_block = format_macro_block(macro_text or "", yahoo_macro_news)
+
+    analyst_events = fetch_analyst_events(ANALYST_EVENTS_PATH)
+    analyst_block = format_analyst_block(analyst_events)
+
+    catalyst_events = fetch_catalyst_events(CATALYST_EVENTS_PATH)
+    catalyst_block = format_catalyst_block(catalyst_events)
+
+    highconv_events = fetch_highconviction_events(HIGHCONV_EVENTS_PATH)
+    highconv_block = format_highconviction_block(highconv_events)
+
+    lines: List[str] = []
+    lines.extend(header_lines)
+
+    if macro_block:
+        lines.append("")
+        lines.append(macro_block)
+
+    if analyst_block:
+        lines.append("")
+        lines.append(analyst_block)
+
+    if catalyst_block:
+        lines.append("")
+        lines.append(catalyst_block)
+
+    if highconv_block:
+        lines.append("")
+        lines.append(highconv_block)
+
+    text = "\n".join(lines)
+
+    payload = {
+        "mode": 3,
+        "script_version": script_version,
+        "coverage": coverage_line,
+        "macro_text": macro_text or "",
+        "analyst_events": analyst_events,
+        "catalyst_events": catalyst_events,
+        "highconviction_events": highconv_events,
+    }
+    with open(output_json, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+    with open(output_md, "w", encoding="utf-8") as f:
+        f.write(text)
+
+    return text
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Automatikus napi jelentés (#1/#2/#3)")
 
@@ -503,7 +649,7 @@ def main() -> None:
     parser.add_argument("--report", type=int, choices=[1, 2, 3], help="Alias of --mode (legacy)")
     parser.add_argument("--csv", help="Alias of --watchlist (legacy)")
     parser.add_argument("--summary", help="Kimeneti summary path (legacy, opcionális)")
-    parser.add_argument("--macro", help="Makró szöveg (legacy, jelenleg ignorált)")
+    parser.add_argument("--macro", help="Makró szöveg Politika/FED/piaci hangulat blokkokhoz")
 
     args = parser.parse_args()
 
@@ -519,6 +665,26 @@ def main() -> None:
             watchlist_path=watchlist_path,
             script_version=script_version,
             k_default=k_default,
+            output_md=summary_path,
+            output_json=json_path,
+            macro_text=args.macro,
+        )
+        print(text)
+    elif mode == 2:
+        summary_path = args.summary or "reports/summary_report_2.md"
+        json_path = "reports/latest_2.json"
+        text = generate_report2_macro_only(
+            script_version=script_version,
+            output_md=summary_path,
+            output_json=json_path,
+            macro_text=args.macro,
+        )
+        print(text)
+    elif mode == 3:
+        summary_path = args.summary or "reports/summary_report_3.md"
+        json_path = "reports/latest_3.json"
+        text = generate_report3_macro_only(
+            script_version=script_version,
             output_md=summary_path,
             output_json=json_path,
             macro_text=args.macro,
