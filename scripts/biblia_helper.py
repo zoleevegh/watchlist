@@ -213,7 +213,7 @@ szolgál kiindulópontként. A cél, hogy:
 
 from __future__ import annotations
 import json
-from typing import List
+from typing import List, Optional, Dict, Any
 
 # Használható konstans, ha máshonnan is hivatkozni akarunk a RAW #1-es linkre
 GIST_REPORT1_RAW_URL = "https://gist.githubusercontent.com/zoleevegh/5df443b8a46ef863cdc97aad62756510/raw/summary_report_1.md"
@@ -307,15 +307,13 @@ def get_report3_checklist() -> List[str]:
     ]
 
 
-# --- AUTO HIGH-CONVICTION / MAKRO / ELEMZŐI / KATALIZÁTOR HELPER FÜGGVÉNYEK ---
+# --- Makró / elemzői / katalizátor / high-conviction helper függvények ---
 
-import os
 import time
 import datetime as _dt
-from typing import Dict, Any
+from typing import List, Optional, Dict, Any
 
 import requests
-
 
 _SESSION = requests.Session()
 _SESSION.headers.update(
@@ -329,6 +327,7 @@ _SESSION.headers.update(
 
 
 def _safe_get_json(url: str, params: Optional[Dict[str, Any]] = None, timeout: int = 10) -> Optional[Dict[str, Any]]:
+    """Biztonságos JSON-letöltés – hiba esetén None-t ad vissza."""
     try:
         resp = _SESSION.get(url, params=params or {}, timeout=timeout)
         resp.raise_for_status()
@@ -337,48 +336,86 @@ def _safe_get_json(url: str, params: Optional[Dict[str, Any]] = None, timeout: i
         return None
 
 
-def fetch_yahoo_macro_news() -> List[str]:
-    """Placeholder – Yahoo Finance makró / piaci hangulat hírekhez.
+# --- Politika / FED / piaci hangulat ---
 
-    A tényleges scraper implementációja külön modulban / workflow-ban épülhet ki.
-    Itt annyit garantálunk, hogy mindig egy listát adunk vissza (akár üreset).
+def fetch_yahoo_macro_news() -> List[str]:
+    """
+    Placeholder Yahoo / Reuters / makró hírekhez.
+
+    A tényleges scraper külön modulban vagy workflow-ban implementálható.
+    Itt garantáljuk, hogy mindig egy lista tér vissza (akár üresen).
     """
     return []
 
 
-def format_macro_block(macro_text: str, yahoo_news: List[str]) -> str:
-    lines: List[str] = []
+def format_macro_block(macro_text: Optional[str], yahoo_news: List[str]) -> str:
+    """
+    Politika / FED / piaci hangulat blokk formázása.
 
-    macro_text = (macro_text or "").strip()
-    if macro_text:
-        lines.append("**Politika / FED / piaci hangulat**")
-        lines.append(macro_text)
+    - Ha van manuális macro_text → azt használjuk.
+    - Ha csak hírek vannak → ezekből készül egy rövid összefoglaló.
+    - Ha semmi sincs → generikus fallback szöveget adunk vissza.
+    """
+    lines: List[str] = []
+    title = "**Politika / FED / piaci hangulat**"
+
+    text = (macro_text or "").strip()
+    # Ha valaha "auto" kerülne ide, kezeljük üresként, ne jelenjen meg a szó.
+    if text.lower() == "auto":
+        text = ""
 
     cleaned_news = [n.strip() for n in yahoo_news if isinstance(n, str) and n.strip()]
-    if cleaned_news:
-        if not lines:
-            lines.append("**Politika / FED / piaci hangulat**")
-        lines.append("")
-        lines.append("Kiegészítő Yahoo Finance hírek:")
+
+    if text:
+        lines.append(title)
+        lines.append(text)
+    elif cleaned_news:
+        lines.append(title)
+        lines.append("Rövid makró/piaci összefoglaló a legfrissebb hírek alapján:")
         for item in cleaned_news:
             lines.append(f"- {item}")
+    else:
+        # Fallback: nincs releváns hír, de a blokk akkor is jelenjen meg.
+        lines.append(title)
+        lines.append(
+            "Ma nem érkezett érdemi politikai vagy FED-bejelentés; "
+            "a piacok elsősorban a vállalati hírekre és makroadatokra fókuszálnak."
+        )
 
-    return "\n".join(lines).strip()
+    return "\n".join(lines)
+
+
+# --- Elemzői események (fel/lemínősítések, céláremelések) ---
+
+def _load_json_list(path: str) -> List[Any]:
+    """Egyszerű JSON-lista betöltő helper – hiba esetén üres listát ad."""
+    try:
+        full = os.path.join(os.getcwd(), path)
+        if not os.path.exists(full):
+            return []
+        with open(full, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            return data
+    except Exception:
+        return []
+    return []
 
 
 def fetch_analyst_events(path: str = "reports/analyst_1.json") -> List[str]:
     """Elemzői fel/lemínősítések eseményeinek betöltése opcionális JSON-fájlból."""
-    p = os.path.join(os.getcwd(), path)
-    if not os.path.exists(p):
-        return []
-    try:
-        with open(p, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if isinstance(data, list):
-            return [str(x) for x in data]
-    except Exception:
-        return []
-    return []
+    raw = _load_json_list(path)
+    events: List[str] = []
+    for item in raw:
+        if isinstance(item, str):
+            txt = item.strip()
+        elif isinstance(item, dict):
+            txt = str(item.get("text", "")).strip()
+        else:
+            txt = str(item).strip()
+        if txt:
+            events.append(txt)
+    return events
 
 
 def format_analyst_block(events: List[str]) -> str:
@@ -393,19 +430,22 @@ def format_analyst_block(events: List[str]) -> str:
     return "\n".join(lines)
 
 
+# --- Közeli katalizátorok ---
+
 def fetch_catalyst_events(path: str = "reports/catalysts_1.json") -> List[str]:
     """Közeli (3–12 hónapos) katalizátorok betöltése opcionális JSON-fájlból."""
-    p = os.path.join(os.getcwd(), path)
-    if not os.path.exists(p):
-        return []
-    try:
-        with open(p, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if isinstance(data, list):
-            return [str(x) for x in data]
-    except Exception:
-        return []
-    return []
+    raw = _load_json_list(path)
+    events: List[str] = []
+    for item in raw:
+        if isinstance(item, str):
+            txt = item.strip()
+        elif isinstance(item, dict):
+            txt = str(item.get("text", "")).strip()
+        else:
+            txt = str(item).strip()
+        if txt:
+            events.append(txt)
+    return events
 
 
 def format_catalyst_block(events: List[str]) -> str:
@@ -420,14 +460,18 @@ def format_catalyst_block(events: List[str]) -> str:
     return "\n".join(lines)
 
 
+# --- High-conviction (3–12 hónapos, listán kívüli jelöltek) ---
+
 def _yahoo_reco_and_price(ticker: str) -> Optional[Dict[str, Any]]:
-    """Yahoo Finance quoteSummary lekérése egy tickerre – recommendation + PT + ár.
+    """
+    Yahoo Finance quoteSummary lekérése egy tickerre – recommendation + PT + ár.
 
     Visszatérési érték (siker esetén):
         {
           "ticker": ...,
           "current": float,
           "target_mean": float,
+          "upside_pct": float,
           "num_analysts": int,
           "strongBuy": int,
           "buy": int,
@@ -437,9 +481,7 @@ def _yahoo_reco_and_price(ticker: str) -> Optional[Dict[str, Any]]:
         }
     """
     url = f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{ticker}"
-    params = {
-        "modules": "financialData,defaultKeyStatistics,recommendationTrend",
-    }
+    params = {"modules": "financialData,defaultKeyStatistics,recommendationTrend"}
     data = _safe_get_json(url, params=params)
     try:
         result = data["quoteSummary"]["result"][0]
@@ -466,11 +508,13 @@ def _yahoo_reco_and_price(ticker: str) -> Optional[Dict[str, Any]]:
         if not current or not target_mean or not num_analysts:
             return None
 
+        upside_pct = (float(target_mean) - float(current)) / float(current) * 100.0
+
         return {
             "ticker": ticker,
             "current": float(current),
             "target_mean": float(target_mean),
-            "upside_pct": (float(target_mean) - float(current)) / float(current) * 100.0,
+            "upside_pct": float(upside_pct),
             "num_analysts": int(num_analysts),
             "strongBuy": int(strong_buy),
             "buy": int(buy),
@@ -507,9 +551,10 @@ def _filter_highconv_candidates(
     hard_upside_boost: float = 25.0,
     max_count: int = 10,
 ) -> List[Dict[str, Any]]:
+    """High-conviction jelöltek szűrése az univerzumon belül."""
     results: List[Dict[str, Any]] = []
 
-    for i, sym in enumerate(tickers):
+    for sym in tickers:
         info = _yahoo_reco_and_price(sym)
         if not info:
             continue
@@ -531,7 +576,7 @@ def _filter_highconv_candidates(
         buy_ratio = (strong_buy + buy) / float(total_cov)
         upside = info["upside_pct"]
 
-        # Alap szűrők
+        # Alap szűrők (Zoli-paraméterek)
         if upside < min_upside_pct and upside < hard_upside_boost:
             continue
         if buy_ratio < min_buy_ratio:
@@ -540,14 +585,11 @@ def _filter_highconv_candidates(
         info["buy_ratio"] = buy_ratio
         results.append(info)
 
-        # Kíméletes limit – ne verjük agyon a Yahoo API-t
         if len(results) >= max_count * 3:
             break
 
-        # Kisebb alvás, hogy udvariasak legyünk
         time.sleep(0.2)
 
-    # Top jelöltek: elsősorban upside szerint rendezve
     results_sorted = sorted(results, key=lambda x: x.get("upside_pct", 0.0), reverse=True)
     return results_sorted[:max_count]
 
@@ -560,23 +602,19 @@ def generate_highconviction_json(
     hard_upside_boost: float = 25.0,
     max_count: int = 10,
 ) -> List[Dict[str, Any]]:
-    """Automatikus high-conviction lista generálása (S&P500 + nagyobb likviditású nevek).
-
-    A kimenetet JSON-ként is elmenti a megadott path-ra, és listaként is visszaadja.
-    """
+    """Automatikus high-conviction lista generálása (S&P500-univerzumra)."""
     tickers = _load_sp500_universe()
     if not tickers:
         return []
 
     candidates = _filter_highconv_candidates(
-        tickers,
+        tickers=tickers,
         min_upside_pct=min_upside_pct,
         min_analysts=min_analysts,
         min_buy_ratio=min_buy_ratio,
         hard_upside_boost=hard_upside_boost,
         max_count=max_count,
     )
-
     if not candidates:
         return []
 
@@ -622,7 +660,8 @@ def generate_highconviction_json(
 
 
 def fetch_highconviction_events(path: str = "reports/highconviction_1.json") -> List[str]:
-    """High-conviction (3–12 hó) jelöltek betöltése.
+    """
+    High-conviction (3–12 hó) jelöltek betöltése.
 
     Ha a fájl nem létezik vagy üres, megpróbál automatikusan egy új JSON-t generálni
     a fenti szabályok alapján (S&P500-univerzumra).
@@ -630,19 +669,17 @@ def fetch_highconviction_events(path: str = "reports/highconviction_1.json") -> 
     A visszatérési érték egy már display-ready lista:
         ["SMCI – ...", "NVO – ...", ...]
     """
-    p = os.path.join(os.getcwd(), path)
+    full = os.path.join(os.getcwd(), path)
 
-    # Ha nincs JSON: próbálunk automatikusan generálni
-    if not os.path.exists(p):
-        candidates = generate_highconviction_json(path=path)
+    if not os.path.exists(full):
+        candidates = generate_highconviction_json(path=full)
         return [f"{c['ticker']} – {c['text'].split('–', 1)[-1].strip()}" for c in candidates]
 
     try:
-        with open(p, "r", encoding="utf-8") as f:
+        with open(full, "r", encoding="utf-8") as f:
             data = json.load(f)
     except Exception:
-        # Ha nem olvasható, próbáljunk újragenerálni
-        candidates = generate_highconviction_json(path=path)
+        candidates = generate_highconviction_json(path=full)
         return [f"{c['ticker']} – {c['text'].split('–', 1)[-1].strip()}" for c in candidates]
 
     events: List[str] = []
@@ -650,7 +687,9 @@ def fetch_highconviction_events(path: str = "reports/highconviction_1.json") -> 
     if isinstance(data, list):
         for item in data:
             if isinstance(item, str):
-                events.append(item)
+                txt = item.strip()
+                if txt:
+                    events.append(txt)
             elif isinstance(item, dict):
                 ticker = str(item.get("ticker", "")).strip().upper()
                 text = str(item.get("text", "")).strip()
@@ -659,9 +698,8 @@ def fetch_highconviction_events(path: str = "reports/highconviction_1.json") -> 
                 elif text:
                     events.append(text)
 
-    # Ha a JSON üres volt, próbáljunk generálni
     if not events:
-        candidates = generate_highconviction_json(path=path)
+        candidates = generate_highconviction_json(path=full)
         return [f"{c['ticker']} – {c['text'].split('–', 1)[-1].strip()}" for c in candidates]
 
     return events
