@@ -344,7 +344,6 @@ def generate_model_report(
         coverage_line,
         "Politika/FED / Trump-napihír",
         "",
-        "(Auto mód még nincs implementálva – add meg a makró összefoglalót a workflow 'macro' mezőjében.)",
     ]
 
     lines: List[str] = []
