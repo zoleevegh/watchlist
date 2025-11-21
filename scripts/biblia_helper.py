@@ -418,3 +418,60 @@ def format_catalyst_block(events):
     for e in events:
         lines.append(f"- {e}")
     return "\n".join(lines)
+
+
+# --- AUTO-ADDED (UPDATED7): Listán kívüli, 3–12 hónapos high-conviction jelöltek helper függvények ---
+
+def fetch_highconviction_events(path: str = "reports/highconviction_1.json"):
+    """High-conviction (3–12 hó) jelöltek betöltése opcionális JSON-fájlból.
+
+    Elvárt JSON-formátum:
+        Egyszerű lista:
+            [
+              "SMCI – több friss felminősítés, erős guidance, 52w csúcs-közeli árfolyam",
+              "NVDA – adatközponti kereslet, ismételt céláremelések, GTC katalizátor"
+            ]
+        vagy lista dict-ekkel:
+            [
+              {"ticker": "SMCI", "text": "több friss felminősítés, erős guidance, 52w csúcs-közeli árfolyam"},
+              {"ticker": "NVDA", "text": "adatközponti kereslet, ismételt céláremelések, GTC katalizátor"}
+            ]
+
+    A portfólión/watchlisten belüli neveket már a JSON előállításakor érdemes kiszűrni.
+    Ha a fájl nem létezik vagy hibás, üres listát ad vissza.
+    """
+    import json
+    from pathlib import Path
+
+    p = Path(path)
+    if not p.exists():
+        return []
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        # lista sztringekkel
+        if isinstance(data, list):
+            out = []
+            for item in data:
+                if isinstance(item, str):
+                    out.append(item)
+                elif isinstance(item, dict):
+                    ticker = str(item.get("ticker", "")).strip()
+                    text = str(item.get("text", "")).strip()
+                    if ticker and text:
+                        out.append(f"{ticker} – {text}")
+                    elif text:
+                        out.append(text)
+            return out
+    except Exception:
+        return []
+    return []
+
+
+def format_highconviction_block(events):
+    """High-conviction blokk formázása markdownba."""
+    if not events:
+        return ""
+    lines = ["**Listán kívüli, 3–12 hónapos high-conviction jelöltek**"]
+    for e in events:
+        lines.append(f"- {e}")
+    return "\n".join(lines)
