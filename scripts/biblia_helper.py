@@ -360,11 +360,25 @@ def format_macro_block(macro_text, yahoo_news):
     return "\n".join(lines)
 
 
-def fetch_analyst_events():
-    """Elemzői fel/lemínősítésekhez szükséges események helye.
-    Jelenleg csak placeholder – a tényleges API-hívást a workflow-ban érdemes megoldani,
-    és az eredményt JSON-ból betölteni."""
+def fetch_analyst_events(path: str = "reports/analyst_1.json"):
+    """Elemzői fel/lemínősítésekhez szükséges események betöltése opcionális JSON-fájlból.
+    A JSON formátuma legyen pl.:
+        ["NVDA – Morgan Stanley felminősítés, PT 150 → 180", "TSLA – Goldman Sachs leminősítés, PT 300 → 250"].
+    Ha a fájl nem létezik vagy hibás, üres listát ad vissza."""
+    import json
+    from pathlib import Path
+
+    p = Path(path)
+    if not p.exists():
+        return []
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            return [str(x) for x in data]
+    except Exception:
+        return []
     return []
+
 
 
 def format_analyst_block(events):
