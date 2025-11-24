@@ -341,7 +341,7 @@ def _safe_get_json(url: str, params: Optional[Dict[str, Any]] = None, timeout: i
 
 def fetch_yahoo_macro_news(report_type: int = 1, now_cet: Optional[object] = None) -> List[str]:
     """
-    Politika / FED / piaci hangulat hírek – JSON alapú feed.
+    Politika / FED / piaci hangulat hírek – JSON-alapú feed a makróblokkhoz.
 
     A tényleges webes hírfetch (Yahoo Finance / CNBC / Bloomberg) külön
     workflow-ban vagy scriptben fut, és az eredményt JSON-ben menti a
@@ -374,10 +374,7 @@ def fetch_yahoo_macro_news(report_type: int = 1, now_cet: Optional[object] = Non
 
     - megpróbálja beolvasni a ``reports/macro_news_{report_type}.json`` fájlt;
     - ha nincs ilyen fájl, vagy hibás a formátum → üres listát ad vissza;
-    - legfeljebb 4 sztringet ad vissza, felesleges whitespace nélkül.
-
-    Így a hívó oldal (report_runner) és a format_macro_block akkor is stabilan
-    működik, ha a hírfetch workflow valamiért nem futott le.
+    - legfeljebb 8 sztringet ad vissza, felesleges whitespace nélkül.
     """
     filename = f"macro_news_{report_type}.json"
     candidates = [
@@ -404,19 +401,57 @@ def fetch_yahoo_macro_news(report_type: int = 1, now_cet: Optional[object] = Non
                 s = item.strip()
                 if s:
                     cleaned.append(s)
-            # Maximum 4 releváns sor – a formázásnál így is bőven elég.
-            return cleaned[:4]
+            # Maximum 8 headline – a formázó úgyis tovább szűri.
+            return cleaned[:8]
 
     # Ha semmilyen JSON-t nem találunk, üres listát adunk vissza.
     return []
+
+
+def summarize_macro_items(items: List[str], max_lines: int = 4) -> List[str]:
+    """Nyers Yahoo/CNBC/Bloomberg headline-okból magyar mondatokat gyárt.
+
+    - Forrásprefixel dolgozunk: "Yahoo Finance:", "CNBC:", "Bloomberg:" stb.
+    - max_lines sor erejéig alakítjuk át őket magyar mondatokká.
+    """
+    summary: List[str] = []
+
+    for raw in items:
+        s = (raw or "").strip()
+        if not s:
+            continue
+
+        core = s
+        prefix = ""
+        if s.startswith("Yahoo Finance:"):
+            prefix = "A Yahoo Finance szerint"
+            core = s.split(":", 1)[1].strip() or core
+        elif s.startswith("CNBC:"):
+            prefix = "A CNBC beszámolója szerint"
+            core = s.split(":", 1)[1].strip() or core
+        elif s.startswith("Bloomberg:"):
+            prefix = "A Bloomberg kiemeli, hogy"
+            core = s.split(":", 1)[1].strip() or core
+
+        if prefix:
+            sentence = f"{prefix}: {core}"
+        else:
+            sentence = f"Piaci hír: {s}"
+
+        summary.append(sentence)
+        if len(summary) >= max_lines:
+            break
+
+    return summary
 
 
 def format_macro_block(macro_text: Optional[str], yahoo_news: List[str]) -> str:
     """
     Politika / FED / piaci hangulat blokk formázása.
 
-    - Ha van manuális macro_text → azt használjuk.
-    - Ha csak hírek vannak → ezekből készül egy rövid összefoglaló.
+    - Ha van manuális macro_text → azt mindig megjelenítjük (első sorok).
+    - Ha vannak hírek → ezekből készül 3–4 magyar mondat a summarize_macro_items
+      segítségével, bulletpontosan.
     - Ha semmi sincs → generikus fallback szöveget adunk vissza.
     """
     lines: List[str] = []
@@ -427,16 +462,18 @@ def format_macro_block(macro_text: Optional[str], yahoo_news: List[str]) -> str:
     if text.lower() == "auto":
         text = ""
 
-    cleaned_news = [n.strip() for n in yahoo_news if isinstance(n, str) and n.strip()]
+    summarized = summarize_macro_items(yahoo_news or [])
 
-    if text:
+    if text and summarized:
         lines.append(title)
         lines.append(text)
-    elif cleaned_news:
+        lines.extend(f"- {item}" for item in summarized)
+    elif text:
         lines.append(title)
-        lines.append("Rövid makró/piaci összefoglaló a legfrissebb hírek alapján:")
-        for item in cleaned_news:
-            lines.append(f"- {item}")
+        lines.append(text)
+    elif summarized:
+        lines.append(title)
+        lines.extend(f"- {item}" for item in summarized)
     else:
         # Fallback: nincs releváns hír, de a blokk akkor is jelenjen meg.
         lines.append(title)
@@ -445,10 +482,12 @@ def format_macro_block(macro_text: Optional[str], yahoo_news: List[str]) -> str:
             "a piacok elsősorban a vállalati hírekre és makroadatokra fókuszálnak."
         )
 
-    return "\n".join(lines)
+    return "
+".join(lines)
 
 
 # --- Elemzői események (fel/lemínősítések, céláremelések) ---
+
 
 def _load_json_list(path: str) -> List[Any]:
     """Egyszerű JSON-lista betöltő helper – hiba esetén üres listát ad."""
