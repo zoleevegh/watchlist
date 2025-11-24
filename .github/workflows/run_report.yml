@@ -91,19 +91,6 @@ jobs:
 
           Get-Content "$out" -TotalCount 5 | ForEach-Object { Write-Host "CSV> $_" }
 
-
-- name: Fetch macro news (Yahoo/CNBC/Bloomberg)
-  shell: pwsh
-  run: |
-    $report = "${{ steps.vars.outputs.report }}"
-    if (-not $report) { $report = "1" }
-    if (-not (Test-Path "scripts\macro_news_fetcher.py")) {
-      Write-Host "macro_news_fetcher.py nem található – makróhírek nélkül fut tovább."
-    }
-    else {
-      python "scripts\macro_news_fetcher.py" $report
-    }
-
       - name: Run report (#1/#2/#3)
         shell: pwsh
         run: |
