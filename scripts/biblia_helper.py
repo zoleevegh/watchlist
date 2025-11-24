@@ -23,7 +23,7 @@ jobs:
     runs-on: windows-latest
     env:
       # ← IDE írd a Google Sheets "Publish to web" CSV linkjét (MASTER)
-      DEFAULT_CSV_URL: https://docs.google.com/spreadsheets/d/e/2PACX-1vTf5h3xx4LWJvI-e7PSyc8g6uGZT-H6pCeuwEqs7NqeCDKuAltTpL_ncPOWMtooRw/pub?output=csv
+      DEFAULT_CSV_URL: "https://docs.google.com/spreadsheets/d/e/2PACX-1vTf5h3xx4LWJvI-e7PSyc8g6uGZT-H6pCeuwEqs7NqeCDKuAltTpL_ncPOWMtooRw/pub?output=csv"
 
     steps:
       - name: Checkout
