@@ -11,10 +11,6 @@ on:
         description: 'MASTER CSV URL (üres = DEFAULT_CSV_URL)'
         default: ''
         required: false
-      macro:
-        description: 'Politika/FED blokk: auto | off | strict'
-        default: 'auto'
-        required: false
   repository_dispatch:
     types: [run_report]
 
@@ -64,6 +60,20 @@ jobs:
           Write-Host "CSV URL: $csv"
           Write-Host "MACRO: $macro"
 
+      - name: Fetch macro news (Yahoo/CNBC/Bloomberg)
+        shell: pwsh
+        run: |
+          $report = "${{ steps.vars.outputs.report }}"
+          if (-not $report) { $report = "1" }
+
+          if (-not (Test-Path "scripts\macro_news_fetcher.py")) {
+            Write-Host "macro_news_fetcher.py nem található – makróhírek nélkül fut tovább."
+          }
+          else {
+            python "scripts\macro_news_fetcher.py" $report
+          }
+
+
       - name: Fetch MASTER CSV (robust)
         shell: pwsh
         run: |
@@ -112,7 +122,6 @@ jobs:
             --report $report `
             --csv "$csv" `
             --summary "$summaryPath" `
-            --macro $macro
 
           if (Test-Path $summaryPath) {
             Get-Content $summaryPath | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8
