@@ -5,11 +5,15 @@ on:
     inputs:
       report:
         description: 'Jelentés: 1=AH+PM, 2=Open→Close (előző nap), 3=Ma Open→Most'
-        default: '1'
+        default: '3'
         required: false
       csv_url:
         description: 'MASTER CSV URL (üres = DEFAULT_CSV_URL)'
         default: ''
+        required: false
+      macro:
+        description: 'Politika/FED blokk: auto | off | strict'
+        default: 'auto'
         required: false
   repository_dispatch:
     types: [run_report]
@@ -87,6 +91,19 @@ jobs:
 
           Get-Content "$out" -TotalCount 5 | ForEach-Object { Write-Host "CSV> $_" }
 
+
+- name: Fetch macro news (Yahoo/CNBC/Bloomberg)
+  shell: pwsh
+  run: |
+    $report = "${{ steps.vars.outputs.report }}"
+    if (-not $report) { $report = "1" }
+    if (-not (Test-Path "scripts\macro_news_fetcher.py")) {
+      Write-Host "macro_news_fetcher.py nem található – makróhírek nélkül fut tovább."
+    }
+    else {
+      python "scripts\macro_news_fetcher.py" $report
+    }
+
       - name: Run report (#1/#2/#3)
         shell: pwsh
         run: |
@@ -108,6 +125,7 @@ jobs:
             --report $report `
             --csv "$csv" `
             --summary "$summaryPath" `
+            --macro $macro
 
           if (Test-Path $summaryPath) {
             Get-Content $summaryPath | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8
