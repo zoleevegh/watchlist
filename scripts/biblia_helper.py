@@ -339,13 +339,31 @@ def _safe_get_json(url: str, params: Optional[Dict[str, Any]] = None, timeout: i
 
 # --- Politika / FED / piaci hangulat ---
 
-def fetch_yahoo_macro_news() -> List[str]:
+def fetch_yahoo_macro_news(report_type: int = 1, now_cet: Optional[object] = None) -> List[str]:
     """
-    Placeholder Yahoo / Reuters / makró hírekhez.
+    Politika / FED / piaci hangulat hírek (váz – scraper nélkül).
 
-    A tényleges scraper külön modulban vagy workflow-ban implementálható.
-    Itt garantáljuk, hogy mindig egy lista tér vissza (akár üresen).
+    IDŐABLAKOK (hírekre, CEST):
+    - report_type 1 vagy 2 esetén: előző kereskedési nap 15:30 → now_cet
+    - report_type 3 esetén: előző piaczárás 22:00 → now_cet
+
+    A gyakorlatban:
+    - #1 és #2: az előző US RTH nyitástól (15:30) számítva minden makró/FED/politikai hír,
+      ami a mostani lekérdezésig kijött (beleértve a hétvégét is, ha hétfőn fut),
+    - #3: az előző zárás (22:00) után érkező hírek a lekérdezés pillanatáig.
+
+    FORRÁS-PRIÓ (makró blokkhoz – később scraperrel):
+    - Yahoo Finance (piaci összefoglalók, index- és makrókommentárok),
+    - CNBC (Market / Economy / Politics szekciók),
+    - Bloomberg Markets / Economics (ha elérhető).
+
+    Jelenlegi implementáció:
+    - Csak egy váz: a tényleges scraping / JSON-előkészítés külön workflow-ban
+      valósítható meg (pl. reports/macro_news_1.json stb.),
+    - Itt garantáljuk, hogy mindig egy lista tér vissza (akár üresen),
+      így a format_macro_block biztonságosan tud dolgozni vele.
     """
+    # Jelenleg még nincs scraper – üres lista, hogy a hívó oldal ne dőljön el.
     return []
 
 
