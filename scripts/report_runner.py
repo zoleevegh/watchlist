@@ -37,7 +37,7 @@ try:
     )  # noqa: F401
 except ImportError:
     # Optional helper; a script működik helper nélkül is, de a makró/elemző/katalizátor/high-conviction blokkok ilyenkor üresek maradnak.
-    def fetch_yahoo_macro_news():
+    def fetch_yahoo_macro_news(*args, **kwargs):
         return []
 
     def format_macro_block(macro_text, yahoo_news):
@@ -381,7 +381,7 @@ def generate_model_report(
     ]
 
     # Politika/FED / Piaci hangulat + Elemzői lépések + Közeli katalizátorok + High-conviction blokkok
-    yahoo_macro_news = fetch_yahoo_macro_news()
+    yahoo_macro_news = fetch_yahoo_macro_news(report_type=1, now_cet=now)
     macro_block = format_macro_block(macro_text or "", yahoo_macro_news)
 
     analyst_events = fetch_analyst_events(ANALYST_EVENTS_PATH)
@@ -499,6 +499,8 @@ def generate_report2_macro_only(
         "Lefedettség: HIÁNYOS – ticker-szintű #2 modul még fejlesztés alatt ebben a verzióban."
     )
 
+    now = dt.datetime.now(dt.timezone(dt.timedelta(hours=1)))
+
     header_lines = [
         "#2 – Előző kereskedési nap: nyitástól zárásig (15:30–22:00) — CEST",
         "",
@@ -509,7 +511,7 @@ def generate_report2_macro_only(
         coverage_line,
     ]
 
-    yahoo_macro_news = fetch_yahoo_macro_news()
+    yahoo_macro_news = fetch_yahoo_macro_news(report_type=2, now_cet=now)
     macro_block = format_macro_block(macro_text or "", yahoo_macro_news)
 
     analyst_events = fetch_analyst_events(ANALYST_EVENTS_PATH)
@@ -572,6 +574,8 @@ def generate_report3_macro_only(
         "Lefedettség: HIÁNYOS – ticker-szintű #3 modul még fejlesztés alatt ebben a verzióban."
     )
 
+    now = dt.datetime.now(dt.timezone(dt.timedelta(hours=1)))
+
     header_lines = [
         "#3 – Mai kereskedési nap: nyitástól mostanáig (15:30-tól) — CEST",
         "",
@@ -582,7 +586,7 @@ def generate_report3_macro_only(
         coverage_line,
     ]
 
-    yahoo_macro_news = fetch_yahoo_macro_news()
+    yahoo_macro_news = fetch_yahoo_macro_news(report_type=3, now_cet=now)
     macro_block = format_macro_block(macro_text or "", yahoo_macro_news)
 
     analyst_events = fetch_analyst_events(ANALYST_EVENTS_PATH)
