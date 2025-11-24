@@ -188,3 +188,54 @@ jobs:
           "Raw URL for this run:" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
           "https://gist.githubusercontent.com/zoleevegh/5df443b8a46ef863cdc97aad62756510/raw/summary_report_1.md?run=$env:GITHUB_RUN_ID" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
 
+
+      # Fix Gist frissítése – ebbe kerül mindig a legutóbbi #3-as jelentés
+      - name: Update fixed Gist with #3 report
+        if: always()
+        shell: pwsh
+        env:
+          # Ezt az ID-t a saját #3-as Gist URL-edből vedd ki:
+          # https://gist.github.com/zoleevegh/THIS_IS_THE_GIST_ID_FOR_REPORT_3
+          GIST_ID: 8f77c3b0ec040030d492859095686030   # TODO: írd át a saját #3-as Gist ID-dre
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+        run: |
+          if (-not $env:GIST_TOKEN) {
+            Write-Host "No GIST_TOKEN secret – skip Gist update for #3."
+            exit 0
+          }
+
+          $path = "reports\summary_report_3.md"
+
+          if (-not (Test-Path $path)) {
+            Write-Host "summary_report_3.md nem található – valószínűleg nem #3-as riport futott. Skip."
+            exit 0
+          }
+
+          Write-Host "summary_report_3.md beolvasása: $path"
+          $content = Get-Content -Raw $path
+
+          $body = @{
+            files = @{
+              "summary_report_3.md" = @{
+                content = $content
+              }
+            }
+          }
+
+          $json = $body | ConvertTo-Json -Depth 5
+
+          $url  = "https://api.github.com/gists/$($env:GIST_ID)"
+          Write-Host "PATCH $url (report #3)"
+
+          $resp = curl.exe -s -X PATCH $url `
+            -H "Authorization: Bearer $($env:GIST_TOKEN)" `
+            -H "Accept: application/vnd.github+json" `
+            -H "Content-Type: application/json" `
+            -d $json
+
+          Write-Host "Gist PATCH response (#3):"
+          Write-Host $resp
+
+          "Raw URL for #3 fixed gist:" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          ("https://gist.githubusercontent.com/zoleevegh/{0}/raw/summary_report_3.md" -f $env:GIST_ID) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
