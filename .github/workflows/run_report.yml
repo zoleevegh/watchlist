@@ -5,7 +5,7 @@ on:
     inputs:
       report:
         description: 'Jelentés: 1=AH+PM, 2=Open→Close (előző nap), 3=Ma Open→Most'
-        default: '3'
+        default: '1'
         required: false
       csv_url:
         description: 'MASTER CSV URL (üres = DEFAULT_CSV_URL)'
