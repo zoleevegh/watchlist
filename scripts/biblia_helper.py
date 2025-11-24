@@ -1,737 +1,194 @@
-"""
-biblia_helper.py
+name: Run Report (Windows)
 
-Kanonikus szabálykönyv a #1 / #2 / #3 jelentésekhez ("biblia").
+on:
+  workflow_dispatch:
+    inputs:
+      report:
+        description: 'Jelentés: 1=AH+PM, 2=Open→Close (előző nap), 3=Ma Open→Most'
+        default: '3'
+        required: false
+      csv_url:
+        description: 'MASTER CSV URL (üres = DEFAULT_CSV_URL)'
+        default: ''
+        required: false
+      macro:
+        description: 'Politika/FED blokk: auto | off | strict'
+        default: 'auto'
+        required: false
+  repository_dispatch:
+    types: [run_report]
 
-CÉL
-----
-Ha valaha elveszne a ChatGPT-beszélgetés vagy bármilyen külön dokumentáció,
-EZ A FÁJL tartalmazza, hogy:
+jobs:
+  run:
+    runs-on: windows-latest
+    env:
+      # ← IDE írd a Google Sheets "Publish to web" CSV linkjét (MASTER)
+      DEFAULT_CSV_URL: https://docs.google.com/spreadsheets/d/e/2PACX-1vTf5h3xx4LWJvI-e7PSyc8g6uGZT-H6pCeuwEqs7NqeCDKuAltTpL_ncPOWMtooRw/pub?output=csv
 
-- mit kell csinálni a #1 / #2 / #3 jelentéseknél,
-- milyen időablakokkal dolgozunk,
-- milyen blokkok KÖTELEZŐK minden jelentésben,
-- honnan vesszük az adatokat (árak, hírek, elemzői ratingek),
-- hogyan számoljuk a százalékos mozgásokat,
-- hogyan kezeljük a MASTER sheetet (K/L/M, darabszámos vs. watchlist),
-- hogyan használjuk az „Eladasi ar” oszlopot,
-- hogyan működik a „listán kívüli, 3–12 hónapos high-conviction jelöltek” blokk.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-FIX GIST LINK – #1 JELENTÉS (AH+PM)
------------------------------------
-A legutóbbi #1-es jelentés (After-hours + Premarket) mindig itt érhető el RAW formában:
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
-https://gist.githubusercontent.com/zoleevegh/5df443b8a46ef863cdc97aad62756510/raw/summary_report_1.md
+      - name: Install deps
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas requests yfinance pytz feedparser beautifulsoup4
 
-Ezt a GitHub Action minden #1-es futás után automatikusan frissíti a
-`reports/summary_report_1.md` tartalmával. Ha bármi elveszne, innen bármikor
-lekérhető a legutolsó #1-es riport.
+      - name: Resolve inputs (report, csv, macro)
+        id: vars
+        shell: pwsh
+        run: |
+          $report = "${{ github.event.inputs.report }}"
+          if (-not $report) { $report = "${{ github.event.client_payload.report }}" }
+          if (-not $report) { $report = "3" }
 
-FONTOS ALAPELVEK (MINDEN JELENTÉSRE)
-------------------------------------
-- Időzóna: Europe/Budapest (CET/CEST).
-- Csak US kereskedési napokon fut a #1/#2/#3 jelentés.
-- Árforrás alapvetően: Yahoo Finance chart v8 (2d/5m, includePrePost=true) +
-  szükség esetén intraday / quote API (Open, High, Low, Close, Last).
-- Ticker-sorrend:
-    1) darabszámos pozíciók (quantity > 0),
-    2) utána watchlist-tickerek (csak ha a feltételek teljesülnek).
-- Küszöb a jelentendő mozgásokra: alapértelmezett K = ±3,00%,
-  ticker-szintű felülírás a MASTER „K” oszlopából.
-- MASTER K/L/M oszlopok:
-    K  = min. intraday % mozgás (abszolút értékben), default 3,
-    L  = unusual volume szorzó (× 20 napos átlagforgalom), default 2,
-    M  = max. távolság a 52 hetes csúcstól/mélyponttól (%), default 1.
-  Üres / érvénytelen cella esetén a fenti defaultok lépnek életbe.
-- Eladási ár (új oszlop): „Eladasi ar”
-    - Ha egy tickerhez meg van adva „Eladasi ar”, akkor
-      az aktuális árhoz képest számolunk egy %-os eltérést:
-          diff_pct = (current_price - eladasi_ar) / eladasi_ar * 100
-      Ez később re-entry / túlértékeltség / alulértékeltség jelzéshez használható.
-    - Ha a cella üres vagy nem számszerű, a diff_pct nem kötelező,
-      a jelentés többi része ettől függetlenül lefuthat.
+          $csv = "${{ github.event.inputs.csv_url }}"
+          if (-not $csv) { $csv = "${{ github.event.client_payload.csv_url }}" }
+          if (-not $csv) { $csv = "${{ env.DEFAULT_CSV_URL }}" }
 
-HÍRFORRÁS-PRIORITÁS
--------------------
-A) Gyors, megbízható hírdótok:
-    1. Reuters (Top/Markets/Breakingviews) – elsődleges.
-    2. AP – megerősítés.
-    3. Bloomberg (Top/Markets) – ha elérhető.
-    4. Dow Jones Newswires / The Fly / Benzinga Pro – intraday tape.
+          $macro = "${{ github.event.inputs.macro }}"
+          if (-not $macro) { $macro = "${{ github.event.client_payload.macro }}" }
+          if (-not $macro) { $macro = "auto" }
 
-B) Hivatalos vállalati csatornák:
-    - SEC EDGAR (8-K/6-K/10-Q/10-K),
-    - vállalati IR/Newsroom oldalak,
-    - Business Wire / PR Newswire / GlobeNewswire.
+          "report=$report" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "csv=$csv"       | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "macro=$macro"   | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
-C) Elemzői lépések (rating / célár):
-    - MarketBeat Ratings – elsődleges,
-    - StreetInsider / The Fly (Analyst) – másodlagos,
-    - TipRanks – kiegészítő.
+          Write-Host "REPORT: $report"
+          Write-Host "CSV URL: $csv"
+          Write-Host "MACRO: $macro"
 
-D) Makró / FED / politika:
-    - FederalReserve.gov, BLS, BEA, U.S. Treasury,
-    - Reuters / AP political news,
-    - White House hivatalos közlései (csak piaci relevancia esetén).
+      - name: Fetch MASTER CSV (robust)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path reports | Out-Null
+          $out    = "reports\master.csv"
+          $csvUrl = "${{ steps.vars.outputs.csv }}"
 
-E) Szektor-specifikus:
-    - Félvezetők: TSMC, ASML, LRCX, KLAC saját IR + iparági cikkek.
-    - Kriptoérzékeny papírok (MSTR, COIN, BTDR, RGTI, IREN, SOUN stb.):
-      Coindesk / The Block csak megerősítésként, nem önálló primer forrásként.
+          Write-Host "Letöltés: $csvUrl"
+          & curl.exe -fL --retry 3 --retry-all-errors -A "Mozilla/5.0" "$csvUrl" -o "$out"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "CSV letöltés sikertelen (curl exit $LASTEXITCODE)"
+            exit 1
+          }
 
-ANYAGI LÉNYEGESSÉG
-------------------
-Egy hír / esemény akkor kerül be a jelentésbe (akkor is, ha a % mozgás
-3% alatt marad), ha legalább az alábbiak közül egy teljesül:
+          if ((Get-Item "$out").Length -lt 10) {
+            Write-Error "A CSV túl kicsi / üres"
+            exit 1
+          }
 
-    - ~5%+ hatás a guidance / EPS / árbevétel várakozásokra,
-    - M&A / stratégiai deal (felvásárlás, spin-off, nagy JV),
-    - buyback / osztalék program indulása vagy jelentős bővítése,
-    - CEO/CFO/Chair csere,
-    - a core üzletet érdemben érintő szabályozási / jogi döntés.
+          $first = Get-Content "$out" -TotalCount 1
+          if ($first -match "<!DOCTYPE html>|<html") {
+            Write-Error "Nem CSV érkezett (HTML). Ellenőrizd a Publish to web linket."
+            exit 1
+          }
 
-Nem kerül be:
-    - puszta pletyka (főleg Reddit/Stocktwits),
-    - kis jelentőségű PR-hír, ami nem mozgat árfolyamot.
-
-HIGH-CONVICTION BLOKK
-----------------------
-- Név: „Listán kívüli, 3–12 hónapos high-conviction jelöltek”.
-- Csak olyan ticker kerülhet ide, amely NINCS a felhasználó
-  portfóliójában ÉS NINCS a watchlisten (tehát „listán kívüli”).
-- Forrás-prioritás: Yahoo Finance + MarketBeat.
-- Szűrési feltételek – legalább kettő teljesüljön:
-    1. 2–3+ friss felminősítés / céláremelés nagy házaktól,
-    2. iránymutatás-emelés / pozitív guide,
-    3. konszenzus EPS / árbevétel felfelé módosul,
-    4. 3–12 hónapon belüli konkrét katalizátor,
-    5. relatív erő / 52w high-közeli teljesítmény.
-- A blokk csak akkor jelenik meg, ha van valóban erős jelölt.
-
-LEFEDETTSÉG-BLOKK (MINDEN JELENTÉS ELEJÉN KÖTELEZŐ)
-----------------------------------------------------
-- Ha minden tickerre sikerült adatot húzni:
-    „Lefedettség: TELJES”
-- Ha bármelyik tickerhez nem volt adat (HTTP-hiba, no_result, stb.):
-    „Lefedettség: HIÁNYOS – nem elérhető ticker(ek): AAA, BBB… (oka: lásd belső logot / forráshibát)”
-- FONTOS: az, hogy egy tickernek nincs AH/PM gyertyája egy adott
-  2d/5m charton, nem lefedettség-hiba (ilyenkor AH/PM = n/a).
-
-IDŐABLAKOK – KIVONAT
---------------------
-#1 – After-hours (22:00–02:00) + Premarket (10:00–15:30)
-    - Bázis: az utolsó teljes RTH (Regular Trading Hours) záróár,
-      az első pre/post gyertya előtti utolsó 5m candle close.
-    - AH_zár: a 22:00–02:00 CEST ablakban elérhető utolsó pre/post
-      5m gyertya záróára. Ha nincs ilyen, AH = n/a.
-    - PM_zár: a 10:00–15:30 CEST ablakban elérhető utolsó pre/post
-      5m gyertya záróára. Ha nincs ilyen, PM = n/a.
-    - AH% = (AH_zár - RTH_zár) / RTH_zár * 100.
-    - PM% = (PM_zár - RTH_zár) / RTH_zár * 100.
-    - Jelentésben két tizedesre kerekítve jelenik meg.
-
-#2 – Tegnapi nyitástól zárásig (Open→Close)
-    - Időablak: előző kereskedési nap US RTH, 15:30–22:00 CEST.
-    - Open→Close% = (Close - Open) / Open * 100.
-
-#3 – Ma nyitástól mostanáig (Open→Most)
-    - Időablak: aktuális nap US RTH 15:30 CEST → lekérdezés pillanata.
-    - Open→Most% = (Last - Open) / Open * 100.
-    - Opcionálisan: High/Open és Low/Open %.
-
-MI FUT JELENLEG PYTHON-SCRIPTBŐL (#1, VERZIÓ ~2.2.3)
-----------------------------------------------------
-A #1-es jelentésben jelenleg a Python-script (report_runner.py) feladata:
-
-- MASTER CSV beolvasása:
-    - darabszámos pozíciók azonosítása (quantity > 0),
-    - watchlist-tickerek azonosítása (nincs darabszám vagy <= 0),
-    - K/L/M/Eladasi ar oszlopok numeric parse + defaultok.
-
-- Árfolyamok lekérése Yahoo v8 2d/5m includePrePost alapján:
-    - RTH_zár (utolsó RTH 5m candle close),
-    - AH_zár (utolsó pre/post candle 22:00–02:00 között),
-    - PM_zár (utolsó pre/post candle 10:00–15:30 között).
-
-- Százalékos mozgások számítása:
-    - AH% = (AH_zár - RTH_zár) / RTH_zár * 100 (ha van AH_zár, különben n/a),
-    - PM% = (PM_zár - RTH_zár) / RTH_zár * 100 (ha van PM_zár, különben n/a),
-    - két tizedesre kerekítve.
-
-- Küszöbkezelés:
-    - K-t a MASTER-ből olvassa; ha hiányzik: K=3,
-    - darabszámos blokk: MINDEN pozíció szerepel, jelzi, ha van ≥K mozgás,
-    - watchlist blokk: CSAK azok kerülnek be, ahol max(|AH%|, |PM%|) ≥ K.
-
-- Lefedettség:
-    - ha minden tickerre sikerült adatot húzni → „Lefedettség: TELJES”,
-    - ha bármelyiknél forráshiba van (HTTP error, chart_error, no_result) → HIÁNYOS,
-      és felsorolja az érintett tickereket.
-
-- Jelentés struktúra:
-    - Lefedettség-blokk,
-    - „Politika/FED / Trump-napihír” címke + makró szöveg (ha a workflow-ból érkezik),
-    - Darabszámos blokk,
-    - Watchlist blokk (csak ≥K),
-    - Időbélyeg: „Job summary generated at run-time (...)”.
-
-MI NEM FUT MÉG AUTOMATÁN, CSAK WEBES / MANUÁLIS RÉTEGBEN
---------------------------------------------------------
-A #1-es jelentés célállapota a biblia szerint, de JELENLEG (2.2.3 környékén)
-ezeket még nem a Python-script intézi:
-
-- Politika/FED / „Trump-napihír” tartalmi kitöltése:
-    - most a workflow `macro` paraméteréből jön egy szöveg,
-      amit ember ír (Reuters/AP/FED hírek alapján).
-
-- „Bejelentések & fel/lemínősítések” blokk:
-    - MarketBeat / StreetInsider / TipRanks alapján,
-    - automata összefűzés még nincs leprogramozva.
-
-- „Közeli katalizátorok” (earnings, guidemódosítás, események):
-    - earnings-calendar alapú automata kigyűjtés még nincs scriptben.
-
-- „Listán kívüli, 3–12 hó high-conviction jelöltek”:
-    - Yahoo + MarketBeat kombó alapján,
-    - jelenleg manuális összeállítás, scriptben TODO.
-
-- „Eladott pozíciók – aktuális ár az eladási árhoz képest” blokk:
-    - az Eladasi ar oszlop beolvasása már elképzelhető,
-      de dedikált riportblokk (pl. „X% alá/fölé jött az exithez képest”)
-      még NINCS generálva Pythonból.
-
-A KÖVETKEZŐ LÉPÉSEK #1-HEZ
----------------------------
-Ha a script fejlesztése tovább halad, a fenti PYTHON- vs. MANUÁLIS-lista
-szolgál kiindulópontként. A cél, hogy:
-
-- a teljes #1-es biblia logika (makró, bejelentések, katalizátorok,
-  high-conviction, Eladasi ar-blokk) fokozatosan átköltözzön a Python-scriptbe,
-- a webes / manuális réteg legfeljebb finomhangolásra, magyarázatra kelljen.
-
-"""
-
-from __future__ import annotations
-import os
-import json
-from typing import List, Optional, Dict, Any
-
-# Használható konstans, ha máshonnan is hivatkozni akarunk a RAW #1-es linkre
-GIST_REPORT1_RAW_URL = "https://gist.githubusercontent.com/zoleevegh/5df443b8a46ef863cdc97aad62756510/raw/summary_report_1.md"
+          Get-Content "$out" -TotalCount 5 | ForEach-Object { Write-Host "CSV> $_" }
 
 
-def get_report1_checklist() -> List[str]:
-    """
-    #1 – After-hours (22:00–02:00) + Premarket (10:00–15:30) — CEST
-
-    Rövid ellenőrző lista ahhoz, hogy a script által generált #1-es jelentés
-    megfelel-e a bibliának. A lista elemei végigzongorázhatók debug során.
-    """
-    return [
-        # Időzóna és árforrás
-        "Időzóna: Europe/Budapest (CET/CEST).",
-        "Árforrás: Yahoo Finance v8 2d/5m, includePrePost=true, US trading day.",
-        "Bázisár: RTH_zár = első pre/post gyertya előtti utolsó RTH 5m candle close.",
-        # AH/PM számolás
-        "AH_zár: 22:00–02:00 CEST közötti utolsó pre/post 5m candle záróára (ha nincs: AH=n/a).",
-        "PM_zár: 10:00–15:30 CEST közötti utolsó pre/post 5m candle záróára (ha nincs: PM=n/a).",
-        "AH% = (AH_zár - RTH_zár) / RTH_zár * 100, két tizedesre kerekítve.",
-        "PM% = (PM_zár - RTH_zár) / RTH_zár * 100, két tizedesre kerekítve.",
-        "Ha nincs releváns AH/PM candle, akkor a reportban 'AH n/a' vagy 'PM n/a' szerepel, ez nem lefedettség-hiba.",
-        # Lefedettség, sorrend
-        "Jelentés elején kötelező a Lefedettség-blokk: TELJES vagy HIÁNYOS + tickerek okaival.",
-        "Darabszámos pozíció: MASTER-ben quantity > 0 → mindig megjelenik a darabszámos blokkban.",
-        "Watchlist: ahol nincs quantity vagy az <= 0 → csak a watchlist-blokkban jelenik meg.",
-        # Küszöbök
-        "K oszlop: ticker-specifikus % küszöb; ha üres/hibás, implicit K=3.",
-        "Darabszámos blokk: minden pozíció szerepel, de jelölve, ha max(|AH%|,|PM%|) ≥ K.",
-        "Watchlist-blokk: CSAK azok a tickerek szerepelnek, ahol max(|AH%|,|PM%|) ≥ K.",
-        # Sor-formátumok
-        "Darabszámos sor-formátum: 'TICKER — AH +x.xx% | PM -y.yy% — komment / vagy: Egyelőre nincs küszöb feletti AH/PM elmozdulás.'.",
-        "Watchlist sor-formátum: 'TICKER — AH +x.xx% | PM -y.yy% — Watchlisten is érdemi AH/PM elmozdulás (≥K=...) az utolsó RTH záróhoz képest.'.",
-        # Eladasi ar
-        "Eladasi ar diff_pct = (aktuális ár - Eladasi ar) / Eladasi ar * 100, ha van eladási ár – jelenleg opcionális, külön blokk még nincs implementálva.",
-        # Híres blokkok – target állapot
-        "Politika/FED / Trump-napihír blokk: jelenleg a workflow 'macro' paramétere adja a szöveget (nem automata scraping).",
-        "Bejelentések & fel/lemínősítések blokk: biblia szerint MarketBeat/StreetInsider alapú, de Pythonban még TODO.",
-        "Közeli katalizátorok blokk: earnings / események listázása – jelenleg manuális, Pythonban TODO.",
-        "Listán kívüli, 3–12 hónapos high-conviction blokk: csak portfólión/watchlisten kívüli nevekkel – jelenleg manuális, Pythonban TODO.",
-        # Időbélyeg
-        "Jelentés végén kötelező az időbélyeg: 'Job summary generated at run-time (ISO8601 CEST)'.",
-    ]
-
-
-def get_report2_checklist() -> List[str]:
-    """
-    #2 – Tegnapi nyitástól zárásig (Open→Close) jelentés.
-    """
-    return [
-        "Időablak: előző kereskedési nap US RTH, 15:30–22:00 CEST (Open→Close).",
-        "Árforrás: Yahoo Finance OHLC / intraday chart; Open és Close elegendő.",
-        "Open→Close% = (Close - Open) / Open * 100, két tizedesre.",
-        "Lefedettség-blokk a jelentés elején: TELJES / HIÁNYOS a biblia szerint.",
-        "Makró/FED/politika blokk a lefedettség után (előző napra).",
-        "Darabszámos & watchlist tickerek forrása: MASTER (ugyanaz, mint #1-nél).",
-        "K oszlop: ticker-specifikus % mozgás küszöb; üres/hibás: K=3.",
-        "L/M oszlop: vol és 52w high/low közelség küszöb – opcionális, ha a script használja.",
-        "Darabszámosaknál minden |Open→Close%| ≥ K kötelezően jelentendő.",
-        "Watchlisten |Open→Close%| ≥ K vagy anyagilag lényeges hír esetén kerül be.",
-        "Minden 3%+ mozgásnál pontos % + 1 mondatos ok.",
-        "Sor-formátum: 'TICKER — Open→Close +x.xx% — rövid indok (eredmény, guide, M&A, makró stb.)'.",
-        "Opcionális: High/Open és Low/Open százalékok hozzáírása.",
-        "Blokksorrend: Lefedettség → Makró/FED → Darabszámos → Watchlist → Bejelentések & fel/lemínősítések → Katalizátorok → High-conviction.",
-        "Bejelentések & fel/lemínősítések: darabszámosaknál minden material event; watchlisten csak anyagilag lényeges.",
-        "Eladasi ar diff_pct (ha használjuk): (Close - Eladasi ar) / Eladasi ar * 100, kiegészítő infóként.",
-    ]
-
-
-def get_report3_checklist() -> List[str]:
-    """
-    #3 – Ma nyitástól mostanáig (Open→Most) jelentés.
-    """
-    return [
-        "Időablak: aktuális nap US RTH nyitástól (15:30 CEST) a lekérdezés pillanatáig (Open→Most).",
-        "Árforrás: Yahoo Finance intraday chart (1m/5m) vagy Open + utolsó elérhető ár.",
-        "Open→Most% = (Last - Open) / Open * 100, két tizedesre.",
-        "Opcionálisan High/Open és Low/Open % is számolható.",
-        "Lefedettség-blokk a jelentés elején: TELJES / HIÁNYOS.",
-        "Ha nap közben érkezett fontos makró/FED hír, a lefedettség után külön blokkban szerepel.",
-        "Darabszámos és watchlist-tickerek forrása: MASTER; K/L/M és Eladasi ar szabályok ugyanazok, mint #1/#2.",
-        "K: intraday % küszöb (alap 3%), ticker szinten felülírható.",
-        "Eladasi ar diff_pct = (Last - Eladasi ar) / Eladasi ar * 100, ha van adat.",
-        "Darabszámosaknál minden |Open→Most%| ≥ K kötelezően jelentendő.",
-        "Watchlisten: |Open→Most%| ≥ K vagy anyagilag lényeges hír esetén kerül a riportba.",
-        "Minden 3%+ mozgásnál pontos % + egy mondatos indok.",
-        "Sor-formátum: 'TICKER — Open→Most +x.xx% (High/Open +y.yy%, Low/Open -z.zz%) — rövid indok.' (a zárójeles rész opcionális).",
-        "Blokksorrend: Lefedettség → Makró/FED (intraday) → Darabszámos → Watchlist → Bejelentések & fel/lemínősítések → Közeli katalizátorok (pl. zárás utáni jelentés) → High-conviction.",
-        "Intraday Bejelentések & fel/lemínősítések: minden friss, material event, ami látványos intraday mozgást okoz.",
-    ]
-
-
-# --- Makró / elemzői / katalizátor / high-conviction helper függvények ---
-
-import time
-import datetime as _dt
-from typing import List, Optional, Dict, Any
-
-import requests
-
-_SESSION = requests.Session()
-_SESSION.headers.update(
-    {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Connection": "keep-alive",
+- name: Fetch macro news (Yahoo/CNBC/Bloomberg)
+  shell: pwsh
+  run: |
+    $report = "${{ steps.vars.outputs.report }}"
+    if (-not $report) { $report = "1" }
+    if (-not (Test-Path "scripts\macro_news_fetcher.py")) {
+      Write-Host "macro_news_fetcher.py nem található – makróhírek nélkül fut tovább."
     }
-)
+    else {
+      python "scripts\macro_news_fetcher.py" $report
+    }
 
+      - name: Run report (#1/#2/#3)
+        shell: pwsh
+        run: |
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+          $env:PYTHONIOENCODING = "utf-8"
 
-def _safe_get_json(url: str, params: Optional[Dict[str, Any]] = None, timeout: int = 10) -> Optional[Dict[str, Any]]:
-    """Biztonságos JSON-letöltés – hiba esetén None-t ad vissza."""
-    try:
-        resp = _SESSION.get(url, params=params or {}, timeout=timeout)
-        resp.raise_for_status()
-        return resp.json()
-    except Exception:
-        return None
+          $report = "${{ steps.vars.outputs.report }}"
+          $csv    = "reports\master.csv"
+          $macro  = "${{ steps.vars.outputs.macro }}"
 
+          if (-not (Test-Path "scripts\report_runner.py")) {
+            Write-Error "scripts\report_runner.py hiányzik a repóban"
+            exit 1
+          }
 
-# --- Politika / FED / piaci hangulat ---
+          $summaryPath = "reports\summary_report_${report}.md"
 
-def fetch_yahoo_macro_news(report_type: int = 1, now_cet: Optional[object] = None) -> List[str]:
-    """
-    Politika / FED / piaci hangulat hírek (váz – scraper nélkül).
+          python -X utf8 "scripts\report_runner.py" `
+            --report $report `
+            --csv "$csv" `
+            --summary "$summaryPath" `
+            --macro $macro
 
-    IDŐABLAKOK (hírekre, CEST):
-    - report_type 1 vagy 2 esetén: előző kereskedési nap 15:30 → now_cet
-    - report_type 3 esetén: előző piaczárás 22:00 → now_cet
+          if (Test-Path $summaryPath) {
+            Get-Content $summaryPath | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8
+          } else {
+            Write-Host "Nincs summary fájl (expected: $summaryPath)"
+          }
 
-    A gyakorlatban:
-    - #1 és #2: az előző US RTH nyitástól (15:30) számítva minden makró/FED/politikai hír,
-      ami a mostani lekérdezésig kijött (beleértve a hétvégét is, ha hétfőn fut),
-    - #3: az előző zárás (22:00) után érkező hírek a lekérdezés pillanatáig.
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: report-bundle
+          path: reports/**
+          if-no-files-found: warn
 
-    FORRÁS-PRIÓ (makró blokkhoz – később scraperrel):
-    - Yahoo Finance (piaci összefoglalók, index- és makrókommentárok),
-    - CNBC (Market / Economy / Politics szekciók),
-    - Bloomberg Markets / Economics (ha elérhető).
+      # Fix Gist frissítése – ebbe kerül mindig a legutóbbi #1-es jelentés
+      - name: Update fixed Gist with #1 report
+        if: always()
+        shell: pwsh
+        env:
+          # Ezt az ID-t a saját Gist URL-edből vedd ki:
+          # https://gist.github.com/zoleevegh/THIS_IS_THE_GIST_ID
+          GIST_ID: 5df443b8a46ef863cdc97aad62756510   # <- ha más az ID-d, írd át
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+        run: |
+          if (-not $env:GIST_TOKEN) {
+            Write-Host "No GIST_TOKEN secret – skip Gist update."
+            exit 0
+          }
 
-    Jelenlegi implementáció:
-    - Csak egy váz: a tényleges scraping / JSON-előkészítés külön workflow-ban
-      valósítható meg (pl. reports/macro_news_1.json stb.),
-    - Itt garantáljuk, hogy mindig egy lista tér vissza (akár üresen),
-      így a format_macro_block biztonságosan tud dolgozni vele.
-    """
-    # Jelenleg még nincs scraper – üres lista, hogy a hívó oldal ne dőljön el.
-    return []
+          $path = "reports\summary_report_1.md"
 
+          if (-not (Test-Path $path)) {
+            Write-Host "summary_report_1.md nem található – valószínűleg nem #1-es riport futott. Skip."
+            exit 0
+          }
 
-def format_macro_block(macro_text: Optional[str], yahoo_news: List[str]) -> str:
-    """
-    Politika / FED / piaci hangulat blokk formázása.
+          Write-Host "summary_report_1.md beolvasása: $path"
+          $content = Get-Content -Raw $path
 
-    - Ha van manuális macro_text → azt használjuk.
-    - Ha csak hírek vannak → ezekből készül egy rövid összefoglaló.
-    - Ha semmi sincs → generikus fallback szöveget adunk vissza.
-    """
-    lines: List[str] = []
-    title = "**Politika / FED / piaci hangulat**"
-
-    text = (macro_text or "").strip()
-    # Ha valaha "auto" kerülne ide, kezeljük üresként, ne jelenjen meg a szó.
-    if text.lower() == "auto":
-        text = ""
-
-    cleaned_news = [n.strip() for n in yahoo_news if isinstance(n, str) and n.strip()]
-
-    if text:
-        lines.append(title)
-        lines.append(text)
-    elif cleaned_news:
-        lines.append(title)
-        lines.append("Rövid makró/piaci összefoglaló a legfrissebb hírek alapján:")
-        for item in cleaned_news:
-            lines.append(f"- {item}")
-    else:
-        # Fallback: nincs releváns hír, de a blokk akkor is jelenjen meg.
-        lines.append(title)
-        lines.append(
-            "Ma nem érkezett érdemi politikai vagy FED-bejelentés; "
-            "a piacok elsősorban a vállalati hírekre és makroadatokra fókuszálnak."
-        )
-
-    return "\n".join(lines)
-
-
-# --- Elemzői események (fel/lemínősítések, céláremelések) ---
-
-def _load_json_list(path: str) -> List[Any]:
-    """Egyszerű JSON-lista betöltő helper – hiba esetén üres listát ad."""
-    try:
-        full = os.path.join(os.getcwd(), path)
-        if not os.path.exists(full):
-            return []
-        with open(full, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if isinstance(data, list):
-            return data
-    except Exception:
-        return []
-    return []
-
-
-def fetch_analyst_events(path: str = "reports/analyst_1.json") -> List[str]:
-    """Elemzői fel/lemínősítések eseményeinek betöltése opcionális JSON-fájlból."""
-    raw = _load_json_list(path)
-    events: List[str] = []
-    for item in raw:
-        if isinstance(item, str):
-            txt = item.strip()
-        elif isinstance(item, dict):
-            txt = str(item.get("text", "")).strip()
-        else:
-            txt = str(item).strip()
-        if txt:
-            events.append(txt)
-    return events
-
-
-def format_analyst_block(events: List[str]) -> str:
-    if not events:
-        return ""
-    lines = ["**Bejelentések & elemzői fel/lemínősítések**"]
-    for e in events:
-        e = str(e).strip()
-        if not e:
-            continue
-        lines.append(f"- {e}")
-    return "\n".join(lines)
-
-
-# --- Közeli katalizátorok ---
-
-def fetch_catalyst_events(path: str = "reports/catalysts_1.json") -> List[str]:
-    """Közeli (3–12 hónapos) katalizátorok betöltése opcionális JSON-fájlból."""
-    raw = _load_json_list(path)
-    events: List[str] = []
-    for item in raw:
-        if isinstance(item, str):
-            txt = item.strip()
-        elif isinstance(item, dict):
-            txt = str(item.get("text", "")).strip()
-        else:
-            txt = str(item).strip()
-        if txt:
-            events.append(txt)
-    return events
-
-
-def format_catalyst_block(events: List[str]) -> str:
-    if not events:
-        return ""
-    lines = ["**Közeli katalizátorok (3–12 hónap)**"]
-    for e in events:
-        e = str(e).strip()
-        if not e:
-            continue
-        lines.append(f"- {e}")
-    return "\n".join(lines)
-
-
-# --- High-conviction (3–12 hónapos, listán kívüli jelöltek) ---
-
-def _yahoo_reco_and_price(ticker: str) -> Optional[Dict[str, Any]]:
-    """
-    Yahoo Finance quoteSummary lekérése egy tickerre – recommendation + PT + ár.
-
-    Visszatérési érték (siker esetén):
-        {
-          "ticker": ...,
-          "current": float,
-          "target_mean": float,
-          "upside_pct": float,
-          "num_analysts": int,
-          "strongBuy": int,
-          "buy": int,
-          "hold": int,
-          "sell": int,
-          "strongSell": int,
-        }
-    """
-    url = f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{ticker}"
-    params = {"modules": "financialData,defaultKeyStatistics,recommendationTrend"}
-    data = _safe_get_json(url, params=params)
-    try:
-        result = data["quoteSummary"]["result"][0]
-    except Exception:
-        return None
-
-    try:
-        fin = result.get("financialData", {})
-        stats = result.get("defaultKeyStatistics", {})
-        reco = result.get("recommendationTrend", {})
-
-        current = fin.get("currentPrice", {}).get("raw")
-        target_mean = fin.get("targetMeanPrice", {}).get("raw")
-        num_analysts = stats.get("numberOfAnalystOpinions", {}).get("raw")
-
-        trend = reco.get("trend", [])
-        latest = trend[0] if trend else {}
-        strong_buy = latest.get("strongBuy", 0) or 0
-        buy = latest.get("buy", 0) or 0
-        hold = latest.get("hold", 0) or 0
-        sell = latest.get("sell", 0) or 0
-        strong_sell = latest.get("strongSell", 0) or 0
-
-        if not current or not target_mean or not num_analysts:
-            return None
-
-        upside_pct = (float(target_mean) - float(current)) / float(current) * 100.0
-
-        return {
-            "ticker": ticker,
-            "current": float(current),
-            "target_mean": float(target_mean),
-            "upside_pct": float(upside_pct),
-            "num_analysts": int(num_analysts),
-            "strongBuy": int(strong_buy),
-            "buy": int(buy),
-            "hold": int(hold),
-            "sell": int(sell),
-            "strongSell": int(strong_sell),
-        }
-    except Exception:
-        return None
-
-
-def _load_sp500_universe() -> List[str]:
-    """S&P500 ticker-univerzum lekérése publikus forrásból.
-
-    Ha a hálózati hívás sikertelen, üres listát ad vissza.
-    """
-    url = "https://datahub.io/core/s-and-p-500-companies/r/constituents.json"
-    data = _safe_get_json(url)
-    if not data:
-        return []
-    tickers: List[str] = []
-    for row in data:
-        sym = str(row.get("Symbol", "")).strip().upper()
-        if sym:
-            tickers.append(sym)
-    return sorted(set(tickers))
-
-
-def _filter_highconv_candidates(
-    tickers: List[str],
-    min_upside_pct: float = 15.0,
-    min_analysts: int = 10,
-    min_buy_ratio: float = 0.70,
-    hard_upside_boost: float = 25.0,
-    max_count: int = 10,
-) -> List[Dict[str, Any]]:
-    """High-conviction jelöltek szűrése az univerzumon belül."""
-    results: List[Dict[str, Any]] = []
-
-    for sym in tickers:
-        info = _yahoo_reco_and_price(sym)
-        if not info:
-            continue
-
-        num = info["num_analysts"]
-        if num < min_analysts:
-            continue
-
-        strong_buy = info["strongBuy"]
-        buy = info["buy"]
-        hold = info["hold"]
-        sell = info["sell"]
-        strong_sell = info["strongSell"]
-
-        total_cov = strong_buy + buy + hold + sell + strong_sell
-        if total_cov <= 0:
-            continue
-
-        buy_ratio = (strong_buy + buy) / float(total_cov)
-        upside = info["upside_pct"]
-
-        # Alap szűrők (Zoli-paraméterek)
-        if upside < min_upside_pct and upside < hard_upside_boost:
-            continue
-        if buy_ratio < min_buy_ratio:
-            continue
-
-        info["buy_ratio"] = buy_ratio
-        results.append(info)
-
-        if len(results) >= max_count * 3:
-            break
-
-        time.sleep(0.2)
-
-    results_sorted = sorted(results, key=lambda x: x.get("upside_pct", 0.0), reverse=True)
-    return results_sorted[:max_count]
-
-
-def generate_highconviction_json(
-    path: str = "reports/highconviction_1.json",
-    min_upside_pct: float = 15.0,
-    min_analysts: int = 10,
-    min_buy_ratio: float = 0.70,
-    hard_upside_boost: float = 25.0,
-    max_count: int = 10,
-) -> List[Dict[str, Any]]:
-    """Automatikus high-conviction lista generálása (S&P500-univerzumra)."""
-    tickers = _load_sp500_universe()
-    if not tickers:
-        return []
-
-    candidates = _filter_highconv_candidates(
-        tickers=tickers,
-        min_upside_pct=min_upside_pct,
-        min_analysts=min_analysts,
-        min_buy_ratio=min_buy_ratio,
-        hard_upside_boost=hard_upside_boost,
-        max_count=max_count,
-    )
-    if not candidates:
-        return []
-
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-
-    payload: List[Dict[str, Any]] = []
-    for c in candidates:
-        ticker = c["ticker"]
-        upside = c["upside_pct"]
-        strong_buy = c["strongBuy"]
-        buy = c["buy"]
-        hold = c["hold"]
-        sell = c["sell"]
-        strong_sell = c["strongSell"]
-        target_mean = c["target_mean"]
-        current = c["current"]
-
-        text = (
-            f"{ticker} – {upside:.1f}% konszenzus upside a 12M célárhoz képest, "
-            f"Strong Buy: {strong_buy}, Buy: {buy}, Hold: {hold}, Sell: {sell}, Strong Sell: {strong_sell}. "
-            f"Célár (mean): {target_mean:.2f}, aktuális ár: {current:.2f}."
-        )
-
-        payload.append(
-            {
-                "ticker": ticker,
-                "text": text,
-                "upside_pct": upside,
-                "strongBuy": strong_buy,
-                "buy": buy,
-                "hold": hold,
-                "sell": sell,
-                "strongSell": strong_sell,
-                "target_mean": target_mean,
-                "current": current,
+          $body = @{
+            files = @{
+              "summary_report_1.md" = @{
+                content = $content
+              }
             }
-        )
+          }
 
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
+          $json = $body | ConvertTo-Json -Depth 5
 
-    return payload
+          $url  = "https://api.github.com/gists/$($env:GIST_ID)"
+          Write-Host "PATCH $url"
 
+          $resp = curl.exe -s -X PATCH $url `
+            -H "Authorization: Bearer $($env:GIST_TOKEN)" `
+            -H "Accept: application/vnd.github+json" `
+            -H "Content-Type: application/json" `
+            -d $json
 
-def fetch_highconviction_events(path: str = "reports/highconviction_1.json") -> List[str]:
-    """
-    High-conviction (3–12 hó) jelöltek betöltése.
+          Write-Host "Gist PATCH response:"
+          Write-Host $resp
 
-    Ha a fájl nem létezik vagy üres, megpróbál automatikusan egy új JSON-t generálni
-    a fenti szabályok alapján (S&P500-univerzumra).
-
-    A visszatérési érték egy már display-ready lista:
-        ["SMCI – ...", "NVO – ...", ...]
-    """
-    full = os.path.join(os.getcwd(), path)
-
-    if not os.path.exists(full):
-        candidates = generate_highconviction_json(path=full)
-        return [f"{c['ticker']} – {c['text'].split('–', 1)[-1].strip()}" for c in candidates]
-
-    try:
-        with open(full, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except Exception:
-        candidates = generate_highconviction_json(path=full)
-        return [f"{c['ticker']} – {c['text'].split('–', 1)[-1].strip()}" for c in candidates]
-
-    events: List[str] = []
-
-    if isinstance(data, list):
-        for item in data:
-            if isinstance(item, str):
-                txt = item.strip()
-                if txt:
-                    events.append(txt)
-            elif isinstance(item, dict):
-                ticker = str(item.get("ticker", "")).strip().upper()
-                text = str(item.get("text", "")).strip()
-                if ticker and text:
-                    events.append(f"{ticker} – {text}")
-                elif text:
-                    events.append(text)
-
-    if not events:
-        candidates = generate_highconviction_json(path=full)
-        return [f"{c['ticker']} – {c['text'].split('–', 1)[-1].strip()}" for c in candidates]
-
-    return events
-
-
-def format_highconviction_block(events: List[str]) -> str:
-    if not events:
-        return ""
-    lines = ["**Listán kívüli, 3–12 hónapos high-conviction jelöltek**"]
-    for e in events:
-        e = str(e).strip()
-        if not e:
-            continue
-        lines.append(f"- {e}")
-    return "\n".join(lines)
+          # ⬇⬇ Itt írjuk ki a cache-bontó raw URL-t az aktuális run ID-val
+          "Raw URL for this run:" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          "https://gist.githubusercontent.com/zoleevegh/5df443b8a46ef863cdc97aad62756510/raw/summary_report_1.md?run=$env:GITHUB_RUN_ID" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
 
