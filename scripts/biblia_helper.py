@@ -339,6 +339,8 @@ def _safe_get_json(url: str, params: Optional[Dict[str, Any]] = None, timeout: i
 
 # --- Politika / FED / piaci hangulat ---
 
+# --- Politika / FED / piaci hangulat ---
+
 def fetch_yahoo_macro_news(report_type: int = 1, now_cet: Optional[object] = None) -> List[str]:
     """
     Politika / FED / piaci hangulat hírek – JSON-alapú feed a makróblokkhoz.
@@ -482,11 +484,7 @@ def format_macro_block(macro_text: Optional[str], yahoo_news: List[str]) -> str:
             "a piacok elsősorban a vállalati hírekre és makroadatokra fókuszálnak."
         )
 
-    return "
-".join(lines)
-
-
-# --- Elemzői események (fel/lemínősítések, céláremelések) ---
+    return "\n".join(lines)
 
 
 def _load_json_list(path: str) -> List[Any]:
