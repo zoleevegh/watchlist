@@ -23,6 +23,9 @@ A legutóbbi #1-es jelentés (After-hours + Premarket) mindig itt érhető el RA
 
 https://gist.githubusercontent.com/zoleevegh/5df443b8a46ef863cdc97aad62756510/raw/summary_report_1.md
 
+Ezt a GitHub Action minden #1-es futás után automatikusan frissíti a
+`reports/summary_report_1.md` tartalmával. Ha bármi elveszne, innen bármikor
+lekérhető a legutolsó #1-es riport.
 
 A #2-es és #3-as jelentések fix, kanonikus RAW linkjei:
 
@@ -45,11 +48,18 @@ A GitHub Gist RAW linkeknél erős cache-elés lehet (CDN/böngésző). Ezért:
   mindig egyedi query paraméterrel kérdezzük le, ha a „legutóbbi” jelentést
   kell látni.
 
-Ezeket kell kanonikus forrásként használni, ha egy adott napra utólag
-„vissza kell nézni” a legutóbbi előállított #1/#2/#3 riportot.
-Ezt a GitHub Action minden #1-es futás után automatikusan frissíti a
-`reports/summary_report_1.md` tartalmával. Ha bármi elveszne, innen bármikor
-lekérhető a legutolsó #1-es riport.
+MAKRÓ / FED / POLITIKA BLOKK KEZELÉSE
+-------------------------------------
+A makró / FED / piaci hangulat blokkot NEM a script állítja elő automatikusan.
+A #1/#2/#3 futások csak a ticker-szintű adatokat, mozgásokat, elemzői /
+katalizátor / high‑conviction eseményeket írják ki a summary_report_*.md
+fájlokba.
+Amikor a felhasználó teljes #1/#2/#3 jelentést kér, ChatGPT a friss
+hírforrások (Reuters, Bloomberg, AP, Yahoo Finance, Investing, MarketBeat stb.)
+alapján KÉZZEL ír egy strukturált makróblokkot (Fed/kamatvárakozások,
+indexek, piaci hangulat, politika), és ezt a script által generált riport
+elé illeszti a válaszban.
+
 
 FONTOS ALAPELVEK (MINDEN JELENTÉSRE)
 ------------------------------------
