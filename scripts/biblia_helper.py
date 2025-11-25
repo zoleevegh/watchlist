@@ -27,40 +27,6 @@ Ezt a GitHub Action minden #1-es futás után automatikusan frissíti a
 `reports/summary_report_1.md` tartalmával. Ha bármi elveszne, innen bármikor
 lekérhető a legutolsó #1-es riport.
 
-A #2-es és #3-as jelentések fix, kanonikus RAW linkjei:
-
-#2 – Tegnapi nyitástól zárásig (Open→Close) jelentés:
-https://gist.githubusercontent.com/zoleevegh/31b8daf60f983fbdfe37e3d0f2251fc7/raw/summary_report_2.md
-
-#3 – Mai nyitástól mostanáig (Open→Most) jelentés:
-https://gist.githubusercontent.com/zoleevegh/8f77c3b0ec040030d492859095686030/raw/summary_report_3.md
-
-GIST RAW LINK HASZNÁLAT – CACHE-BONTÁS
---------------------------------------
-A GitHub Gist RAW linkeknél erős cache-elés lehet (CDN/böngésző). Ezért:
-- Ha a legfrissebb #1/#2/#3 riportot akarjuk lekérdezni, a fenti fix RAW
-  URL-ek mögé MINDIG tegyünk egy egyedi query paramétert, pl.:
-  `?run=<GitHub run_id>` vagy `?ts=<timestamp>`.
-- A GitHub Action summary-ben is ilyen cache-bontó paraméterrel jelenjen meg
-  a link (pl. `...?run=${{ github.run_id }}`), hogy se a böngésző, se a CDN
-  ne adja vissza a korábbi verziót.
-- ChatGPT oldalon is alapértelmezett szabály, hogy a fix gist linket
-  mindig egyedi query paraméterrel kérdezzük le, ha a „legutóbbi” jelentést
-  kell látni.
-
-MAKRÓ / FED / POLITIKA BLOKK KEZELÉSE
--------------------------------------
-A makró / FED / piaci hangulat blokkot NEM a script állítja elő automatikusan.
-A #1/#2/#3 futások csak a ticker-szintű adatokat, mozgásokat, elemzői /
-katalizátor / high‑conviction eseményeket írják ki a summary_report_*.md
-fájlokba.
-Amikor a felhasználó teljes #1/#2/#3 jelentést kér, ChatGPT a friss
-hírforrások (Reuters, Bloomberg, AP, Yahoo Finance, Investing, MarketBeat stb.)
-alapján KÉZZEL ír egy strukturált makróblokkot (Fed/kamatvárakozások,
-indexek, piaci hangulat, politika), és ezt a script által generált riport
-elé illeszti a válaszban.
-
-
 FONTOS ALAPELVEK (MINDEN JELENTÉSRE)
 ------------------------------------
 - Időzóna: Europe/Budapest (CET/CEST).
@@ -537,7 +503,25 @@ def _load_json_list(path: str) -> List[Any]:
 
 
 def fetch_analyst_events(path: str = "reports/analyst_1.json") -> List[str]:
-    """Elemzői fel/lemínősítések eseményeinek betöltése opcionális JSON-fájlból."""
+    """Elemzői fel/lemínősítések eseményeinek betöltése opcionális JSON-fájlból.
+
+    JSON formátum (5-ös blokk – „Bejelentések & elemzői fel/lemínősítések”):
+    - legegyszerűbb esetben: lista plain szövegekkel, pl.:
+        ["NVDA – Morgan Stanley felminősítés ...", "GOOG – Goldman Sachs PT-emelés ..."]
+    - vagy lista dict-ekkel, pl.:
+        {
+            "ticker": "NVDA",                 # opcionális, a biblia szerinti logikát a JSON-gyártó script intézheti
+            "scope": "portfolio|watchlist",   # opcionális jelölés
+            "material": true,                 # anyagilag lényeges-e
+            "event_type": "upgrade|downgrade|pt_raise|pt_cut|guide|M&A|dividend|buyback|mgmt",
+            "window": 1,                      # 1/2/3 – melyik riportablakhoz tartozik
+            "text": "NVDA – Morgan Stanley felminősítés Equal Weight→Overweight, PT 120→145."
+        }
+
+    Ebben a helperben konzervatívan csak a 'text' mezőt használjuk, a biblia szerinti
+    szűrés/összerakás mehet a JSON-t előállító modulban. Ha csak plain stringek
+    érkeznek, azokat változtatás nélkül bullet formában megjelenítjük az 5-ös blokkban.
+    """
     raw = _load_json_list(path)
     events: List[str] = []
     for item in raw:
@@ -567,7 +551,24 @@ def format_analyst_block(events: List[str]) -> str:
 # --- Közeli katalizátorok ---
 
 def fetch_catalyst_events(path: str = "reports/catalysts_1.json") -> List[str]:
-    """Közeli (3–12 hónapos) katalizátorok betöltése opcionális JSON-fájlból."""
+    """Közeli (3–12 hónapos) katalizátorok betöltése opcionális JSON-fájlból.
+
+    JSON formátum (6-os blokk – „Közeli katalizátorok (3–12 hónap)”):
+    - legegyszerűbb esetben: lista plain szövegekkel, pl.:
+        ["NVDA – új terméklaunch Q1-ben", "CRM – Dreamforce, guidance-update közeleg", ...]
+    - vagy lista dict-ekkel, pl.:
+        {
+            "ticker": "CRM",
+            "scope": "portfolio|watchlist|other",
+            "material": true,
+            "window": 1,
+            "text": "CRM – Dreamforce + guidance update 2 héten belül, potenciális ármozgás-katalizátor."
+        }
+
+    Itt is csak a 'text' mezőt használjuk a formázáshoz; a biblia szerinti válogatás
+    (portfólió vs. watchlist, anyagi lényegesség, ≥±3% mozgás) a JSON-t gyártó modulban
+    történik. Ha csak plain stringek érkeznek, teljes egészében megjelennek a 6-os blokkban.
+    """
     raw = _load_json_list(path)
     events: List[str] = []
     for item in raw:
