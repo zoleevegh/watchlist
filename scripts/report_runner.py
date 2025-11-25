@@ -380,7 +380,7 @@ def generate_model_report(
         coverage_line,
     ]
 
-    # Elemzői lépések + Közeli katalizátorok + High-conviction blokkok
+        # Elemzői lépések / közeli katalizátorok / high-conviction események (5/6/7. blokk)
     analyst_events = fetch_analyst_events(ANALYST_EVENTS_PATH)
     analyst_block = format_analyst_block(analyst_events)
 
@@ -389,21 +389,11 @@ def generate_model_report(
 
     highconv_events = fetch_highconviction_events(HIGHCONV_EVENTS_PATH)
     highconv_block = format_highconviction_block(highconv_events)
+
     lines: List[str] = []
     lines.extend(header_lines)
 
-    if analyst_block:
-        lines.append("")
-        lines.append(analyst_block)
-
-    if catalyst_block:
-        lines.append("")
-        lines.append(catalyst_block)
-
-    if highconv_block:
-        lines.append("")
-        lines.append(highconv_block)
-
+    # 3–4. blokk: ármozgások (darabszámos + watchlist)
     lines.append("")
     lines.append("Darabszámos tickerek – After-hours & Premarket mozgások")
     lines.append("")
@@ -457,8 +447,24 @@ def generate_model_report(
             )
             lines.append(line)
 
+    # 5) Bejelentések & elemzői fel/lemínősítések
+    if analyst_block:
+        lines.append("")
+        lines.append(analyst_block)
+
+    # 6) Közeli katalizátorok (3–12 hónap)
+    if catalyst_block:
+        lines.append("")
+        lines.append(catalyst_block)
+
+    # 7) High-conviction (3–12 hónapos, listán kívüli jelöltek)
+    if highconv_block:
+        lines.append("")
+        lines.append(highconv_block)
+
     lines.append(f"Job summary generated at run-time ({now.isoformat(timespec='minutes')})")
 
+    
     md_text = "\n".join(lines)
 
     os.makedirs(os.path.dirname(output_md), exist_ok=True)
@@ -504,6 +510,9 @@ def generate_report2_macro_only(
         coverage_line,
     ]
 
+    yahoo_macro_news = fetch_yahoo_macro_news(report_type=2, now_cet=now)
+    macro_block = format_macro_block(macro_text or "", yahoo_macro_news)
+
     analyst_events = fetch_analyst_events(ANALYST_EVENTS_PATH)
     analyst_block = format_analyst_block(analyst_events)
 
@@ -515,6 +524,10 @@ def generate_report2_macro_only(
 
     lines: List[str] = []
     lines.extend(header_lines)
+
+    if macro_block:
+        lines.append("")
+        lines.append(macro_block)
 
     if analyst_block:
         lines.append("")
@@ -572,6 +585,9 @@ def generate_report3_macro_only(
         coverage_line,
     ]
 
+    yahoo_macro_news = fetch_yahoo_macro_news(report_type=3, now_cet=now)
+    macro_block = format_macro_block(macro_text or "", yahoo_macro_news)
+
     analyst_events = fetch_analyst_events(ANALYST_EVENTS_PATH)
     analyst_block = format_analyst_block(analyst_events)
 
@@ -583,6 +599,10 @@ def generate_report3_macro_only(
 
     lines: List[str] = []
     lines.extend(header_lines)
+
+    if macro_block:
+        lines.append("")
+        lines.append(macro_block)
 
     if analyst_block:
         lines.append("")
