@@ -23,6 +23,22 @@ A legutóbbi #1-es jelentés (After-hours + Premarket) mindig itt érhető el RA
 
 https://gist.githubusercontent.com/zoleevegh/5df443b8a46ef863cdc97aad62756510/raw/summary_report_1.md
 
+
+A #2-es és #3-as jelentések fix, kanonikus RAW linkjei:
+
+#2 – Tegnapi nyitástól zárásig (Open→Close) jelentés:
+https://gist.githubusercontent.com/zoleevegh/31b8daf60f983fbdfe37e3d0f2251fc7/raw/summary_report_2.md
+
+#3 – Mai nyitástól mostanáig (Open→Most) jelentés:
+https://gist.githubusercontent.com/zoleevegh/8f77c3b0ec040030d492859095686030/raw/summary_report_3.md
+
+Mindhárom linket (1/2/3) a GitHub Action frissíti:
+- #1: reports/summary_report_1.md → summary_report_1.md (Gist #5df4…6510)
+- #2: reports/summary_report_2.md → summary_report_2.md (Gist #31b8…5fc7)
+- #3: reports/summary_report_3.md → summary_report_3.md (Gist #8f77…6030)
+
+Ezeket kell kanonikus forrásként használni, ha egy adott napra utólag
+„vissza kell nézni” a legutóbbi előállított #1/#2/#3 riportot.
 Ezt a GitHub Action minden #1-es futás után automatikusan frissíti a
 `reports/summary_report_1.md` tartalmával. Ha bármi elveszne, innen bármikor
 lekérhető a legutolsó #1-es riport.
