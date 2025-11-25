@@ -32,10 +32,18 @@ https://gist.githubusercontent.com/zoleevegh/31b8daf60f983fbdfe37e3d0f2251fc7/ra
 #3 – Mai nyitástól mostanáig (Open→Most) jelentés:
 https://gist.githubusercontent.com/zoleevegh/8f77c3b0ec040030d492859095686030/raw/summary_report_3.md
 
-Mindhárom linket (1/2/3) a GitHub Action frissíti:
-- #1: reports/summary_report_1.md → summary_report_1.md (Gist #5df4…6510)
-- #2: reports/summary_report_2.md → summary_report_2.md (Gist #31b8…5fc7)
-- #3: reports/summary_report_3.md → summary_report_3.md (Gist #8f77…6030)
+GIST RAW LINK HASZNÁLAT – CACHE-BONTÁS
+--------------------------------------
+A GitHub Gist RAW linkeknél erős cache-elés lehet (CDN/böngésző). Ezért:
+- Ha a legfrissebb #1/#2/#3 riportot akarjuk lekérdezni, a fenti fix RAW
+  URL-ek mögé MINDIG tegyünk egy egyedi query paramétert, pl.:
+  `?run=<GitHub run_id>` vagy `?ts=<timestamp>`.
+- A GitHub Action summary-ben is ilyen cache-bontó paraméterrel jelenjen meg
+  a link (pl. `...?run=${{ github.run_id }}`), hogy se a böngésző, se a CDN
+  ne adja vissza a korábbi verziót.
+- ChatGPT oldalon is alapértelmezett szabály, hogy a fix gist linket
+  mindig egyedi query paraméterrel kérdezzük le, ha a „legutóbbi” jelentést
+  kell látni.
 
 Ezeket kell kanonikus forrásként használni, ha egy adott napra utólag
 „vissza kell nézni” a legutóbbi előállított #1/#2/#3 riportot.
