@@ -296,77 +296,6 @@ def compute_ah_pm_move(
     return rth_close_price, ah_pct, pm_pct
 
 
-def compute_open_to_now_move(
-    meta: dict, timestamps: List[int], closes: List[Optional[float]]
-) -> Tuple[Optional[float], Optional[float], Optional[float], Optional[float], Optional[float]]:
-    """Számolja a #3-hoz szükséges intraday metrikákat a Yahoo 2d/5m chart alapján.
-
-    Visszatérési értékek:
-    - open_price: az aktuális (legutóbbi) RTH kereskedési nap első RTH gyertyájának ára
-    - last_price: az open óta elérhető legutolsó ár (RTH + pre/post egyaránt)
-    - open_to_now_pct: (last_price - open_price) / open_price * 100
-    - high_to_open_pct: az adott napi RTH maximum és a nyitó különbsége %
-    - low_to_open_pct: az adott napi RTH minimum és a nyitó különbsége %
-
-    Ha nincs elég adat (nincs RTH gyertya), minden érték None.
-    """
-    if not timestamps or not closes:
-        return None, None, None, None, None
-
-    tz_name = meta.get("exchangeTimezoneName") or "America/New_York"
-    try:
-        tz = ZoneInfo(tz_name)
-    except Exception:
-        tz = ZoneInfo("America/New_York")
-
-    dts = [dt.datetime.fromtimestamp(t, tz) for t in timestamps]
-
-    # RTH pontok: 09:30–16:00 (tőzsdehelyi idő szerint)
-    rth_points: List[Tuple[dt.datetime, float]] = []
-    all_points: List[Tuple[dt.datetime, float]] = []
-
-    for d, c in zip(dts, closes):
-        if c is None:
-            continue
-        c = float(c)
-        all_points.append((d, c))
-        time = d.time()
-        if (time.hour > 9 or (time.hour == 9 and time.minute >= 30)) and time.hour < 16:
-            rth_points.append((d, c))
-
-    if not rth_points:
-        return None, None, None, None, None
-
-    # Az utolsó olyan nap, amelyre van RTH adat – erre számoljuk a metrikákat
-    latest_rth_date = rth_points[-1][0].date()
-    todays_rth_points = [p for p in rth_points if p[0].date() == latest_rth_date]
-    if not todays_rth_points:
-        return None, None, None, None, None
-
-    open_dt, open_price = todays_rth_points[0]
-
-    # Open óta elérhető legutolsó ár (RTH + pre/post)
-    points_from_open = [p for p in all_points if p[0] >= open_dt]
-    if not points_from_open:
-        last_price = open_price
-    else:
-        last_dt, last_price = points_from_open[-1]
-
-    # Napi RTH maximum és minimum a nyitóhoz viszonyítva
-    prices_today = [p[1] for p in todays_rth_points]
-    high_price = max(prices_today)
-    low_price = min(prices_today)
-
-    if open_price <= 0:
-        return open_price, last_price, None, None, None
-
-    open_to_now_pct = (last_price - open_price) / open_price * 100.0
-    high_to_open_pct = (high_price - open_price) / open_price * 100.0
-    low_to_open_pct = (low_price - open_price) / open_price * 100.0
-
-    return open_price, last_price, open_to_now_pct, high_to_open_pct, low_to_open_pct
-
-
 def fmt_pct(value: Optional[float]) -> str:
     if value is None or math.isnan(value):
         return "n/a"
@@ -451,10 +380,7 @@ def generate_model_report(
         coverage_line,
     ]
 
-    # Politika/FED / Piaci hangulat + Elemzői lépések + Közeli katalizátorok + High-conviction blokkok
-    yahoo_macro_news = fetch_yahoo_macro_news(report_type=1, now_cet=now)
-    macro_block = format_macro_block(macro_text or "", yahoo_macro_news)
-
+    # Elemzői lépések + Közeli katalizátorok + High-conviction blokkok
     analyst_events = fetch_analyst_events(ANALYST_EVENTS_PATH)
     analyst_block = format_analyst_block(analyst_events)
 
@@ -465,10 +391,6 @@ def generate_model_report(
     highconv_block = format_highconviction_block(highconv_events)
     lines: List[str] = []
     lines.extend(header_lines)
-
-    if macro_block:
-        lines.append("")
-        lines.append(macro_block)
 
     if analyst_block:
         lines.append("")
@@ -582,9 +504,6 @@ def generate_report2_macro_only(
         coverage_line,
     ]
 
-    yahoo_macro_news = fetch_yahoo_macro_news(report_type=2, now_cet=now)
-    macro_block = format_macro_block(macro_text or "", yahoo_macro_news)
-
     analyst_events = fetch_analyst_events(ANALYST_EVENTS_PATH)
     analyst_block = format_analyst_block(analyst_events)
 
@@ -596,10 +515,6 @@ def generate_report2_macro_only(
 
     lines: List[str] = []
     lines.extend(header_lines)
-
-    if macro_block:
-        lines.append("")
-        lines.append(macro_block)
 
     if analyst_block:
         lines.append("")
@@ -634,199 +549,6 @@ def generate_report2_macro_only(
     return text
 
 
-
-def generate_report3_with_moves(
-    watchlist_path: Optional[str],
-    script_version: str,
-    k_default: float,
-    output_md: str,
-    output_json: str,
-    macro_text: Optional[str] = None,
-) -> str:
-    """#3 – Ma nyitástól mostanáig – teljes, ticker-szintű Open→Most ármodul + makró/elemző/katalizátor/high-conviction."
-
-    # Pozíciók és watchlist a master alapján (ugyanaz a logika, mint #1-nél)
-    positions = infer_positions_from_watchlist(watchlist_path)
-    watch = load_watchlist(watchlist_path)
-    all_symbols = sorted(set(watch.keys()) | set(positions.keys()))
-
-    missing: Dict[str, str] = {}
-    darab_results: List[dict] = []
-    watch_results: List[dict] = []
-
-    for sym in all_symbols:
-        open_to_now_pct: Optional[float] = None
-        high_to_open_pct: Optional[float] = None
-        low_to_open_pct: Optional[float] = None
-        open_price: Optional[float] = None
-        last_price: Optional[float] = None
-
-        try:
-            meta, ts, closes = fetch_chart(sym)
-            (
-                open_price,
-                last_price,
-                open_to_now_pct,
-                high_to_open_pct,
-                low_to_open_pct,
-            ) = compute_open_to_now_move(meta, ts, closes)
-        except Exception as e:
-            missing[sym] = str(e)
-            continue
-
-        if open_to_now_pct is None:
-            # Nincs értelmezhető intraday mozgás
-            missing[sym] = "no_intraday_data"
-            continue
-
-        is_position = sym in positions and positions[sym].get("quantity", 0) > 0
-        k_val = watch.get(sym, {}).get("k") or k_default
-
-        abs_move = abs(open_to_now_pct or 0.0)
-
-        entry = {
-            "ticker": sym,
-            "open_price": open_price,
-            "last_price": last_price,
-            "open_to_now_pct": open_to_now_pct,
-            "high_to_open_pct": high_to_open_pct,
-            "low_to_open_pct": low_to_open_pct,
-            "is_position": is_position,
-            "k": k_val,
-            "abs_move": abs_move,
-        }
-
-        if is_position:
-            darab_results.append(entry)
-        elif abs_move >= k_val:
-            # Watchlisten csak érdemi intraday mozgásnál (≥K)
-            watch_results.append(entry)
-
-    if not missing:
-        coverage_line = "Lefedettség: TELJES"
-    else:
-        tickers_str = ", ".join(sorted(missing.keys()))
-        coverage_line = (
-            "Lefedettség: HIÁNYOS – nem elérhető ticker(ek): "
-            + tickers_str
-            + " (oka: lásd belső logot / forráshibát)"
-        )
-
-    now = dt.datetime.now(dt.timezone(dt.timedelta(hours=1)))
-
-    header_lines = [
-        "#3 – Mai kereskedési nap: nyitástól mostanáig (15:30-tól) — CEST",
-        "",
-        f"Script verzió: {script_version}",
-        "",
-        "Időablak (CEST): mai kereskedési nap 15:30 → mostanáig (US RTH Open→Most).",
-        "",
-        "Árforrás: Yahoo Finance chart (v8 – 2d/5m, includePrePost; "
-        "mai RTH nyitóár → legutolsó elérhető ár alapján számolt Open→Most / High/Open / Low/Open %).",
-        "",
-        coverage_line,
-    ]
-
-    # Politika/FED / Piaci hangulat + Elemzői lépések + Közeli katalizátorok + High-conviction blokkok
-    yahoo_macro_news = fetch_yahoo_macro_news(report_type=3, now_cet=now)
-    macro_block = format_macro_block(macro_text or "", yahoo_macro_news)
-
-    analyst_events = fetch_analyst_events(ANALYST_EVENTS_PATH)
-    analyst_block = format_analyst_block(analyst_events)
-
-    catalyst_events = fetch_catalyst_events(CATALYST_EVENTS_PATH)
-    catalyst_block = format_catalyst_block(catalyst_events)
-
-    highconv_events = fetch_highconviction_events(HIGHCONV_EVENTS_PATH)
-    highconv_block = format_highconviction_block(highconv_events)
-
-    lines: List[str] = []
-    lines.extend(header_lines)
-
-    if macro_block:
-        lines.append("")
-        lines.append(macro_block)
-
-    if analyst_block:
-        lines.append("")
-        lines.append(analyst_block)
-
-    if catalyst_block:
-        lines.append("")
-        lines.append(catalyst_block)
-
-    if highconv_block:
-        lines.append("")
-        lines.append(highconv_block)
-
-    # Darabszámos tickerek – minden pozíció, Open→Most szerint rendezve
-    darab_sorted = sorted(
-        darab_results,
-        key=lambda x: x.get("abs_move", 0.0),
-        reverse=True,
-    )
-
-    if darab_sorted:
-        lines.append("")
-        lines.append("Darabszámos tickerek – intraday Open→Most mozgások")
-        lines.append("")
-        for entry in darab_sorted:
-            sym = entry["ticker"]
-            open_to_now_pct = entry["open_to_now_pct"]
-            high_to_open_pct = entry["high_to_open_pct"]
-            low_to_open_pct = entry["low_to_open_pct"]
-            line = (
-                f"{sym} — Open→Most {fmt_pct(open_to_now_pct)} | "
-                f"High/Open {fmt_pct(high_to_open_pct)} | Low/Open {fmt_pct(low_to_open_pct)}. "
-                "Darabszámos pozíció intraday mozgása az aktuális RTH nyitóhoz képest."
-            )
-            lines.append(line)
-
-    # Watchlist – csak a küszöböt elérő (≥K) intraday mozgások
-    watch_sorted = sorted(
-        watch_results,
-        key=lambda x: x.get("abs_move", 0.0),
-        reverse=True,
-    )
-
-    if watch_sorted:
-        lines.append("")
-        lines.append("Watchlist – intraday Open→Most mozgások (csak ha ≥K)")
-        lines.append("")
-        for entry in watch_sorted:
-            sym = entry["ticker"]
-            open_to_now_pct = entry["open_to_now_pct"]
-            high_to_open_pct = entry["high_to_open_pct"]
-            low_to_open_pct = entry["low_to_open_pct"]
-            k_val = entry["k"]
-            line = (
-                f"{sym} — Open→Most {fmt_pct(open_to_now_pct)} | "
-                f"High/Open {fmt_pct(high_to_open_pct)} | Low/Open {fmt_pct(low_to_open_pct)} — "
-                f"Watchlisten is érdemi intraday elmozdulás (≥K={k_val:g}) az RTH nyitóhoz képest."
-            )
-            lines.append(line)
-
-    lines.append(f"Job summary generated at run-time ({now.isoformat(timespec='minutes')})")
-
-    md_text = "\n".join(lines)
-
-    os.makedirs(os.path.dirname(output_md), exist_ok=True)
-    with open(output_md, "w", encoding="utf-8") as f:
-        f.write(md_text)
-
-    payload = {
-        "generated_at": now.isoformat(),
-        "script_version": script_version,
-        "coverage_missing": missing,
-        "positions": darab_sorted,
-        "watchlist_moves": watch_sorted,
-    }
-    os.makedirs(os.path.dirname(output_json), exist_ok=True)
-    with open(output_json, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2, ensure_ascii=False)
-
-    return md_text
-
 def generate_report3_macro_only(
     script_version: str,
     output_md: str,
@@ -850,9 +572,6 @@ def generate_report3_macro_only(
         coverage_line,
     ]
 
-    yahoo_macro_news = fetch_yahoo_macro_news(report_type=3, now_cet=now)
-    macro_block = format_macro_block(macro_text or "", yahoo_macro_news)
-
     analyst_events = fetch_analyst_events(ANALYST_EVENTS_PATH)
     analyst_block = format_analyst_block(analyst_events)
 
@@ -864,10 +583,6 @@ def generate_report3_macro_only(
 
     lines: List[str] = []
     lines.extend(header_lines)
-
-    if macro_block:
-        lines.append("")
-        lines.append(macro_block)
 
     if analyst_block:
         lines.append("")
@@ -961,10 +676,8 @@ def main() -> None:
     elif mode == 3:
         summary_path = args.summary or "reports/summary_report_3.md"
         json_path = "reports/latest_3.json"
-        text = generate_report3_with_moves(
-            watchlist_path=watchlist_path,
+        text = generate_report3_macro_only(
             script_version=script_version,
-            k_default=k_default,
             output_md=summary_path,
             output_json=json_path,
             macro_text=args.macro,
