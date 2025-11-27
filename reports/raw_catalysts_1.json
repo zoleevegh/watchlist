@@ -1,0 +1,14 @@
+[
+  {
+    "ticker": "CRM",
+    "event_type": "guide",
+    "headline": "CRM – közelgő Dreamforce + guidance update 2 héten belül",
+    "source": "Yahoo Finance"
+  },
+  {
+    "ticker": "NVDA",
+    "event_type": "earnings",
+    "headline": "NVDA – következő earnings call dátum bejelentve, AI-kereslet fókuszban",
+    "source": "MarketBeat"
+  }
+]
