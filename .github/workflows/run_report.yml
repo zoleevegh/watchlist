@@ -91,6 +91,32 @@ jobs:
 
           Get-Content "$out" -TotalCount 5 | ForEach-Object { Write-Host "CSV> $_" }
 
+      - name: Build raw analyst & catalyst events (#1/#2/#3)
+        shell: pwsh
+        run: |
+          $report = "${{ steps.vars.outputs.report }}"
+          if (-not $report) { $report = "1" }
+
+          if (-not (Test-Path "scripts\crawler_analyst_catalyst.py")) {
+            Write-Host "crawler_analyst_catalyst.py nem található – raw_analyst/raw_catalysts nélkül fut tovább."
+          }
+          else {
+            python -X utf8 "scripts\crawler_analyst_catalyst.py" --report $report
+          }
+
+      - name: Build analyst & catalyst JSON (events_fetcher) (#1/#2/#3)
+        shell: pwsh
+        run: |
+          $report = "${{ steps.vars.outputs.report }}"
+          if (-not $report) { $report = "1" }
+
+          if (-not (Test-Path "scripts\events_fetcher.py")) {
+            Write-Host "events_fetcher.py nem található – analyst/catalyst blokk nélkül fut tovább."
+          }
+          else {
+            python -X utf8 "scripts\events_fetcher.py" --report $report --universe-json "reports/latest_${report}.json"
+          }
+
       - name: Run report (#1/#2/#3)
         shell: pwsh
         run: |
