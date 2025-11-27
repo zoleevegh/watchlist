@@ -7,10 +7,6 @@ on:
         description: 'Jelentés: 1=AH+PM, 2=Open→Close (előző nap), 3=Ma Open→Most'
         default: '1'
         required: false
-      csv_url:
-        description: 'MASTER CSV URL (üres = DEFAULT_CSV_URL)'
-        default: ''
-        required: false
   repository_dispatch:
     types: [run_report]
 
@@ -36,7 +32,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install pandas requests yfinance pytz feedparser beautifulsoup4
 
-      - name: Resolve inputs (report, csv, macro)
+      - name: Resolve inputs (report, macro)
         id: vars
         shell: pwsh
         run: |
@@ -44,21 +40,15 @@ jobs:
           if (-not $report) { $report = "${{ github.event.client_payload.report }}" }
           if (-not $report) { $report = "3" }
 
-          $csv = "${{ github.event.inputs.csv_url }}"
-          if (-not $csv) { $csv = "${{ github.event.client_payload.csv_url }}" }
-          if (-not $csv) { $csv = "${{ env.DEFAULT_CSV_URL }}" }
-
           $macro = "${{ github.event.inputs.macro }}"
           if (-not $macro) { $macro = "${{ github.event.client_payload.macro }}" }
           if (-not $macro) { $macro = "auto" }
 
           "report=$report" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "csv=$csv"       | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "macro=$macro"   | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
           Write-Host "REPORT: $report"
-          Write-Host "CSV URL: $csv"
-          Write-Host "MACRO: $macro"
+          Write-Host "MACRO:  $macro"
 
       - name: Fetch macro news (Yahoo/CNBC/Bloomberg)
         shell: pwsh
@@ -79,9 +69,9 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path reports | Out-Null
           $out    = "reports\master.csv"
-          $csvUrl = "${{ steps.vars.outputs.csv }}"
+          $csvUrl = "${{ env.DEFAULT_CSV_URL }}"
 
-          Write-Host "Letöltés: $csvUrl"
+          Write-Host "Letöltés (DEFAULT_CSV_URL): $csvUrl"
           & curl.exe -fL --retry 3 --retry-all-errors -A "Mozilla/5.0" "$csvUrl" -o "$out"
           if ($LASTEXITCODE -ne 0) {
             Write-Error "CSV letöltés sikertelen (curl exit $LASTEXITCODE)"
