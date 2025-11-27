@@ -1,0 +1,14 @@
+[
+  {
+    "ticker": "NVDA",
+    "event_type": "upgrade",
+    "headline": "NVDA – Morgan Stanley felminősítés Equal Weight→Overweight, PT 120→145",
+    "source": "MarketBeat"
+  },
+  {
+    "ticker": "GOOG",
+    "event_type": "pt_raise",
+    "headline": "GOOG – Goldman Sachs célár-emelés 150→175, AI-sztori megerősítve",
+    "source": "MarketBeat"
+  }
+]
