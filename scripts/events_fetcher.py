@@ -10,33 +10,24 @@ Szerep:
 
 Fontos:
 - Ez a modul NEM maga scrapel/letölt az internetről konkrét oldalt.
-- Úgy van kialakítva, hogy könnyen rá lehessen kötni bármilyen strukturált
-  adatforrást (pl. fizetős Analyst Ratings API, MarketBeat export, saját crawler).
-- A biblia szerinti szűrés/összeállítás (portfolio vs. watchlist, anyagi
-  lényegesség, ≥±3% mozgás) itt történik meg a nyers eseményekre.
+- Rá tudsz kötni bármilyen strukturált adatforrást (MarketBeat export, saját crawler, API).
+- A biblia szerinti szűrés/összeállítás (portfolio vs. watchlist, anyagi lényegesség, ≥±3%)
+  itt történik a NYERS eseményekre.
 
 Várt nyers input (raw JSON) – opcionális, ha van külön crawler:
 - reports/raw_analyst_{report}.json
 - reports/raw_catalysts_{report}.json
 
-Ezek formátuma rugalmas, de ajánlott séma egy elemre:
-    {
-        "ticker": "NVDA",
-        "scope": "portfolio|watchlist|other",
-        "event_type": "upgrade|downgrade|pt_raise|pt_cut|guide|M&A|dividend|buyback|mgmt",
-        "headline": "Raymond James strong-buy-ra emelte az NVDA-t",
-        "summary": "PT 230→260, AI-kereslet továbbra is erős...",
-        "source": "MarketBeat",
-        "ts": "2025-11-25T10:30:00Z"
-    }
-
-A script a fenti nyers eseményekből gyártja a report_runner.py által használt,
-leegyszerűsített JSON-t:
-    reports/analyst_{report}.json
-    reports/catalysts_{report}.json
-
-Ezek egy-egy listát tartalmaznak 'text' mezővel, amit a biblia_helper.py
-format_analyst_block / format_catalyst_block egyszerű bullet-formában jelenít meg.
+Ajánlott séma egy nyers elemre:
+{
+    "ticker": "NVDA",
+    "scope": "portfolio|watchlist|other",
+    "event_type": "upgrade|downgrade|pt_raise|pt_cut|guide|M&A|dividend|buyback|mgmt",
+    "headline": "Raymond James strong-buy-ra emelte az NVDA-t",
+    "summary": "PT 230→260, AI-kereslet továbbra is erős...",
+    "source": "MarketBeat",
+    "ts": "2025-11-25T10:30:00Z"
+}
 """
 
 import argparse
@@ -46,6 +37,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Tuple, Optional
 
+
+# ---------- Adatszerkezetek ----------
 
 @dataclass
 class TickerScope:
@@ -64,6 +57,8 @@ class RawEvent:
     ts: datetime
 
 
+# ---------- Segédfüggvények ----------
+
 def _load_json(path: str) -> Any:
     if not os.path.exists(path):
         return None
@@ -74,19 +69,20 @@ def _load_json(path: str) -> Any:
 def _parse_ts(value: str) -> Optional[datetime]:
     if not value:
         return None
-    # Megpróbálunk ISO-formátumot értelmezni (UTC vagy offsettel)
     try:
+        # ISO + "Z" támogatás
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except Exception:
         return None
 
 
 def load_raw_events(path: str, default_scope: str) -> List[RawEvent]:
-    """Nyers események betöltése rugalmas JSON-ból.
+    """
+    Nyers események betöltése rugalmas JSON-ból.
 
     Elfogadott formátumok:
-    - lista dict-ekkel a fenti RawEvent-sémának megfelelően
-    - vagy lista plain stringekkel (ekkor ticker/scope nélkül, 'other'-ként kezeljük)
+    - lista dict-ekkel (RawEvent-séma)
+    - vagy lista plain stringekkel (ticker/scope nélkül, 'other'-ként kezeljük)
     """
     data = _load_json(path)
     events: List[RawEvent] = []
@@ -96,7 +92,6 @@ def load_raw_events(path: str, default_scope: str) -> List[RawEvent]:
     if isinstance(data, list):
         for item in data:
             if isinstance(item, str):
-                # Plain szöveg – ticker nélküli, 'other' scope
                 events.append(
                     RawEvent(
                         ticker="",
@@ -132,13 +127,12 @@ def load_raw_events(path: str, default_scope: str) -> List[RawEvent]:
 
 
 def detect_ticker_scope(universe_json: str) -> Dict[str, TickerScope]:
-    """Ticker-univerzum beolvasása.
+    """
+    Ticker-univerzum beolvasása.
 
-    Rugalmasan próbál többféle formátumot:
-    - 'positions' + 'watchlist' kulcsok
-    - vagy lista dict-ekkel, ahol van 'ticker' és opcionálisan 'scope'/'type'
-
-    Visszaad egy dict-et: {ticker: TickerScope}.
+    Input lehet pl. a reports/latest_1.json, ahol:
+    - dict: positions + watchlist
+    - vagy lista dict-ekkel ('ticker', opcionálisan 'scope'/'type')
     """
     data = _load_json(universe_json)
     mapping: Dict[str, TickerScope] = {}
@@ -183,16 +177,21 @@ def filter_events_for_report(
     report: int,
     scope_map: Dict[str, TickerScope],
 ) -> Tuple[List[str], List[str]]:
-    """Biblia-szerinti, leegyszerűsített szűrés alap skeletonja.
+    """
+    Biblia-szerinti szűrés v1 (alap skeleton):
 
-    Jelen verzió:
-    - csak nagyon alap szűrést csinál:
-      * portfólió: minden esemény mehet az 5-ös blokkba
-      * watchlist: minden esemény mehet az 5-ös blokkba
-    - a 6-os blokkba 'katalizátornak' azokat tesszük, ahol az event_type
-      valamilyen 'guide' / 'M&A' / 'dividend' / 'buyback' / 'mgmt' jellegű
+    - 5-ös blokk (Bejelentések & elemzői lépések):
+      * minden portfólió + watchlist esemény
+      * + bármi, ami upgrade/downgrade/PT-módosítás (akkor is, ha scope ismeretlen)
 
-    Finomhangolás (anyagiság, ≥±3%, időablak) később hozzáadható.
+    - 6-os blokk (Közeli katalizátorok 3–12 hónap):
+      * event_type ∈ {guide, M&A, dividend, buyback, mgmt}
+      * vagy a headline tartalmazza az 'earnings' szót
+
+    A későbbiekben ide lehet betenni:
+    - időablak-szűrést (ts alapján),
+    - ≥±3% mozgás integrálását (ha a price-runner is ad JSON-t),
+    - anyagi lényegességi thresholdokat.
     """
     analyst_lines: List[str] = []
     catalyst_lines: List[str] = []
@@ -201,7 +200,6 @@ def filter_events_for_report(
         t = ev.ticker.upper().strip() if ev.ticker else ""
         scope = scope_map.get(t, TickerScope(ticker=t, scope=ev.scope or "other")).scope
 
-        # Rövid 'text' sor összeállítása
         prefix = f"{t} – " if t else ""
         src = f" ({ev.source})" if ev.source else ""
         base_text = prefix + (ev.headline or ev.summary)
@@ -209,15 +207,15 @@ def filter_events_for_report(
             continue
         full_text = base_text + src
 
-        # 5-ös blokk: minden portfólió + watchlist esemény
+        # 5-ös blokk
         if scope in ("portfolio", "watchlist") or ev.event_type in ("upgrade", "downgrade", "pt_raise", "pt_cut"):
             analyst_lines.append(full_text)
 
-        # 6-os blokk: katalizátor-jellegű event_type
-        if ev.event_type in ("guide", "M&A", "dividend", "buyback", "mgmt") or "earnings" in ev.headline.lower():
+        # 6-os blokk
+        head_lower = (ev.headline or "").lower()
+        if ev.event_type in ("guide", "M&A", "dividend", "buyback", "mgmt") or "earnings" in head_lower:
             catalyst_lines.append(full_text)
 
-    # Dedup
     def dedup(seq: List[str]) -> List[str]:
         seen = set()
         out: List[str] = []
@@ -229,6 +227,8 @@ def filter_events_for_report(
 
     return dedup(analyst_lines), dedup(catalyst_lines)
 
+
+# ---------- CLI ----------
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -271,8 +271,6 @@ def main() -> None:
 
     scope_map = detect_ticker_scope(args.universe_json)
 
-    # Nyers események betöltése – ha nincs nyers JSON, a lista üres marad,
-    # így a runner egyszerűen kihagyja az 5/6-os blokkot.
     raw_analyst_path = args.raw_analyst or f"reports/raw_analyst_{report}.json"
     raw_catalysts_path = args.raw_catalysts or f"reports/raw_catalysts_{report}.json"
 
