@@ -40,7 +40,9 @@ Várt input-formátumok:
 CLI használat:
 
     python crawler_analyst_catalyst.py \
-        --report 1 \        --analyst-url "$ANALYST_FEED_URL" \        --catalyst-url "$CATALYST_FEED_URL"
+        --report 1 \
+        --analyst-url "$ANALYST_FEED_URL" \
+        --catalyst-url "$CATALYST_FEED_URL"
 
 Ha nem adsz meg URL-t paraméterben, a script az alábbi env változókat próbálja:
 
