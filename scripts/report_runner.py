@@ -82,7 +82,7 @@ SESSION.headers.update(
 )
 
 DEFAULT_K = 3.0
-DEFAULT_SCRIPT_VERSION = "2.3.0-biblia-yahoo-us-time-chart-meta-prevclose-helper-macro-analyst-catalyst-hc-hiconv-auto-r2r3finom"
+DEFAULT_SCRIPT_VERSION = "2.3.1-biblia-yahoo-us-time-chart-meta-prevclose-helper-macro-analyst-catalyst-hc-hiconv-auto-r2r3finom-pmfallback"
 
 WATCHLIST_DEFAULT_PATH = "reports/master.csv"
 ANALYST_EVENTS_PATH = "reports/analyst_1.json"
@@ -214,29 +214,27 @@ def fetch_chart(symbol: str) -> Tuple[dict, List[int], List[Optional[float]]]:
     return meta, ts, closes
 
 
+
 def compute_ah_pm_move(
-    meta: Dict,
-    timestamps: List[float],
-    closes: List[Optional[float]],
+    meta: dict, timestamps: List[int], closes: List[Optional[float]]
 ) -> Tuple[Optional[float], Optional[float], Optional[float]]:
-    """
-    Számolja az RTH záróárhoz viszonyított after-hours és premarket százalékos elmozdulást.
+    """Visszaadja: (rth_close_price, ah_pct, pm_pct)
 
-    - Bázis: az utolsó RTH-gyertya a legelső pre/post (AH vagy PM) gyertya ELŐTT.
-    - After-hours: ugyanarra a napra eső, 16:00–20:00 közötti utolsó gyertya
-      (base_date 16:00–20:00, last_rth_dt után).
-    - Premarket (elsődleges logika): a bázisnap UTÁNI nap 04:00–09:30 közötti,
-      utolsó elérhető premarket gyertya (last_rth_dt utáni összes PM közül az utolsó).
-    - Premarket fallback (új):
-        Ha a fenti premarket-ablakban egyáltalán nincs gyertya (Yahoo includePrePost
-        hiányosságai miatt), akkor:
-          * megkeressük az első RTH-gyertyát, amely a bázis RTH-záró UTÁN következik,
-          * és ennek árát használjuk „PM fallback”-ként
-            (tehát kb. a nyitóárhoz közeli érték lesz a bázishoz képest).
-        Ha ilyen gyertya sincs, PM továbbra is None marad.
+    Haladó, bíblia-kompatibilis logika #1-hez, PM-fallbackkel:
 
-    Visszatérés:
-        (rth_close_price, ah_pct, pm_pct)
+    - A Yahoo 2d/5m + includePrePost sorozatából külön gyűjtjük:
+      * RTH: 09:30–16:00
+      * After-hours: 16:00–20:00
+      * Premarket: 04:00–09:30
+    - Megkeressük az IDŐBEN LEGHAMARABB érkező pre/post (AH vagy PM) gyertyát.
+    - Az ehhez képest UTOLSÓ MEGELŐZŐ RTH gyertya záróára a bázis
+      (utolsó teljes RTH záró).
+    - AH és PM mozgást ehhez a bázishoz viszonyítjuk, függetlenül attól,
+      hogy mikor fut a script (nyitás előtt, közben, után).
+    - ÚJ: ha nincs premarket gyertya a bázis UTÁN, akkor fallbackként az
+      első elérhető RTH gyertyát használjuk a következő napból.
+
+    Visszatérés: (rth_close_price, ah_pct, pm_pct)
     """
     if not timestamps or not closes:
         return None, None, None
