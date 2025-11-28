@@ -15,7 +15,7 @@ jobs:
     runs-on: windows-latest
     env:
       # ← IDE írd a Google Sheets "Publish to web" CSV linkjét (MASTER)
-      DEFAULT_CSV_URL: https://docs.google.com/spreadsheets/d/e/...7PSyc8g6uGZT-H6pCeuwEqs7NqeCDKuAltTpL_ncPOWMtooRw/pub?output=csv
+      DEFAULT_CSV_URL: https://docs.google.com/spreadsheets/d/e/2PACX-1vTf5h3xx4LWJvI-e7PSyc8g6uGZT-H6pCeuwEqs7NqeCDKuAltTpL_ncPOWMtooRw/pub?output=csv
 
       # Analyst / Catalyst feed webapp (Apps Script)
       ANALYST_FEED_URL_1: "https://script.google.com/macros/s/AKfycbxwKMEVvBKDajoi1taK21iUKoPMXTlIWyNGTKkOmy3stAt2MAnnVhNp8E2MVgGDw6rM/exec?type=analyst&report=1"
