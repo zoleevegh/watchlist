@@ -215,21 +215,28 @@ def fetch_chart(symbol: str) -> Tuple[dict, List[int], List[Optional[float]]]:
 
 
 def compute_ah_pm_move(
-    meta: dict, timestamps: List[int], closes: List[Optional[float]]
+    meta: Dict,
+    timestamps: List[float],
+    closes: List[Optional[float]],
 ) -> Tuple[Optional[float], Optional[float], Optional[float]]:
-    """Visszaadja: (rth_close_price, ah_pct, pm_pct)
+    """
+    Számolja az RTH záróárhoz viszonyított after-hours és premarket százalékos elmozdulást.
 
-    Haladó, bíblia-kompatibilis logika #1-hez:
+    - Bázis: az utolsó RTH-gyertya a legelső pre/post (AH vagy PM) gyertya ELŐTT.
+    - After-hours: ugyanarra a napra eső, 16:00–20:00 közötti utolsó gyertya
+      (base_date 16:00–20:00, last_rth_dt után).
+    - Premarket (elsődleges logika): a bázisnap UTÁNI nap 04:00–09:30 közötti,
+      utolsó elérhető premarket gyertya (last_rth_dt utáni összes PM közül az utolsó).
+    - Premarket fallback (új):
+        Ha a fenti premarket-ablakban egyáltalán nincs gyertya (Yahoo includePrePost
+        hiányosságai miatt), akkor:
+          * megkeressük az első RTH-gyertyát, amely a bázis RTH-záró UTÁN következik,
+          * és ennek árát használjuk „PM fallback”-ként
+            (tehát kb. a nyitóárhoz közeli érték lesz a bázishoz képest).
+        Ha ilyen gyertya sincs, PM továbbra is None marad.
 
-    - A Yahoo 2d/5m + includePrePost sorozatából külön gyűjtjük:
-      * RTH: 09:30–16:00
-      * After-hours: 16:00–20:00
-      * Premarket: 04:00–09:30
-    - Megkeressük az IDŐBEN LEGHAMARABB érkező pre/post (AH vagy PM) gyertyát.
-    - Az ehhez képest UTOLSÓ MEGELŐZŐ RTH gyertya záróára a bázis
-      (utolsó teljes RTH záró).
-    - AH és PM mozgást ehhez a bázishoz viszonyítjuk, függetlenül attól,
-      hogy mikor fut a script (nyitás előtt, közben, után).
+    Visszatérés:
+        (rth_close_price, ah_pct, pm_pct)
     """
     if not timestamps or not closes:
         return None, None, None
@@ -300,11 +307,15 @@ def compute_ah_pm_move(
         pm_last_price = pm_for_base[-1][1]
         pm_pct = (pm_last_price - rth_close_price) / rth_close_price * 100.0
     else:
-        pm_pct = None
+        # Fallback: ha nincs premarket-gyertya, használjuk az első RTH-gyertyát a bázis után
+        rth_after_base = [p for p in rth_points if p[0] > last_rth_dt]
+        if rth_after_base:
+            first_rth_price = rth_after_base[0][1]
+            pm_pct = (first_rth_price - rth_close_price) / rth_close_price * 100.0
+        else:
+            pm_pct = None
 
     return rth_close_price, ah_pct, pm_pct
-
-
 def fmt_pct(value: Optional[float]) -> str:
     if value is None or math.isnan(value):
         return "n/a"
