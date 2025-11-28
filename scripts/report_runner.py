@@ -61,6 +61,15 @@ except ImportError:
     def format_highconviction_block(events):
         return []
 
+# Makró feed helper (Apps Script webapp – opcionális).
+try:
+    from scripts.macro_fetcher import fetch_macro_text
+except ImportError:  # pragma: no cover - optional helper
+    def fetch_macro_text(*args, **kwargs):  # type: ignore
+        return ""
+
+
+
 
 SESSION = requests.Session()
 SESSION.headers.update(
@@ -380,6 +389,24 @@ def generate_model_report(
         coverage_line,
     ]
 
+
+
+    # Makró / FED / piaci hangulat blokk (#1)
+    if macro_text and macro_text.strip():
+        macro_text_final = macro_text
+    else:
+        macro_text_final = fetch_macro_text(
+            report=1,
+            out_path="reports/macro_1.txt",
+            base_url_env="MACRO_FEED_URL_1",
+        )
+
+    if macro_text_final:
+        # A Yahoo-makró híreket itt nem keverjük hozzá, a webapp már tartalmazza az összefoglalót.
+        macro_block = format_macro_block(macro_text_final, [])
+    else:
+        macro_block = ""
+
         # Elemzői lépések / közeli katalizátorok / high-conviction események (5/6/7. blokk)
     analyst_events = fetch_analyst_events(ANALYST_EVENTS_PATH)
     analyst_block = format_analyst_block(analyst_events)
@@ -392,6 +419,10 @@ def generate_model_report(
 
     lines: List[str] = []
     lines.extend(header_lines)
+
+    if macro_block:
+        lines.append("")
+        lines.append(macro_block)
 
     # 3–4. blokk: ármozgások (darabszámos + watchlist)
     lines.append("")
