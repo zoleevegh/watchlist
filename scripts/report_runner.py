@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+import re
+import requests
 import argparse
 import csv
 import datetime as dt
@@ -82,7 +84,7 @@ SESSION.headers.update(
 )
 
 DEFAULT_K = 3.0
-DEFAULT_SCRIPT_VERSION = "2.3.1-biblia-yahoo-us-time-chart-meta-prevclose-helper-macro-analyst-catalyst-hc-hiconv-auto-r2r3finom-pmfallback"
+DEFAULT_SCRIPT_VERSION = "2.3.2-biblia-yahoo-us-time-chart-meta-prevclose-helper-macro-analyst-catalyst-hc-hiconv-auto-r2r3finom-pmfallback-mwpm"
 
 WATCHLIST_DEFAULT_PATH = "reports/master.csv"
 ANALYST_EVENTS_PATH = "reports/analyst_1.json"
@@ -212,6 +214,69 @@ def fetch_chart(symbol: str) -> Tuple[dict, List[int], List[Optional[float]]]:
     quotes = indicators.get("quote") or [{}]
     closes = quotes[0].get("close") or []
     return meta, ts, closes
+
+
+
+def fetch_marketwatch_premarket_pct(symbol: str, rth_close: Optional[float]) -> Optional[float]:
+    """Best-effort MarketWatch premarket fallback.
+
+    Ha a Yahoo 2d/5m chart nem ad a bázis RTH UTÁN premarket gyertyát,
+    és még nincs következő napi RTH sem, utolsó esélyként megpróbáljuk
+    a MarketWatch „Premarket” árát beolvasni.
+
+    Implementáció (best-effort, HTML-függő, ezért try/except-ben fut):
+      - URL: https://www.marketwatch.com/investing/stock/{symbol.lower()}
+      - User-agent headerrel kérjük le a HTML-t.
+      - Szövegben megkeressük a „Premarket” blokkot és az utána következő
+        "${ár}" mintát (pl. "Premarket. ... $ 180.98").
+      - Ha találunk árfolyamot és van rth_close, kiszámoljuk a
+        (pm_price - rth_close) / rth_close * 100 értéket.
+
+    Ha bármi hiba van, vagy nem található premarket ár, None-t ad vissza.
+    """
+    if not rth_close:
+        return None
+
+    url = f"https://www.marketwatch.com/investing/stock/{symbol.lower()}"
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0 Safari/537.36"
+        )
+    }
+    try:
+        resp = requests.get(url, headers=headers, timeout=10)
+        resp.raise_for_status()
+        html = resp.text
+    except Exception as e:
+        debug(f"[MW] {symbol}: MarketWatch request error: {e}")
+        return None
+
+    # Próbáljuk meg a "Premarket" környékén lévő első dollárárat elcsípni.
+    try:
+        # Limitáljuk a keresést egy 2000 karakteres ablakra a "Premarket" körül,
+        # hogy ne a többi dollárértéket szedjük fel.
+        pre_idx = html.lower().find("premarket")
+        if pre_idx == -1:
+            return None
+        window = html[pre_idx : pre_idx + 2000]
+
+        m_price = re.search(r"\$\s*([0-9]+(?:\.[0-9]+)?)", window)
+        if not m_price:
+            return None
+        price_str = m_price.group(1).replace(",", "")
+        pm_price = float(price_str)
+    except Exception as e:
+        debug(f"[MW] {symbol}: parse error: {e}")
+        return None
+
+    try:
+        pm_pct = (pm_price - float(rth_close)) / float(rth_close) * 100.0
+        return pm_pct
+    except Exception as e:
+        debug(f"[MW] {symbol}: pct calc error: {e}")
+        return None
 
 
 
@@ -345,6 +410,15 @@ def generate_model_report(
         try:
             meta, ts, closes = fetch_chart(sym)
             _, ah_pct, pm_pct = compute_ah_pm_move(meta, ts, closes)
+
+            # Ha nincs PM a Yahoo 2d/5m alapján, próbáljuk MarketWatch-ból pótolni
+            if pm_pct is None:
+                try:
+                    pm_from_mw = fetch_marketwatch_premarket_pct(sym, _)
+                    if pm_from_mw is not None:
+                        pm_pct = pm_from_mw
+                except Exception as mw_e:
+                    debug(f"[MW] {sym}: fallback error: {mw_e}")
         except Exception as e:
             # Valódi forráshiba / HTTP hiba / stb. – ez lefedettség-hiba
             missing[sym] = str(e)
