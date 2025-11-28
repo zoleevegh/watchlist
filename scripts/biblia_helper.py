@@ -830,26 +830,40 @@ def fetch_highconviction_events(path: str = "reports/highconviction_1.json") -> 
     """
     High-conviction (3–12 hó) jelöltek betöltése.
 
-    Ha a fájl nem létezik vagy üres, megpróbál automatikusan egy új JSON-t generálni
-    a fenti szabályok alapján (S&P500-univerzumra).
+    Minden híváskor megpróbál egy FRISS listát generálni
+    (S&P500-univerzum, MASTER-beli tickerek kizárásával).
+    A JSON fájlt csak logolási / debug célból írjuk ki.
 
-    A visszatérési érték egy már display-ready lista:
-        ["SMCI – ...", "NVO – ...", ...]
+    Visszatérési érték: display-ready lista, pl.:
+        ["XYZ – 23.4% konszenzus upside ...", ...]
     """
     full = os.path.join(os.getcwd(), path)
 
+    # 1) Első próbálkozás: generáljunk friss listát
+    candidates = generate_highconviction_json(path=full)
+
+    events: List[str] = []
+    for c in candidates:
+        ticker = str(c.get("ticker", "")).strip().upper()
+        text = str(c.get("text", "")).strip()
+        if ticker and text:
+            events.append(f"{ticker} – {text}")
+        elif text:
+            events.append(text)
+
+    if events:
+        return events
+
+    # 2) Ha valamiért nem sikerült generálni, próbáljuk meg
+    # fallbackként beolvasni a meglévő JSON-t (ha van)
     if not os.path.exists(full):
-        candidates = generate_highconviction_json(path=full)
-        return [f"{c['ticker']} – {c['text'].split('–', 1)[-1].strip()}" for c in candidates]
+        return []
 
     try:
         with open(full, "r", encoding="utf-8") as f:
             data = json.load(f)
     except Exception:
-        candidates = generate_highconviction_json(path=full)
-        return [f"{c['ticker']} – {c['text'].split('–', 1)[-1].strip()}" for c in candidates]
-
-    events: List[str] = []
+        return []
 
     if isinstance(data, list):
         for item in data:
@@ -864,10 +878,6 @@ def fetch_highconviction_events(path: str = "reports/highconviction_1.json") -> 
                     events.append(f"{ticker} – {text}")
                 elif text:
                     events.append(text)
-
-    if not events:
-        candidates = generate_highconviction_json(path=full)
-        return [f"{c['ticker']} – {c['text'].split('–', 1)[-1].strip()}" for c in candidates]
 
     return events
 
