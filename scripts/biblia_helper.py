@@ -214,7 +214,7 @@ szolgál kiindulópontként. A cél, hogy:
 from __future__ import annotations
 import os
 import json
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Set
 
 # Használható konstans, ha máshonnan is hivatkozni akarunk a RAW #1-es linkre
 GIST_REPORT1_RAW_URL = "https://gist.githubusercontent.com/zoleevegh/5df443b8a46ef863cdc97aad62756510/raw/summary_report_1.md"
@@ -312,7 +312,7 @@ def get_report3_checklist() -> List[str]:
 
 import time
 import datetime as _dt
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Set
 
 import requests
 
@@ -503,25 +503,7 @@ def _load_json_list(path: str) -> List[Any]:
 
 
 def fetch_analyst_events(path: str = "reports/analyst_1.json") -> List[str]:
-    """Elemzői fel/lemínősítések eseményeinek betöltése opcionális JSON-fájlból.
-
-    JSON formátum (5-ös blokk – „Bejelentések & elemzői fel/lemínősítések”):
-    - legegyszerűbb esetben: lista plain szövegekkel, pl.:
-        ["NVDA – Morgan Stanley felminősítés ...", "GOOG – Goldman Sachs PT-emelés ..."]
-    - vagy lista dict-ekkel, pl.:
-        {
-            "ticker": "NVDA",                 # opcionális, a biblia szerinti logikát a JSON-gyártó script intézheti
-            "scope": "portfolio|watchlist",   # opcionális jelölés
-            "material": true,                 # anyagilag lényeges-e
-            "event_type": "upgrade|downgrade|pt_raise|pt_cut|guide|M&A|dividend|buyback|mgmt",
-            "window": 1,                      # 1/2/3 – melyik riportablakhoz tartozik
-            "text": "NVDA – Morgan Stanley felminősítés Equal Weight→Overweight, PT 120→145."
-        }
-
-    Ebben a helperben konzervatívan csak a 'text' mezőt használjuk, a biblia szerinti
-    szűrés/összerakás mehet a JSON-t előállító modulban. Ha csak plain stringek
-    érkeznek, azokat változtatás nélkül bullet formában megjelenítjük az 5-ös blokkban.
-    """
+    """Elemzői fel/lemínősítések eseményeinek betöltése opcionális JSON-fájlból."""
     raw = _load_json_list(path)
     events: List[str] = []
     for item in raw:
@@ -551,24 +533,7 @@ def format_analyst_block(events: List[str]) -> str:
 # --- Közeli katalizátorok ---
 
 def fetch_catalyst_events(path: str = "reports/catalysts_1.json") -> List[str]:
-    """Közeli (3–12 hónapos) katalizátorok betöltése opcionális JSON-fájlból.
-
-    JSON formátum (6-os blokk – „Közeli katalizátorok (3–12 hónap)”):
-    - legegyszerűbb esetben: lista plain szövegekkel, pl.:
-        ["NVDA – új terméklaunch Q1-ben", "CRM – Dreamforce, guidance-update közeleg", ...]
-    - vagy lista dict-ekkel, pl.:
-        {
-            "ticker": "CRM",
-            "scope": "portfolio|watchlist|other",
-            "material": true,
-            "window": 1,
-            "text": "CRM – Dreamforce + guidance update 2 héten belül, potenciális ármozgás-katalizátor."
-        }
-
-    Itt is csak a 'text' mezőt használjuk a formázáshoz; a biblia szerinti válogatás
-    (portfólió vs. watchlist, anyagi lényegesség, ≥±3% mozgás) a JSON-t gyártó modulban
-    történik. Ha csak plain stringek érkeznek, teljes egészében megjelennek a 6-os blokkban.
-    """
+    """Közeli (3–12 hónapos) katalizátorok betöltése opcionális JSON-fájlból."""
     raw = _load_json_list(path)
     events: List[str] = []
     for item in raw:
@@ -661,6 +626,61 @@ def _yahoo_reco_and_price(ticker: str) -> Optional[Dict[str, Any]]:
         return None
 
 
+
+
+def _load_banned_tickers_from_master(path: str = "reports/master.csv") -> Set[str]:
+    """MASTER/watchlist CSV-ből betölti az összes saját tickert (pozíció + watchlist).
+
+    Cél: a high-conviction blokkba soha ne kerüljön olyan név, ami szerepel a
+    felhasználó portfóliójában vagy watchlistjén.
+    """
+    import csv
+
+    banned: Set[str] = set()
+    full = os.path.join(os.getcwd(), path)
+    if not os.path.exists(full):
+        return banned
+
+    try:
+        with open(full, "r", encoding="utf-8-sig", newline="") as f:
+            reader = csv.DictReader(f)
+            fieldnames = reader.fieldnames or []
+            if not fieldnames:
+                return banned
+
+            # Próbáljuk kitalálni a ticker oszlopot
+            candidates = [
+                "ticker",
+                "symbol",
+                "szimbólum",
+                "szimbolum",
+                "Ticker",
+                "SZIMBOLUM",
+            ]
+            ticker_col: Optional[str] = None
+            for cand in candidates:
+                for col in fieldnames:
+                    if col.strip().lower() == cand.lower():
+                        ticker_col = col
+                        break
+                if ticker_col:
+                    break
+
+            # Ha nem találjuk, használjuk az első oszlopot fallbackként
+            if ticker_col is None:
+                ticker_col = fieldnames[0]
+
+            for row in reader:
+                sym = (row.get(ticker_col) or "").strip().upper()
+                if sym:
+                    banned.add(sym)
+    except Exception:
+        # Hiba esetén inkább csendben visszaadjuk, amit addig gyűjtöttünk
+        return banned
+
+    return banned
+
+
 def _load_sp500_universe() -> List[str]:
     """S&P500 ticker-univerzum lekérése publikus forrásból.
 
@@ -737,11 +757,23 @@ def generate_highconviction_json(
     hard_upside_boost: float = 25.0,
     max_count: int = 10,
 ) -> List[Dict[str, Any]]:
-    """Automatikus high-conviction lista generálása (S&P500-univerzumra)."""
+    """Automatikus high-conviction lista generálása (S&P500-univerzumra,
+    a saját portfólió + watchlist kizárásával)."""
+
+    # 1) Alap univerzum: S&P500
     tickers = _load_sp500_universe()
     if not tickers:
         return []
 
+    # 2) Saját tickerek kizárása (portfólió + watchlist a MASTER-ből)
+    banned = _load_banned_tickers_from_master()
+    if banned:
+        tickers = [t for t in tickers if t not in banned]
+
+    if not tickers:
+        return []
+
+    # 3) Szűrés a Yahoo recommendation + PT alapján
     candidates = _filter_highconv_candidates(
         tickers=tickers,
         min_upside_pct=min_upside_pct,
