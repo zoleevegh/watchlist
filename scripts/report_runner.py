@@ -1,6 +1,4 @@
 #!/usr/bin/env python3
-import re
-import requests
 import argparse
 import csv
 import datetime as dt
@@ -84,7 +82,7 @@ SESSION.headers.update(
 )
 
 DEFAULT_K = 3.0
-DEFAULT_SCRIPT_VERSION = "2.3.2-biblia-yahoo-us-time-chart-meta-prevclose-helper-macro-analyst-catalyst-hc-hiconv-auto-r2r3finom-pmfallback-mwpm"
+DEFAULT_SCRIPT_VERSION = "2.3.3-biblia-yahoo-us-time-chart-meta-prevclose-helper-macro-analyst-catalyst-hc-hiconv-auto-r2r3finom-pmfix-mwpm-bstyle"
 
 WATCHLIST_DEFAULT_PATH = "reports/master.csv"
 ANALYST_EVENTS_PATH = "reports/analyst_1.json"
@@ -222,17 +220,14 @@ def fetch_marketwatch_premarket_pct(symbol: str, rth_close: Optional[float]) -> 
 
     Ha a Yahoo 2d/5m chart nem ad a bázis RTH UTÁN premarket gyertyát,
     és még nincs következő napi RTH sem, utolsó esélyként megpróbáljuk
-    a MarketWatch „Premarket” árát beolvasni.
+    a MarketWatch "Premarket" árát beolvasni.
 
-    Implementáció (best-effort, HTML-függő, ezért try/except-ben fut):
-      - URL: https://www.marketwatch.com/investing/stock/{symbol.lower()}
-      - User-agent headerrel kérjük le a HTML-t.
-      - Szövegben megkeressük a „Premarket” blokkot és az utána következő
-        "${ár}" mintát (pl. "Premarket. ... $ 180.98").
-      - Ha találunk árfolyamot és van rth_close, kiszámoljuk a
-        (pm_price - rth_close) / rth_close * 100 értéket.
+    - URL: https://www.marketwatch.com/investing/stock/{symbol.lower()}
+    - User-agent headerrel kérjük le a HTML-t.
+    - Szövegben megkeressük a "Premarket" blokkot és az utána következő
+      "${ár}" mintát.
 
-    Ha bármi hiba van, vagy nem található premarket ár, None-t ad vissza.
+    Hiba vagy hiányzó adat esetén None-t ad vissza, és nem dobja el a futást.
     """
     if not rth_close:
         return None
@@ -249,35 +244,30 @@ def fetch_marketwatch_premarket_pct(symbol: str, rth_close: Optional[float]) -> 
         resp = requests.get(url, headers=headers, timeout=10)
         resp.raise_for_status()
         html = resp.text
-    except Exception as e:
+    except Exception as e:  # pragma: no cover - best-effort
         debug(f"[MW] {symbol}: MarketWatch request error: {e}")
         return None
 
-    # Próbáljuk meg a "Premarket" környékén lévő első dollárárat elcsípni.
     try:
-        # Limitáljuk a keresést egy 2000 karakteres ablakra a "Premarket" körül,
-        # hogy ne a többi dollárértéket szedjük fel.
         pre_idx = html.lower().find("premarket")
         if pre_idx == -1:
             return None
         window = html[pre_idx : pre_idx + 2000]
-
         m_price = re.search(r"\$\s*([0-9]+(?:\.[0-9]+)?)", window)
         if not m_price:
             return None
         price_str = m_price.group(1).replace(",", "")
         pm_price = float(price_str)
-    except Exception as e:
+    except Exception as e:  # pragma: no cover - best-effort
         debug(f"[MW] {symbol}: parse error: {e}")
         return None
 
     try:
         pm_pct = (pm_price - float(rth_close)) / float(rth_close) * 100.0
         return pm_pct
-    except Exception as e:
+    except Exception as e:  # pragma: no cover - best-effort
         debug(f"[MW] {symbol}: pct calc error: {e}")
         return None
-
 
 
 def compute_ah_pm_move(
@@ -285,21 +275,27 @@ def compute_ah_pm_move(
 ) -> Tuple[Optional[float], Optional[float], Optional[float]]:
     """Visszaadja: (rth_close_price, ah_pct, pm_pct)
 
-    Haladó, bíblia-kompatibilis logika #1-hez, PM-fallbackkel:
+    AH/PM számítás #1-hez, a "tegnapi teljes RTH nap" logikával.
 
-    - A Yahoo 2d/5m + includePrePost sorozatából külön gyűjtjük:
-      * RTH: 09:30–16:00
-      * After-hours: 16:00–20:00
-      * Premarket: 04:00–09:30
-    - Megkeressük az IDŐBEN LEGHAMARABB érkező pre/post (AH vagy PM) gyertyát.
-    - Az ehhez képest UTOLSÓ MEGELŐZŐ RTH gyertya záróára a bázis
-      (utolsó teljes RTH záró).
-    - AH és PM mozgást ehhez a bázishoz viszonyítjuk, függetlenül attól,
-      hogy mikor fut a script (nyitás előtt, közben, után).
-    - ÚJ: ha nincs premarket gyertya a bázis UTÁN, akkor fallbackként az
-      első elérhető RTH gyertyát használjuk a következő napból.
+    - Forrás: Yahoo v8 chart, 2d/5m, includePrePost=true.
+    - RTH:      09:30–16:00
+    - AH:       16:00–20:00
+    - Premarket:04:00–09:30
 
-    Visszatérés: (rth_close_price, ah_pct, pm_pct)
+    Lépések:
+      1) A 2 napos sorozatból kiválasztjuk a *legutóbbi* RTH-napot
+         (base_date = max(rth.date)). Ez lesz az "előző kereskedési nap".
+      2) A base_date-hez tartozó utolsó RTH-gyertya záróárát használjuk
+         bázisnak (rth_close_price).
+      3) AH: csak a base_date-hez tartozó, a záró utáni (16–20) gyertyák
+         utolsó árát vesszük figyelembe.
+      4) PM: a base_date UTÁNI nap(ok) 04–09:30 közötti gyertyái közül
+         az utolsó ár, ha van.
+      5) Ha nincs egyáltalán PM-gyertya, fallbackként az első RTH-gyertya
+         (következő nap nyitó környéke) alapján számolunk PM%-ot.
+
+    Így az AH és PM mindig az *utolsó teljes RTH nap* zárójához képest
+    értendő, és nem keveredik bele régebbi AH/PM blokk.
     """
     if not timestamps or not closes:
         return None, None, None
@@ -337,26 +333,14 @@ def compute_ah_pm_move(
     if not rth_points:
         return None, None, None
 
-    # Ha nincs egyáltalán pre/post adat, akkor tényleg nincs mit jelenteni
-    if not ah_points and not pm_points:
+    # 1) Legutóbbi RTH-nap (előző kereskedési nap)
+    base_date = max(p[0].date() for p in rth_points)
+    base_rth = [p for p in rth_points if p[0].date() == base_date]
+    if not base_rth:
         return None, None, None
+    last_rth_dt, rth_close_price = base_rth[-1]
 
-    # 1) Keressük meg az IDŐBEN LEGHAMARABB érkező pre/post gyertyát
-    first_prepost_dt: Optional[dt.datetime] = None
-    if ah_points:
-        first_prepost_dt = ah_points[0][0]
-    if pm_points and (first_prepost_dt is None or pm_points[0][0] < first_prepost_dt):
-        first_prepost_dt = pm_points[0][0]
-
-    # 2) Ehhez képest az utolsó megelőző RTH-gyertya a bázis
-    base_candidates = [p for p in rth_points if p[0] < first_prepost_dt] if first_prepost_dt else rth_points
-    if not base_candidates:
-        base_candidates = rth_points  # fallback: összes közül az utolsó
-    last_rth_dt, rth_close_price = base_candidates[-1]
-
-    base_date = last_rth_dt.date()
-
-    # 3) After-hours: ugyanarra a napra, a záró utáni 16:00–20:00 tartományból
+    # 2) AH: ugyanarra a napra (base_date), a záró utáni 16–20 közötti gyertyák
     ah_for_base = [p for p in ah_points if p[0].date() == base_date and p[0] > last_rth_dt]
     if ah_for_base:
         ah_last_price = ah_for_base[-1][1]
@@ -364,14 +348,14 @@ def compute_ah_pm_move(
     else:
         ah_pct = None
 
-    # 4) Premarket: a bázis nap utáni napra eső 04:00–09:30 közötti gyertyák
-    pm_for_base = [p for p in pm_points if p[0] > last_rth_dt]
+    # 3) PM: a base_date UTÁNI nap(ok) 04–09:30 közötti gyertyák
+    pm_for_base = [p for p in pm_points if p[0].date() > base_date]
     if pm_for_base:
         pm_last_price = pm_for_base[-1][1]
         pm_pct = (pm_last_price - rth_close_price) / rth_close_price * 100.0
     else:
-        # Fallback: ha nincs premarket-gyertya, használjuk az első RTH-gyertyát a bázis után
-        rth_after_base = [p for p in rth_points if p[0] > last_rth_dt]
+        # Fallback: ha nincs PM-gyertya, használjuk az első RTH-gyertyát a base_date után
+        rth_after_base = [p for p in rth_points if p[0].date() > base_date]
         if rth_after_base:
             first_rth_price = rth_after_base[0][1]
             pm_pct = (first_rth_price - rth_close_price) / rth_close_price * 100.0
@@ -379,6 +363,7 @@ def compute_ah_pm_move(
             pm_pct = None
 
     return rth_close_price, ah_pct, pm_pct
+
 def fmt_pct(value: Optional[float]) -> str:
     if value is None or math.isnan(value):
         return "n/a"
@@ -409,15 +394,13 @@ def generate_model_report(
 
         try:
             meta, ts, closes = fetch_chart(sym)
-            _, ah_pct, pm_pct = compute_ah_pm_move(meta, ts, closes)
-
-            # Ha nincs PM a Yahoo 2d/5m alapján, próbáljuk MarketWatch-ból pótolni
+            rth_close, ah_pct, pm_pct = compute_ah_pm_move(meta, ts, closes)
             if pm_pct is None:
                 try:
-                    pm_from_mw = fetch_marketwatch_premarket_pct(sym, _)
+                    pm_from_mw = fetch_marketwatch_premarket_pct(sym, rth_close)
                     if pm_from_mw is not None:
                         pm_pct = pm_from_mw
-                except Exception as mw_e:
+                except Exception as mw_e:  # pragma: no cover - best-effort
                     debug(f"[MW] {sym}: fallback error: {mw_e}")
         except Exception as e:
             # Valódi forráshiba / HTTP hiba / stb. – ez lefedettség-hiba
@@ -459,14 +442,16 @@ def generate_model_report(
     now = dt.datetime.now(dt.timezone(dt.timedelta(hours=1)))
 
     header_lines = [
-        "#1 – After-hours (22:00–02:00) + Premarket (10:00–15:30) — CEST",
+        "## After-hours & Premarket – #1 jelentés",
         "",
-        f"Script verzió: {script_version}",
+        f"**Script verzió:** {script_version}",
+        f"**Futás ideje:** {now.strftime('%Y-%m-%d %H:%M:%S %Z')}",
         "",
-        "Vizsgált ablakok (CEST): AH – előző kereskedési nap 22:00 → 02:00, "
-        "PM – aktuális nap 10:00 → 15:30",
+        "**Időablakok (CEST)**",
+        "- AH: előző kereskedési nap 22:00–02:00",
+        "- PM: aktuális nap 10:00–15:30",
         "",
-        "Árforrás: Yahoo Finance chart (v8 – 2d/5m, includePrePost; "
+        "**Árforrás:** Yahoo Finance chart (v8 – 2d/5m, includePrePost; "
         "utolsó RTH záró → AH/PM utolsó ár alapján számolt % mozgás)",
         "",
         coverage_line,
@@ -509,7 +494,7 @@ def generate_model_report(
 
     # 3–4. blokk: ármozgások (darabszámos + watchlist)
     lines.append("")
-    lines.append("Darabszámos tickerek – After-hours & Premarket mozgások")
+    lines.append("### 📊 Darabszámos tickerek – After-hours & Premarket mozgások")
     lines.append("")
 
     # Darabszámosok rendezése max abs mozgás szerint (csökkenő)
@@ -548,7 +533,7 @@ def generate_model_report(
 
     if watch_sorted:
         lines.append("")
-        lines.append("Watchlist – After-hours & Premarket mozgások (csak ha ≥K)")
+        lines.append("### 🔍 Watchlist – After-hours & Premarket mozgások (csak ha ≥K)")
         lines.append("")
         for entry in watch_sorted:
             sym = entry["ticker"]
