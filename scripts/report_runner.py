@@ -82,7 +82,9 @@ SESSION.headers.update(
 )
 
 DEFAULT_K = 3.0
-DEFAULT_SCRIPT_VERSION = "2.3.3-biblia-yahoo-us-time-chart-meta-prevclose-helper-macro-analyst-catalyst-hc-hiconv-auto-r2r3finom-pmfix-mwpm-bstyle"
+DEFAULT_SCRIPT_VERSION = "2.3.5-biblia-yahoo-us-time-quote-spark-meta-prevclose-helper-macro-analyst-catalyst-hc-hiconv-auto-r2r3finom-spark-ahpm-bstyle"
+AH_PM_MODE = "spark"  # alapértelmezett: Yahoo quote/spark alapú AH/PM
+
 
 WATCHLIST_DEFAULT_PATH = "reports/master.csv"
 ANALYST_EVENTS_PATH = "reports/analyst_1.json"
@@ -192,6 +194,62 @@ def load_watchlist(path: Optional[str]) -> Dict[str, Dict]:
     return watch
 
 
+
+def fetch_yahoo_quote_batch(symbols: List[str]) -> Dict[str, Tuple[Optional[float], Optional[float], Optional[float]]]:
+    """Batch-ben lehúzza a Yahoo quote (spark) feedet AH/PM-hez.
+
+    Visszatér: {ticker: (regular_prev_close, ah_pct, pm_pct)}
+
+    - AH: postMarketChangePercent
+    - PM: preMarketChangePercent
+    - Ha valamelyik mező hiányzik, None marad.
+    """
+    if not symbols:
+        return {}
+
+    # Yahoo quote endpoint – ez hajtja a webes portfólió UI-t is.
+    url = "https://query1.finance.yahoo.com/v7/finance/quote"
+    joined = ",".join(sorted(set(symbols)))
+    params = {"symbols": joined}
+
+    try:
+        resp = SESSION.get(url, params=params, timeout=10)
+        resp.raise_for_status()
+    except Exception as e:
+        debug(f"[YF-QUOTE] batch fetch error: {e}")
+        return {}
+
+    try:
+        data = resp.json()
+    except Exception as e:
+        debug(f"[YF-QUOTE] JSON parse error: {e}")
+        return {}
+
+    result_list = data.get("quoteResponse", {}).get("result", []) or []
+    out: Dict[str, Tuple[Optional[float], Optional[float], Optional[float]]] = {}
+
+    for item in result_list:
+        sym = item.get("symbol")
+        if not sym:
+            continue
+        prev_close = item.get("regularMarketPreviousClose")
+        # Ezek már %-ban érkeznek (nem 0–1 frakcióban)
+        ah_pct = item.get("postMarketChangePercent")
+        pm_pct = item.get("preMarketChangePercent")
+        # Biztonság kedvéért float() konverzió – ha nem konvertálható, None marad
+        def _to_float(x):
+            try:
+                return float(x)
+            except Exception:
+                return None
+        prev_close_f = _to_float(prev_close)
+        ah_pct_f = _to_float(ah_pct)
+        pm_pct_f = _to_float(pm_pct)
+        out[sym.upper()] = (prev_close_f, ah_pct_f, pm_pct_f)
+
+    return out
+
+
 def fetch_chart(symbol: str) -> Tuple[dict, List[int], List[Optional[float]]]:
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
     params = {"range": "2d", "interval": "5m", "includePrePost": "true"}
@@ -275,27 +333,17 @@ def compute_ah_pm_move(
 ) -> Tuple[Optional[float], Optional[float], Optional[float]]:
     """Visszaadja: (rth_close_price, ah_pct, pm_pct)
 
-    AH/PM számítás #1-hez, a "tegnapi teljes RTH nap" logikával.
+    Haladó, bíblia-kompatibilis logika #1-hez:
 
-    - Forrás: Yahoo v8 chart, 2d/5m, includePrePost=true.
-    - RTH:      09:30–16:00
-    - AH:       16:00–20:00
-    - Premarket:04:00–09:30
-
-    Lépések:
-      1) A 2 napos sorozatból kiválasztjuk a *legutóbbi* RTH-napot
-         (base_date = max(rth.date)). Ez lesz az "előző kereskedési nap".
-      2) A base_date-hez tartozó utolsó RTH-gyertya záróárát használjuk
-         bázisnak (rth_close_price).
-      3) AH: csak a base_date-hez tartozó, a záró utáni (16–20) gyertyák
-         utolsó árát vesszük figyelembe.
-      4) PM: a base_date UTÁNI nap(ok) 04–09:30 közötti gyertyái közül
-         az utolsó ár, ha van.
-      5) Ha nincs egyáltalán PM-gyertya, fallbackként az első RTH-gyertya
-         (következő nap nyitó környéke) alapján számolunk PM%-ot.
-
-    Így az AH és PM mindig az *utolsó teljes RTH nap* zárójához képest
-    értendő, és nem keveredik bele régebbi AH/PM blokk.
+    - A Yahoo 2d/5m + includePrePost sorozatából külön gyűjtjük:
+      * RTH: 09:30–16:00
+      * After-hours: 16:00–20:00
+      * Premarket: 04:00–09:30
+    - Megkeressük az IDŐBEN LEGHAMARABB érkező pre/post (AH vagy PM) gyertyát.
+    - Az ehhez képest UTOLSÓ MEGELŐZŐ RTH gyertya záróára a bázis
+      (utolsó teljes RTH záró).
+    - AH és PM mozgást ehhez a bázishoz viszonyítjuk, függetlenül attól,
+      hogy mikor fut a script (nyitás előtt, közben, után).
     """
     if not timestamps or not closes:
         return None, None, None
@@ -333,14 +381,26 @@ def compute_ah_pm_move(
     if not rth_points:
         return None, None, None
 
-    # 1) Legutóbbi RTH-nap (előző kereskedési nap)
-    base_date = max(p[0].date() for p in rth_points)
-    base_rth = [p for p in rth_points if p[0].date() == base_date]
-    if not base_rth:
+    # Ha nincs egyáltalán pre/post adat, akkor tényleg nincs mit jelenteni
+    if not ah_points and not pm_points:
         return None, None, None
-    last_rth_dt, rth_close_price = base_rth[-1]
 
-    # 2) AH: ugyanarra a napra (base_date), a záró utáni 16–20 közötti gyertyák
+    # 1) Keressük meg az IDŐBEN LEGHAMARABB érkező pre/post gyertyát
+    first_prepost_dt: Optional[dt.datetime] = None
+    if ah_points:
+        first_prepost_dt = ah_points[0][0]
+    if pm_points and (first_prepost_dt is None or pm_points[0][0] < first_prepost_dt):
+        first_prepost_dt = pm_points[0][0]
+
+    # 2) Ehhez képest az utolsó megelőző RTH-gyertya a bázis
+    base_candidates = [p for p in rth_points if p[0] < first_prepost_dt] if first_prepost_dt else rth_points
+    if not base_candidates:
+        base_candidates = rth_points  # fallback: összes közül az utolsó
+    last_rth_dt, rth_close_price = base_candidates[-1]
+
+    base_date = last_rth_dt.date()
+
+    # 3) After-hours: ugyanarra a napra, a záró utáni 16:00–20:00 tartományból
     ah_for_base = [p for p in ah_points if p[0].date() == base_date and p[0] > last_rth_dt]
     if ah_for_base:
         ah_last_price = ah_for_base[-1][1]
@@ -348,21 +408,16 @@ def compute_ah_pm_move(
     else:
         ah_pct = None
 
-    # 3) PM: a base_date UTÁNI nap(ok) 04–09:30 közötti gyertyák
-    pm_for_base = [p for p in pm_points if p[0].date() > base_date]
+    # 4) Premarket: a bázis nap utáni napra eső 04:00–09:30 közötti gyertyák
+    pm_for_base = [p for p in pm_points if p[0] > last_rth_dt]
     if pm_for_base:
         pm_last_price = pm_for_base[-1][1]
         pm_pct = (pm_last_price - rth_close_price) / rth_close_price * 100.0
     else:
-        # Fallback: ha nincs PM-gyertya, használjuk az első RTH-gyertyát a base_date után
-        rth_after_base = [p for p in rth_points if p[0].date() > base_date]
-        if rth_after_base:
-            first_rth_price = rth_after_base[0][1]
-            pm_pct = (first_rth_price - rth_close_price) / rth_close_price * 100.0
-        else:
-            pm_pct = None
+        pm_pct = None
 
     return rth_close_price, ah_pct, pm_pct
+
 
 def fmt_pct(value: Optional[float]) -> str:
     if value is None or math.isnan(value):
@@ -381,8 +436,13 @@ def generate_model_report(
     # Pozíciók: a master/watchlist alapján inferálva (nincs külön positions.csv)
     positions = infer_positions_from_watchlist(watchlist_path)
     watch = load_watchlist(watchlist_path)
-
     all_symbols = sorted(set(watch.keys()) | set(positions.keys()))
+
+    ah_pm_mode = os.environ.get("AH_PM_MODE", AH_PM_MODE).lower()
+    quote_map: Dict[str, Tuple[Optional[float], Optional[float], Optional[float]]] = {}
+    if ah_pm_mode == "spark":
+        quote_map = fetch_yahoo_quote_batch(all_symbols)
+
 
     missing: Dict[str, str] = {}
     darab_results: List[dict] = []
@@ -391,11 +451,27 @@ def generate_model_report(
     for sym in all_symbols:
         ah_pct: Optional[float] = None
         pm_pct: Optional[float] = None
+        rth_close: Optional[float] = None
 
         try:
-            meta, ts, closes = fetch_chart(sym)
-            rth_close, ah_pct, pm_pct = compute_ah_pm_move(meta, ts, closes)
-            if pm_pct is None:
+            # 1) Elsődlegesen Yahoo quote/spark feed (UI-kompatibilis AH/PM)
+            if ah_pm_mode == "spark":
+                qt = quote_map.get(sym)
+                if qt:
+                    rth_close, ah_pct, pm_pct = qt
+
+            # 2) Ha nincs értelmezhető adat a quote feedből, próbáljuk meg a chartot
+            if rth_close is None and ah_pct is None and pm_pct is None:
+                meta, ts, closes = fetch_chart(sym)
+                rth_close_chart, ah_from_chart, pm_from_chart = compute_ah_pm_move(meta, ts, closes)
+                rth_close = rth_close_chart
+                if ah_pct is None:
+                    ah_pct = ah_from_chart
+                if pm_pct is None:
+                    pm_pct = pm_from_chart
+
+            # 3) Premarket fallback MarketWatch-ról – csak ha még mindig nincs PM, de van bázisár
+            if pm_pct is None and rth_close is not None:
                 try:
                     pm_from_mw = fetch_marketwatch_premarket_pct(sym, rth_close)
                     if pm_from_mw is not None:
@@ -428,7 +504,6 @@ def generate_model_report(
             darab_results.append(entry)
         elif max_move >= k_val:
             watch_results.append(entry)
-
     if not missing:
         coverage_line = "Lefedettség: TELJES"
     else:
