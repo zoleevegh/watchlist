@@ -20,7 +20,7 @@ A kimenet a high_conv_1.json, amelyet a macro_highconv_helpers_v2.py tud beolvas
 HASZNÁLAT
 ---------
 1) Töltsd ki az ANALYST_FEED_URL konstansban az Apps Script URL-t, pl.:
-       ANALYST_FEED_URL = "https://script.google.com/macros/s/XXXX/exec"
+       ANALYST_FEED_URL = "https://script.google.com/macros/s/AKfycbxxCqoEMGbvMayN4iz6JpfXQzaR9m5tobVmzw_CopDtPnjfRDdnX2Os2289ZCp25uez/exec"
    A script automatikusan ?type=analyst&report=1&days=DAYS_BACK paraméterekkel hívja.
 
 2) Add meg az EXCLUDE_TICKERS_FILE utat, amely egy sima szöveges / CSV fájl,
