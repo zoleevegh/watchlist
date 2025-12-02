@@ -59,7 +59,7 @@ import requests
 # --- KONFIGURÁCIÓ --------------------------------------------------------------
 
 # IDE ÍRD BE AZ APPS SCRIPT ANALYST FEED URL-JÉT (alap, paraméterek nélkül)
-ANALYST_FEED_URL = "https://script.google.com/macros/s/PASTE_YOUR_ID_HERE/exec"
+ANALYST_FEED_URL = "https://script.google.com/macros/s/AKfycbxxCqoEMGbvMayN4iz6JpfXQzaR9m5tobVmzw_CopDtPnjfRDdnX2Os2289ZCp25uez/exec"
 
 # Hány napra visszamenőleg nézzük az analyst eseményeket a high-convhez
 DAYS_BACK = 30
