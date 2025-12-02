@@ -1,55 +1,39 @@
 """
-highconv_builder.py
+highconv_builder.py  (Sheet-alapú kizárásos verzió – LINKELVE)
 
 3–12 hónapos „high-conviction” jelöltek automatikus azonosítása és high_conv_1.json generálása.
 
-ALAPELV
--------
-A script az Apps Scriptes analyst feedet használja bemenetként, emellett Yahoo Finance
-snapshotot kér le, és a biblia szerinti 5 jelből épít pontszámot:
+EZ A VERZIÓ MÁR TARTALMAZZA AZ ÖSSZES LINKET
+--------------------------------------------
+- ANALYST_FEED_URL: a jelenlegi Apps Script analyst endpointod
+    https://script.google.com/macros/s/AKfycbxxCqoEMGbvMayN4iz6JpfXQzaR9m5tobVmzw_CopDtPnjfRDdnX2Os2289ZCp25uez/exec
 
-1) 2–3+ friss felminősítés / céláremelés nagy házaktól
-2) Iránymutatás-emelés / pozitív guide (kulcsszavak a megjegyzésben)
-3) Konszenzus EPS / árbevétel felfelé módosul  [JELENLEG PLACEHOLDER, 0 pont]
-4) Közelgő konkrét katalizátor (3–12 hónap): event / launch / approval jellegű kulcsszavak
-5) Relatív erő / 52w csúcs közeli teljesítmény (aktuális ár max. 5%-on belül a 52w high-tól)
+- EXCLUDE_TICKERS_CSV_URL: a kézi futásoknál is használt MASTER CSV linked
+    https://docs.google.com/spreadsheets/d/e/2PACX-1vS0vpBd1ADF3_Godyflgh3-TbJoj_CCRBJ4QHeLiZCY12tHPWuTIL5OZBTByMApdT92vjS2pRpI1koM/pub?output=csv
 
-Legalább 2 jelnek teljesülnie kell, és a pontszámnak el kell érnie egy küszöböt (0.6).
-A kimenet a high_conv_1.json, amelyet a macro_highconv_helpers_v2.py tud beolvasni.
+A kizárandó tickereket (portfólió + watchlist) dinamikusan a fenti CSV-ből olvassa,
+nem kell semmit txt-be írogatnod. A txt csak opcionális extra rásegítés.
 
 HASZNÁLAT
 ---------
-1) Töltsd ki az ANALYST_FEED_URL konstansban az Apps Script URL-t, pl.:
-       ANALYST_FEED_URL = "https://script.google.com/macros/s/AKfycbxxCqoEMGbvMayN4iz6JpfXQzaR9m5tobVmzw_CopDtPnjfRDdnX2Os2289ZCp25uez/exec"
-   A script automatikusan ?type=analyst&report=1&days=DAYS_BACK paraméterekkel hívja.
-
-2) Add meg az EXCLUDE_TICKERS_FILE utat, amely egy sima szöveges / CSV fájl,
-   és tartalmazza azokat a tickereket (portfólió + watchlist), amelyeket NEM
-   akarunk high-conv jelöltként látni (egy sor = egy ticker, vagy vesszővel
-   elválasztva).
-
-3) Futtasd:
+1) Tedd ezt a fájlt a projekted gyökerébe (ugyanoda, ahol a report_runner.py van).
+2) Futtasd:
+       pip install requests   (ha még nincs)
        python highconv_builder.py
-   A script a futtatási könyvtárba írja a high_conv_1.json fájlt.
-
-4) A report_runner-ben a macro_highconv_helpers_v2.inject_macro_and_highconv_blocks
-   már tudja használni ezt a JSON-t a #1-es jelentés végén.
-
-MEGJEGYZÉS
-----------
-- A script `requests` modult használ HTTP hívásokhoz. Ha nincs telepítve:
-      pip install requests
-- A Yahoo Finance quote API egy publikus endpointot használ, extra lib nélkül.
+3) Eredmény:
+       high_conv_1.json
+   - Ezt a macro_highconv_helpers_v2.inject_macro_and_highconv_blocks
+     automatikusan be fogja fűzni a #1-es riport végére.
 """
 
 from __future__ import annotations
 
+import csv
 import json
-import math
-import re
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
+from io import StringIO
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set
 
@@ -58,19 +42,28 @@ import requests
 
 # --- KONFIGURÁCIÓ --------------------------------------------------------------
 
-# IDE ÍRD BE AZ APPS SCRIPT ANALYST FEED URL-JÉT (alap, paraméterek nélkül)
-ANALYST_FEED_URL = "https://script.google.com/macros/s/AKfycbxxCqoEMGbvMayN4iz6JpfXQzaR9m5tobVmzw_CopDtPnjfRDdnX2Os2289ZCp25uez/exec"
+# Apps Script analyst feed URL (NÁLAD MÁR LÉTEZŐ, ÚJ LINK)
+ANALYST_FEED_URL = (
+    "https://script.google.com/macros/s/"
+    "AKfycbxxCqoEMGbvMayN4iz6JpfXQzaR9m5tobVmzw_CopDtPnjfRDdnX2Os2289ZCp25uez/exec"
+)
 
 # Hány napra visszamenőleg nézzük az analyst eseményeket a high-convhez
 DAYS_BACK = 30
 
-# Kizárandó tickerek (portfólió + watchlist)
-# Alternatív megoldásként használd az EXCLUDE_TICKERS_FILE fájlt.
-EXCLUDE_TICKERS: Set[str] = set()
+# Dinamikus kizárási lista Google Sheets CSV-ből
+# A kézi futásoknál is használt MASTER CSV linked
+EXCLUDE_TICKERS_CSV_URL = (
+    "https://docs.google.com/spreadsheets/d/e/"
+    "2PACX-1vS0vpBd1ADF3_Godyflgh3-TbJoj_CCRBJ4QHeLiZCY12tHPWuTIL5OZBTByMApdT92vjS2pRpI1koM/"
+    "pub?output=csv"
+)
 
-# Ha megadsz itt egy fájlnevet, abból beolvassa a kizárandó tickereket.
-# Formátum: egy sor = egy ticker, vagy 1 sorban több ticker vesszővel elválasztva.
+# Opcionális extra kizárási txt fájl (egy sor = ticker, vagy vesszővel elválasztott lista)
 EXCLUDE_TICKERS_FILE = "exclude_tickers.txt"
+
+# Alapból üres kézi halmaz; ha akarsz, itt is megadhatsz pár ticket fixen
+EXTRA_EXCLUDE_TICKERS: Set[str] = set()
 
 # Yahoo Finance quote endpoint (több ticker egyszerre)
 YAHOO_QUOTE_URL = "https://query1.finance.yahoo.com/v7/finance/quote"
@@ -101,7 +94,6 @@ class AnalystEvent:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "AnalystEvent":
-        # Várt kulcsok: ticker, date, firm, action, from_rating, to_rating, price_target, notes
         ticker = str(data.get("ticker") or "").upper()
         date_str = str(data.get("date") or "")
         date = _parse_date(date_str)
@@ -150,28 +142,67 @@ def _parse_date(value: str) -> datetime:
         return datetime.now(timezone.utc)
     try:
         if "T" in value:
-            # ISO datetime
             v = value.replace("Z", "+00:00")
             return datetime.fromisoformat(v)
-        # Csak dátum
         return datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=timezone.utc)
     except Exception:
         return datetime.now(timezone.utc)
 
 
 def load_exclude_tickers() -> Set[str]:
-    tickers: Set[str] = set(EXCLUDE_TICKERS)
+    """
+    Dinamikus kizárási lista építése:
+      - EXTRA_EXCLUDE_TICKERS (hardcode)
+      - EXCLUDE_TICKERS_CSV_URL (Google Sheets CSV)
+      - EXCLUDE_TICKERS_FILE (opcionális txt)
+    """
+    tickers: Set[str] = set(t.upper() for t in EXTRA_EXCLUDE_TICKERS)
+
+    # 1) CSV-ből
+    if EXCLUDE_TICKERS_CSV_URL and EXCLUDE_TICKERS_CSV_URL.startswith("http"):
+        try:
+            resp = requests.get(EXCLUDE_TICKERS_CSV_URL, timeout=30)
+            resp.raise_for_status()
+            text = resp.text
+            f = StringIO(text)
+            reader = csv.reader(f)
+            rows = list(reader)
+            if rows:
+                header = [h.strip() for h in rows[0]]
+                data_rows = rows[1:] if any(header) else rows
+
+                # Ticker oszlop index
+                ticker_idx = 0
+                for i, name in enumerate(header):
+                    if name.lower() == "ticker":
+                        ticker_idx = i
+                        break
+
+                for row in data_rows:
+                    if len(row) <= ticker_idx:
+                        continue
+                    t = row[ticker_idx].strip().upper()
+                    if t:
+                        tickers.add(t)
+        except Exception as e:
+            print(f"[highconv_builder] FIGYELEM: CSV kizárási lista betöltése sikertelen: {e}")
+
+    # 2) Opcionális txt fájl
     path = Path(EXCLUDE_TICKERS_FILE)
     if path.is_file():
-        text = path.read_text(encoding="utf-8")
-        for line in text.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            for part in line.replace(";", ",").split(","):
-                t = part.strip().upper()
-                if t:
-                    tickers.add(t)
+        try:
+            text = path.read_text(encoding="utf-8")
+            for line in text.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                for part in line.replace(";", ",").split(","):
+                    t = part.strip().upper()
+                    if t:
+                        tickers.add(t)
+        except Exception as e:
+            print(f"[highconv_builder] FIGYELEM: txt kizárási lista betöltése sikertelen: {e}")
+
     return tickers
 
 
@@ -182,11 +213,7 @@ def fetch_analyst_events() -> List[AnalystEvent]:
         { "ok": true, "events": [ ... ] }
     legyen.
     """
-    params = {
-        "type": "analyst",
-        "report": "1",
-        "days": str(DAYS_BACK),
-    }
+    params = {"type": "analyst", "report": "1", "days": str(DAYS_BACK)}
     resp = requests.get(ANALYST_FEED_URL, params=params, timeout=30)
     resp.raise_for_status()
     data = resp.json()
@@ -230,11 +257,9 @@ def classify_events(events: Iterable[AnalystEvent]) -> Dict[str, TickerSignals]:
         for ev in evs:
             act = ev.action.lower()
             notes = ev.notes.lower()
-            # egyszerű szabályok: upgrade / initiate / overweight / buy stb.
             if any(kw in act for kw in ["upgrade", "initiated", "overweight", "outperform", "buy"]):
                 positive_count += 1
                 continue
-            # PT emelés kulcsszó a megjegyzésben
             if "pt emelés" in notes or "price target raised" in notes or "pt raised" in notes:
                 positive_count += 1
         sig.positive_analyst_events = positive_count
@@ -294,11 +319,7 @@ def fetch_yahoo_snapshot(tickers: Iterable[str]) -> Dict[str, Dict[str, Any]]:
         return {}
 
     symbols = ",".join(tickers_list)
-    resp = requests.get(
-        YAHOO_QUOTE_URL,
-        params={"symbols": symbols},
-        timeout=20,
-    )
+    resp = requests.get(YAHOO_QUOTE_URL, params={"symbols": symbols}, timeout=20)
     resp.raise_for_status()
     data = resp.json()
 
@@ -343,7 +364,7 @@ def apply_52w_high_signal(signals: Dict[str, TickerSignals], yahoo_quotes: Dict[
 def compute_scores(signals: Dict[str, TickerSignals]) -> None:
     """
     A biblia 5 jelölését pontszámokká alakítja.
-    A pontszám kézzel hangolható; most egy egyszerű lineáris modell:
+    Egyszerű súlyozás:
       - 1) pozitív analyst események (>=2): +0.4
       - 2) guidance upgrade: +0.3
       - 3) konszenzus felhúzás (placeholder): +0.2
@@ -352,29 +373,20 @@ def compute_scores(signals: Dict[str, TickerSignals]) -> None:
     """
     for sig in signals.values():
         score = 0.0
-        # 1)
         if sig.positive_analyst_events >= 2:
             score += 0.4
-        # 2)
         if sig.has_guidance_upgrade:
             score += 0.3
-        # 3)
         if sig.has_consensus_revision_up:
             score += 0.2
-        # 4)
         if sig.has_future_catalyst:
             score += 0.2
-        # 5)
         if sig.near_52w_high:
             score += 0.2
-
         sig.score = score
 
 
-def select_highconv(
-    signals: Dict[str, TickerSignals],
-    exclude_tickers: Set[str],
-) -> List[TickerSignals]:
+def select_highconv(signals: Dict[str, TickerSignals], exclude_tickers: Set[str]) -> List[TickerSignals]:
     """
     Kiválasztja a high-conv jelölteket:
       - nincs a kizárandó halmazban,
@@ -387,7 +399,6 @@ def select_highconv(
         if ticker in exclude_tickers:
             continue
 
-        # jel-szám
         signal_flags = [
             sig.positive_analyst_events >= 2,
             sig.has_guidance_upgrade,
@@ -404,14 +415,11 @@ def select_highconv(
 
         candidates.append(sig)
 
-    # score szerint csökkenőben rendezve
     candidates.sort(key=lambda s: s.score, reverse=True)
     return candidates
 
 
-def build_highconv_json(
-    candidates: List[TickerSignals],
-) -> List[Dict[str, Any]]:
+def build_highconv_json(candidates: List[TickerSignals]) -> List[Dict[str, Any]]:
     """
     A TickerSignals listát high_conv_1.json kompatibilis dict-listává alakítja.
     """
@@ -460,8 +468,7 @@ def save_json(path: Path, data: Any) -> None:
 
 def main() -> None:
     exclude_tickers = load_exclude_tickers()
-
-    print(f"[highconv_builder] Kizárandó tickerek: {len(exclude_tickers)} db")
+    print(f"[highconv_builder] Kizárandó tickerek összesen: {len(exclude_tickers)} db")
 
     print(f"[highconv_builder] Analyst feed letöltése (utolsó {DAYS_BACK} nap)...")
     events = fetch_analyst_events()
