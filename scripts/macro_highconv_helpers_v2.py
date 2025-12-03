@@ -1,282 +1,333 @@
 """
 macro_highconv_helpers_v2.py
+---------------------------------
+Utófeldolgozó script a #1 jelentéshez.
 
-Helper függvények a #1-es jelentés (summary_report_1.md) utólagos módosításához:
-- macro_news_1.json → "Politika / FED / Makró" blokk a riport ELEJÉRE (Lefedettség: után)
-- high_conv_1.json  → "Listán kívüli, 3–12 hónapos high-conviction jelöltek" blokk a riport VÉGÉRE
+Feladatok:
+- Beolvassa a macro_news_1.json állományt, és rövid "Politika / FED / Makró"
+  blokkot készít belőle.
+- Beolvassa a high_conv_1.json állományt (ha létezik), és elkészíti a
+  "Listán kívüli, 3–12 hónapos high‑conviction jelöltek" blokkot.
+- A két blokkot beilleszti a summary_report_1.md fájlba:
+    * a makró blokk a "Lefedettség: ..." sor UTÁN kerül,
+    * a high‑conv blokk a "Job summary generated" sor ELÉ (ha van ilyen),
+      különben a fájl végére.
+
+Használat (alapértelmezett fájlnevekkel):
+    python macro_highconv_helpers_v2.py
+
+Vagy paraméterezve:
+    python macro_highconv_helpers_v2.py \ 
+        --report summary_report_1.md \ 
+        --macro macro_news_1.json \ 
+        --highconv high_conv_1.json
+
+Elvárt JSON formátumok
+----------------------
+macro_news_1.json:
+{
+  "generated_at": "...",
+  "report_type": 1,
+  "items": [
+    "Bloomberg: ...",
+    "Reuters: ...",
+    ...
+  ]
+}
+
+high_conv_1.json:
+Lehet közvetlen lista vagy objektum "items" kulccsal, pl:
+
+[
+  {
+    "ticker": "XYZ",
+    "summary": "Több felminősítés, céláremelés, erős guide.",
+    "detail": "Hosszabb leírás (opcionális).",
+    "source": "MarketBeat / Yahoo Finance",
+    "url": "https://..."
+  },
+  ...
+]
+
+vagy
+
+{
+  "generated_at": "...",
+  "items": [ { ... }, ... ]
+}
+
+A script rugalmasan kezeli mindkettőt.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime
-from pathlib import Path
-from typing import Any, Dict, List, Union
+import argparse
 import json
+from dataclasses import dataclass
+from pathlib import Path
+from textwrap import fill
+from typing import Any, Iterable, List, Optional
 
 
-JsonList = List[Dict[str, Any]]
-PathLike = Union[str, Path]
+# -----------------------------
+# Segéd típusok
+# -----------------------------
+
+@dataclass
+class MacroNewsItem:
+    text: str
 
 
-def _load_json_items(path: PathLike) -> JsonList:
-    """
-    macro_news_1.json / high_conv_1.json betöltése.
-    Elfogad: listát vagy {'items': [...]} / {'events': [...]} / {'data': [...]} dictet.
-    Ha a fájl nem létezik, üres listát ad vissza.
-    """
-    p = Path(path)
-    if not p.is_file():
+@dataclass
+class HighConvItem:
+    ticker: str
+    summary: str
+    detail: Optional[str] = None
+    source: Optional[str] = None
+    url: Optional[str] = None
+
+
+# -----------------------------
+# JSON beolvasás
+# -----------------------------
+
+def _load_json(path: Path) -> Any:
+    if not path.exists():
+        return None
+    with path.open("r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def load_macro_news(path: Path) -> List[MacroNewsItem]:
+    data = _load_json(path)
+    if not data:
         return []
 
-    with p.open("r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    if isinstance(data, list):
-        return data
+    items_raw: Iterable[str]
     if isinstance(data, dict):
-        for key in ("items", "events", "data"):
-            items = data.get(key)
-            if isinstance(items, list):
-                return items
+        items_raw = data.get("items") or []
+    elif isinstance(data, list):
+        items_raw = data
+    else:
+        return []
 
-    return []
-
-
-def _parse_iso_dt(value: str) -> str:
-    """
-    ISO datetime → 'YYYY-MM-DD HH:MM' (lokális konverzió nélkül, egyszerűen).
-    Ha nem értelmezhető, üres stringet adunk vissza.
-    """
-    if not value:
-        return ""
-    try:
-        # 'Z' → '+00:00'
-        v = value.replace("Z", "+00:00")
-        dt = datetime.fromisoformat(v)
-        return dt.strftime("%Y-%m-%d %H:%M")
-    except Exception:
-        return ""
+    items: List[MacroNewsItem] = []
+    for raw in items_raw:
+        if not raw:
+            continue
+        items.append(MacroNewsItem(text=str(raw).strip()))
+    return items
 
 
-def render_macro_block(macro_items: JsonList, max_lines: int = 5) -> str:
-    """
-    'Politika / FED / Makró – kiemelt hírek' blokk markdownban.
+def load_highconv(path: Path) -> List[HighConvItem]:
+    data = _load_json(path)
+    if not data:
+        return []
 
-    Elvárt JSON (példa):
-    [
-      {
-        "published": "2025-11-28T14:30:00Z",
-        "headline": "Fed official signals no cuts before mid-2026",
-        "source": "Reuters",
-        "short_summary": "Hawkish beszéd, hozam-emelkedés",
-        "impact_score": 0.9
-      },
-      ...
-    ]
+    items_raw: Iterable[Any]
+    if isinstance(data, dict):
+        items_raw = data.get("items") or []
+    elif isinstance(data, list):
+        items_raw = data
+    else:
+        return []
 
-    A listát impact_score szerint rendezi (ha van), és legfeljebb max_lines sort vesz fel.
-    Ha nincs érdemi adat, üres stringgel tér vissza.
-    """
-    if not macro_items:
-        return ""
-
-    def _score(it: Dict[str, Any]) -> float:
-        return float(it.get("impact_score") or it.get("score") or 0.0)
-
-    sorted_items = sorted(macro_items, key=_score, reverse=True)
-    top_items = sorted_items[:max_lines]
-
-    lines: List[str] = []
-    lines.append("### Politika / FED / Makró – kiemelt hírek")
-    lines.append("")
-
-    for item in top_items:
-        ts = _parse_iso_dt(str(item.get("published") or item.get("time") or ""))
-        headline = (item.get("headline") or item.get("title") or "").strip()
-        source = (item.get("source") or "").strip()
-        short = (item.get("short_summary") or item.get("summary") or "").strip()
-
-        parts: List[str] = []
-        if ts:
-            parts.append(f"[{ts}]")
-        if headline:
-            parts.append(headline)
-        if source:
-            parts.append(f"({source})")
-
-        base = " ".join(parts).strip()
-        if not base:
+    items: List[HighConvItem] = []
+    for raw in items_raw:
+        if not raw:
             continue
 
-        if short:
-            line = f"- {base} – {short}"
+        if isinstance(raw, dict):
+            ticker = str(raw.get("ticker", "")).strip().upper()
+            if not ticker:
+                continue
+            summary = str(raw.get("summary") or raw.get("reason") or "").strip()
+            detail = str(raw.get("detail") or "").strip() or None
+            source = str(raw.get("source") or "").strip() or None
+            url = str(raw.get("url") or "").strip() or None
         else:
-            line = f"- {base}"
+            # Ha csak egy sima string, akkor ticker nélkül, csak szövegként kezeljük
+            ticker = ""
+            summary = str(raw).strip()
+            detail = None
+            source = None
+            url = None
 
-        lines.append(line)
+        if not summary:
+            continue
 
-    if len(lines) <= 2:
-        # Nem sikerült érdemi sort generálni
+        items.append(HighConvItem(
+            ticker=ticker,
+            summary=summary,
+            detail=detail,
+            source=source,
+            url=url,
+        ))
+
+    return items
+
+
+# -----------------------------
+# Markdown generálás
+# -----------------------------
+
+def build_macro_block(items: List[MacroNewsItem]) -> str:
+    """
+    3–5 soros, tömör makró blokk.
+    A 8 headline-ból csak az első 3–5 kerül bele, hogy ne legyen túl hosszú.
+    """
+    if not items:
         return ""
+
+    # első 4 headline bőven elég
+    use_items = items[:4]
+
+    lines = []
+    lines.append("### 🌍 Politika / FED / Makró – rövid kivonat")
+    lines.append("")
+    for it in use_items:
+        wrapped = fill(it.text, width=110)
+        lines.append(f"- {wrapped}")
+    lines.append("")
+
+    return "\n".join(lines)
+
+
+def build_highconv_block(items: List[HighConvItem]) -> str:
+    """
+    High-conviction blokk a riport végére.
+    Csak akkor tér vissza nem üres sztringgel, ha van legalább 1 jelölt.
+    """
+    # Üres vagy nincs listán kívüli jelölt → ne jelenjen meg blokk
+    if not items:
+        return ""
+
+    lines: List[str] = []
+    lines.append("### 🚀 Listán kívüli, 3–12 hónapos high‑conviction jelöltek")
+    lines.append("")
+
+    for it in items:
+        if it.ticker:
+            base = f"**{it.ticker}** — {it.summary}"
+        else:
+            base = it.summary
+
+        extra_parts = []
+        if it.detail:
+            extra_parts.append(it.detail)
+        if it.source:
+            extra_parts.append(f"Forrás: {it.source}")
+        if it.url:
+            extra_parts.append(it.url)
+
+        extra = " ".join(extra_parts).strip()
+        if extra:
+            full = f"{base} ({extra})"
+        else:
+            full = base
+
+        wrapped = fill(full, width=110)
+        lines.append(f"- {wrapped}")
 
     lines.append("")
     return "\n".join(lines)
 
 
-def render_highconv_block(hc_items: JsonList) -> str:
-    """
-    'Listán kívüli, 3–12 hónapos high-conviction jelöltek' blokk markdownban.
+# -----------------------------
+# Riport módosítás
+# -----------------------------
 
-    Elvárt JSON (javasolt forma):
-    [
-      {
-        "ticker": "ABC",
-        "company": "ABC Corp",
-        "thesis": "3–12 hónapos re-rating katalizátor: AI infra capex ciklus.",
-        "score": 0.86,
-        "signals": [
-          "3 friss felminősítés nagy házaktól",
-          "EPS-konszenzus felfelé húzva",
-          "közelgő terméklaunch 6 hónapon belül"
-        ]
-      },
-      ...
-    ]
-
-    A listát score szerint rendezi (ha van), és csak akkor ad vissza blokkot,
-    ha legalább 1 elem értelmesen felépíthető.
-    """
-    if not hc_items:
-        return ""
-
-    def _score(it: Dict[str, Any]) -> float:
-        return float(it.get("score") or 0.0)
-
-    sorted_items = sorted(hc_items, key=_score, reverse=True)
-
-    lines: List[str] = []
-    lines.append("### Listán kívüli, 3–12 hónapos high-conviction jelöltek")
-    lines.append("")
-    lines.append("_Csak a portfólión / watchlisten kívüli nevek szerepelnek._")
-    lines.append("")
-
-    added_any = False
-
-    for item in sorted_items:
-        ticker = (item.get("ticker") or "").strip()
-        company = (item.get("company") or item.get("name") or "").strip()
-        thesis = (item.get("thesis") or item.get("reason") or "").strip()
-        score_val = item.get("score")
-
-        header_parts: List[str] = []
-        if ticker:
-            header_parts.append(f"**{ticker}**")
-        if company:
-            header_parts.append(company)
-        if score_val is not None:
-            try:
-                header_parts.append(f"(score: {float(score_val):.2f})")
-            except Exception:
-                pass
-
-        header_line = " ".join(header_parts).strip()
-        if not header_line and not thesis:
-            # sem ticker, sem érdemi szöveg → ugorjuk
-            continue
-
-        added_any = True
-
-        if header_line:
-            lines.append(f"- {header_line}")
-        if thesis:
-            lines.append(f"  - {thesis}")
-
-        signals = item.get("signals") or item.get("drivers") or []
-        if isinstance(signals, list) and signals:
-            for s in signals:
-                s_str = str(s).strip()
-                if s_str:
-                    lines.append(f"    - {s_str}")
-
-        lines.append("")
-
-    if not added_any:
-        return ""
-
-    # Végére egyetlen newline
-    return "\n".join(lines).rstrip() + "\n"
-
-
-def inject_macro_and_highconv_blocks(
-    report_md_path: PathLike = "summary_report_1.md",
-    macro_json_path: PathLike = "macro_news_1.json",
-    highconv_json_path: PathLike = "high_conv_1.json",
+def inject_blocks_into_report(
+    report_path: Path,
+    macro_block: str,
+    highconv_block: str,
 ) -> None:
     """
-    A már elkészült summary_report_1.md módosítása:
-
-    - Beolvassa az eredeti tartalmat.
-    - Ha van makró blokk (macro_news_1.json → render_macro_block),
-      azt a 'Lefedettség:' sort követően szúrja be.
-    - Ha van high-conv blokk (high_conv_1.json → render_highconv_block),
-      azt a fájl végére fűzi.
-
-    Ha bármelyik JSON nem létezik vagy üres, az adott blokk egyszerűen kimarad.
+    Beilleszti a makró- és high-conv blokkokat a md riportba.
+    A fájlt HELYBEN módosítja.
     """
-    report_path = Path(report_md_path)
-    if not report_path.is_file():
-        raise FileNotFoundError(f"Nem találom a riportot: {report_path}")
-
     text = report_path.read_text(encoding="utf-8")
-
-    macro_items = _load_json_items(macro_json_path)
-    hc_items = _load_json_items(highconv_json_path)
-
-    macro_block = render_macro_block(macro_items).strip()
-    highconv_block = render_highconv_block(hc_items).strip()
-
     lines = text.splitlines()
 
-    # Makró blokk beszúrása a 'Lefedettség:' sort követően
-    insert_idx = None
-    for i, line in enumerate(lines):
-        if line.startswith("Lefedettség:"):
-            insert_idx = i + 1
-            break
+    new_lines: List[str] = []
 
-    new_lines = lines
-    if macro_block:
-        if insert_idx is None:
-            # Ha nincs Lefedettség sor, a fájl elejére kerül
-            new_lines = [macro_block, ""] + lines
-        else:
-            new_lines = (
-                lines[:insert_idx]
-                + [""]
-                + [macro_block]
-                + [""]
-                + lines[insert_idx:]
-            )
+    inserted_macro = False
+    inserted_highconv = False
 
-    text_with_macro = "\n".join(new_lines)
+    # Makró blokk: a "Lefedettség:" sort keressük
+    for idx, line in enumerate(lines):
+        new_lines.append(line)
 
-    # High-conv blokk a végére
-    if highconv_block:
-        if not text_with_macro.endswith("\n"):
-            text_with_macro += "\n"
-        text_with_macro = text_with_macro.rstrip() + "\n\n" + highconv_block + "\n"
+        if (not inserted_macro) and line.strip().startswith("Lefedettség:") and macro_block.strip():
+            # egy üres sor + a makró blokk
+            new_lines.append("")
+            new_lines.append(macro_block.rstrip())
+            new_lines.append("")
+            inserted_macro = True
 
-    report_path.write_text(text_with_macro, encoding="utf-8")
+    if not inserted_macro and macro_block.strip():
+        # Ha nem talált "Lefedettség:" sort, tegyük a fájl eleje után
+        new_lines.insert(0, macro_block.rstrip())
+        new_lines.insert(0, "")
+        inserted_macro = True
+
+    # High-conv blokk: a "Job summary generated" elé
+    final_lines: List[str] = []
+    for line in new_lines:
+        if (not inserted_highconv) and "Job summary generated" in line and highconv_block.strip():
+            final_lines.append("")
+            final_lines.append(highconv_block.rstrip())
+            final_lines.append("")
+            inserted_highconv = True
+        final_lines.append(line)
+
+    if not inserted_highconv and highconv_block.strip():
+        # Ha nincs "Job summary generated" sor, akkor a végére tesszük
+        final_lines.append("")
+        final_lines.append(highconv_block.rstrip())
+        final_lines.append("")
+
+    report_path.write_text("\n".join(final_lines) + "\n", encoding="utf-8")
+
+
+def maybe_update_latest(report_path: Path, latest_path: Path) -> None:
+    """
+    Ha létezik latest_1.md, akkor azt is frissítjük a summary_report_1.md
+    aktuális tartalmával.
+    """
+    if report_path.exists() and latest_path.exists():
+        latest_path.write_text(report_path.read_text(encoding="utf-8"), encoding="utf-8")
+
+
+# -----------------------------
+# CLI
+# -----------------------------
+
+def main(argv: Optional[Iterable[str]] = None) -> None:
+    parser = argparse.ArgumentParser(description="Makró + high‑conv blokk beillesztése a #1 jelentésbe.")
+    parser.add_argument("--report", type=Path, default=Path("summary_report_1.md"))
+    parser.add_argument("--macro", type=Path, default=Path("macro_news_1.json"))
+    parser.add_argument("--highconv", type=Path, default=Path("high_conv_1.json"))
+    parser.add_argument("--latest", type=Path, default=Path("latest_1.md"))
+    args = parser.parse_args(list(argv) if argv is not None else None)
+
+    if not args.report.exists():
+        raise SystemExit(f"Riport fájl nem található: {args.report}")
+
+    macro_items = load_macro_news(args.macro)
+    highconv_items = load_highconv(args.highconv)
+
+    macro_block = build_macro_block(macro_items)
+    highconv_block = build_highconv_block(highconv_items)
+
+    if not macro_block and not highconv_block:
+        # Semmi új blokk → nincs teendő
+        return
+
+    inject_blocks_into_report(args.report, macro_block, highconv_block)
+    # latest_1.md szinkronban tartása (ha létezik)
+    maybe_update_latest(args.report, args.latest)
 
 
 if __name__ == "__main__":
-    # Egyszerű manuális teszt / példa:
-    #
-    # 1) Tegyél a könyvtárba egy summary_report_1.md-t
-    # 2) Adj meg egy macro_news_1.json / high_conv_1.json fájlt (dummy is lehet)
-    # 3) Futtasd:
-    #       python macro_highconv_helpers_v2.py
-    #
-    # A script módosítja a summary_report_1.md-t a fenti logika szerint.
-    inject_macro_and_highconv_blocks()
+    main()
