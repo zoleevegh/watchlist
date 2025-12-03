@@ -1,29 +1,38 @@
 """
-highconv_builder.py  (Sheet-alapú kizárásos verzió – LINKELVE)
+highconv_builder.py
+(Sheet-alapú, kizárásos high-conv builder – FRISSÍTETT LINKKEL + ÚJ OUTPUT ÚTTAL)
 
 3–12 hónapos „high-conviction” jelöltek automatikus azonosítása és high_conv_1.json generálása.
 
-EZ A VERZIÓ MÁR TARTALMAZZA AZ ÖSSZES LINKET
---------------------------------------------
-- ANALYST_FEED_URL: a jelenlegi Apps Script analyst endpointod
-    https://script.google.com/macros/s/AKfycbxxCqoEMGbvMayN4iz6JpfXQzaR9m5tobVmzw_CopDtPnjfRDdnX2Os2289ZCp25uez/exec
+FRISSÍTÉSEK EHHEZ A VERZIÓHOZ
+-----------------------------
+- ANALYST_FEED_URL: a JELENLEGI, működő Apps Script analyst endpointod
+    https://script.google.com/macros/s/AKfycbx5geIQ-eAnAqzjbPmTd5k59Hn_MnLiKh_9c8ft0nSWd2P3BQt1o5Dv6JQqNJi4q7X4Ow/exec
 
 - EXCLUDE_TICKERS_CSV_URL: a kézi futásoknál is használt MASTER CSV linked
     https://docs.google.com/spreadsheets/d/e/2PACX-1vS0vpBd1ADF3_Godyflgh3-TbJoj_CCRBJ4QHeLiZCY12tHPWuTIL5OZBTByMApdT92vjS2pRpI1koM/pub?output=csv
+
+- OUTPUT_PATH: a #1 biblia-struktúrához igazítva most már
+    reports/1/high_conv_1.json
 
 A kizárandó tickereket (portfólió + watchlist) dinamikusan a fenti CSV-ből olvassa,
 nem kell semmit txt-be írogatnod. A txt csak opcionális extra rásegítés.
 
 HASZNÁLAT
 ---------
-1) Tedd ezt a fájlt a projekted gyökerébe (ugyanoda, ahol a report_runner.py van).
-2) Futtasd:
+1) Tedd ezt a fájlt a projekted scripts/ mappájába:
+       scripts/highconv_builder.py
+
+2) Futtatás (repo gyökeréből, ahol a reports/ mappa is van):
        pip install requests   (ha még nincs)
-       python highconv_builder.py
+       python scripts/highconv_builder.py
+
 3) Eredmény:
-       high_conv_1.json
-   - Ezt a macro_highconv_helpers_v2.inject_macro_and_highconv_blocks
-     automatikusan be fogja fűzni a #1-es riport végére.
+       reports/1/high_conv_1.json
+
+   Ezt a macro_highconv_helpers_v2.py script fogja beolvasni, és a
+   „Listán kívüli, 3–12 hónapos high-conviction jelöltek” blokkot a #1-es riport
+   végére bevarrja.
 """
 
 from __future__ import annotations
@@ -42,10 +51,11 @@ import requests
 
 # --- KONFIGURÁCIÓ --------------------------------------------------------------
 
-# Apps Script analyst feed URL (NÁLAD MÁR LÉTEZŐ, ÚJ LINK)
+# Apps Script analyst feed URL – FRISSÍTETT, JELENLEGI LINK
 ANALYST_FEED_URL = (
     "https://script.google.com/macros/s/"
-    "AKfycbxxCqoEMGbvMayN4iz6JpfXQzaR9m5tobVmzw_CopDtPnjfRDdnX2Os2289ZCp25uez/exec"
+    "AKfycbx5geIQ-eAnAqzjbPmTd5k59Hn_MnLiKh_9c8ft0nSWd2P3BQt1o5Dv6JQqNJi4q7X4Ow"
+    "/exec"
 )
 
 # Hány napra visszamenőleg nézzük az analyst eseményeket a high-convhez
@@ -62,7 +72,7 @@ EXCLUDE_TICKERS_CSV_URL = (
 # Opcionális extra kizárási txt fájl (egy sor = ticker, vagy vesszővel elválasztott lista)
 EXCLUDE_TICKERS_FILE = "exclude_tickers.txt"
 
-# Alapból üres kézi halmaz; ha akarsz, itt is megadhatsz pár ticket fixen
+# Alapból üres kézi halmaz; ha akarsz, itt is megadhatsz pár tickert fixen
 EXTRA_EXCLUDE_TICKERS: Set[str] = set()
 
 # Yahoo Finance quote endpoint (több ticker egyszerre)
@@ -74,8 +84,8 @@ MIN_SCORE = 0.6
 # Min. jel szám (az 5 biblia-jelölés közül)
 MIN_SIGNAL_COUNT = 2
 
-# high_conv_1.json kimeneti fájl
-OUTPUT_PATH = Path("high_conv_1.json")
+# high_conv_1.json kimeneti fájl – BIBLIA SZERINTI HELYRE RAKVA
+OUTPUT_PATH = Path("reports/1/high_conv_1.json")
 
 
 # --- ADATSTRUKTÚRÁK ------------------------------------------------------------
@@ -463,6 +473,7 @@ def build_highconv_json(candidates: List[TickerSignals]) -> List[Dict[str, Any]]
 
 
 def save_json(path: Path, data: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
