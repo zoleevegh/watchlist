@@ -7,6 +7,8 @@ on:
       - "scripts/export_biblia_md.py"
       - ".github/workflows/update_biblia_docs.yml"
 
+  workflow_dispatch:   # <<< EZ KELL A "Run workflow" gombhoz
+
 permissions:
   contents: write  # <<< EZ A LÉNYEG
 
