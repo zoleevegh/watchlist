@@ -1,4 +1,6 @@
 # Részvények Projekt -- BIBLIA LEÍRÁS (MD)
+BIBLIA VERZIÓ: v3.2.0
+
 
 ## Fájlszerkezet, szerepek és riportlogika
 
@@ -28,6 +30,26 @@
     └─ data/
         ├─ master.csv
         └─ universe/
+
+## 1.3 GitHub Actions workflow-k (.github/workflows)
+
+.github/
+└─ workflows/
+   ├─ run_report.yml
+   │   - Napi automata #1/#2/#3 report pipeline
+   │   - Futtatja a Python modulokat sorrendben:
+   │       1) report_runner.py
+   │       2) macro_fetcher.py
+   │       3) highconv_builder.py
+   │       4) analyst_feed_parser.py
+   │       5) postprocess_report.py
+   │   - Feltölti gist-re a summary_report_1.md végleges verzióját
+   │
+   └─ update_biblia_docs.yml
+       - Dokumentáció automatikus frissítése (biblia, README, changelog)
+       - A változásokat commitolja a repo-ba
+
+
 
 ## 2. Fájlok szerepköre
 
