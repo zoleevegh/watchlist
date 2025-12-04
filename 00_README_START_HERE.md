@@ -141,3 +141,19 @@ Egyszerűen ezt mondd:
 
 # Készen vagyunk ✔️
 Ez a fájl mostantól a projekt **belépési pontja**.
+
+## Új Python modulok a #1-es jelentéshez (2025-12-04)
+
+A #1-es riport teljes tartalma már Pythonban áll össze, a következő modulokra támaszkodva:
+
+- `analyst_block_builder.py`: az `analyst_1.json` alapján felépíti a „Bejelentések & fel/lemínősítések” markdown blokkot.
+- `highconv_block_builder.py`: a `high_conv_1.json` és `catalysts_1.json` alapján elkészíti a „Közelgő katalizátorok” és a „Listán kívüli, 3–12 hónapos high-conv jelöltek” blokkokat.
+- `postprocess_report.py`: a nyers `summary_report_1.md`-hez hozzáadja a makró / analyst / katalizátor / high-conv blokkokat, és eltávolítja a „Job summary generated at run-time …” sort.
+
+A #1-es workflow-ban a `report_runner.py` után mindig fusson le a:
+
+```bash
+python scripts/postprocess_report.py --md reports/summary_report_1.md --bundle-dir bundle
+```
+
+Ez garantálja, hogy a gist-re már a biblia szerinti, végleges #1-es jelentés kerül ki.
