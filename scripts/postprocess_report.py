@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-# postprocess_report_1_v1_0_1.py
-# Version: 1.0.1 - Biblia szerinti könyvtárszerkezetre frissítve
+# postprocess_report.py
+# Version: 1.2.0 - Makró + analyst + katalizátor + high-conv blokkok, job summary törlés
 
 import json
 from pathlib import Path
