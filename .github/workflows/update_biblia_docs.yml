@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - "scripts/biblia_helper.py"
+      - "scripts/export_biblia_md.py"
       - ".github/workflows/update_biblia_docs.yml"
 
 jobs:
@@ -30,10 +31,9 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           if ! git diff --quiet docs/biblia_leiras.md; then
             git add docs/biblia_leiras.md
-            git commit -m "Update biblia_leiras.md from biblia_helper"
+            git commit -m "Update biblia_leiras.md from export_biblia_md"
           else
             echo "Nincs változás a biblia_leiras.md-ben."
-          fi
       - name: Push changes
         if: success()
         run: |
