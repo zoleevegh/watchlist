@@ -1,4 +1,4 @@
-# Részvények Projekt – BIBLIA LEÍRÁS (Frissítve)
+# Részvények Projekt – BIBLIA LEÍRÁS v3.0.0 (2025-12-04)
 
 ## 1. Könyvtárszerkezet
 
