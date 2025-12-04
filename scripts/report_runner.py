@@ -6,6 +6,7 @@ import json
 import math
 import os
 import sys
+import subprocess
 from typing import Dict, List, Optional, Tuple
 
 try:
@@ -857,6 +858,14 @@ def main() -> None:
             macro_text=args.macro,
         )
         print(text)
+        try:
+            scripts_dir = Path(__file__).resolve().parent
+            post_script = scripts_dir / "postprocess_report_1_v1_0_1.py"
+            if post_script.exists():
+                subprocess.run([sys.executable, str(post_script)], check=True)
+        except Exception as e:
+            print(f"[WARN] postprocess_report_1_v1_0_1.py futása sikertelen: {e}", file=sys.stderr)
+
     elif mode == 2:
         summary_path = args.summary or "reports/summary_report_2.md"
         json_path = "reports/latest_2.json"
