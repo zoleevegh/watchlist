@@ -7,6 +7,9 @@ on:
       - "scripts/export_biblia_md.py"
       - ".github/workflows/update_biblia_docs.yml"
 
+permissions:
+  contents: write  # <<< EZ A LÉNYEG
+
 jobs:
   update-biblia-docs:
     runs-on: ubuntu-latest
@@ -31,8 +34,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          # Ha változott az md, commitoljuk
           if ! git diff --quiet docs/biblia_leiras.md; then
             echo "Változás van a docs/biblia_leiras.md-ben, commitolom..."
             git add docs/biblia_leiras.md
