@@ -1,4 +1,6 @@
 # 00_README_START_HERE.md
+DOKUMENTUM VERZIÓ: v3.2.0
+
 # Részvények Projekt – BELÉPÉSI PONT
 # Verzió: 1.0.0 (2025-12-04)
 
