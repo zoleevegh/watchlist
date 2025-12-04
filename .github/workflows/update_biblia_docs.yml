@@ -21,20 +21,28 @@ jobs:
           python-version: "3.11"
 
       - name: Export biblia_leiras.md
+        shell: bash
         run: |
           python -m pip install --upgrade pip
           python scripts/export_biblia_md.py
 
       - name: Commit changes (if any)
+        shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Ha változott az md, commitoljuk
           if ! git diff --quiet docs/biblia_leiras.md; then
+            echo "Változás van a docs/biblia_leiras.md-ben, commitolom..."
             git add docs/biblia_leiras.md
-            git commit -m "Update biblia_leiras.md from export_biblia_md"
+            git commit -m "Update biblia_leiras.md from biblia_helper"
           else
-            echo "Nincs változás a biblia_leiras.md-ben."
+            echo "Nincs változás a docs/biblia_leiras.md-ben."
+          fi
+
       - name: Push changes
         if: success()
+        shell: bash
         run: |
           git push
