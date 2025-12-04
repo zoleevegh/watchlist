@@ -2,27 +2,33 @@
 
 ## Fájlszerkezet, szerepek és riportlogika
 
-## 1. Könyvtárszerkezet
+1. Könyvtárszerkezet
 
-    repo/
-    ├─ scripts/
-    │   ├─ report_runner.py
-    │   ├─ biblia_helper.py
-    │   ├─ macro_highconv_helpers_v2.py
-    │   ├─ highconv_builder.py
-    │   ├─ macro_fetcher.py
-    │   └─ analyst_feed_parser.py
-    ├─ reports/
-    │   ├─ 1/
-    │   │   ├─ summary_report_1.md
-    │   │   ├─ latest_1.md
-    │   │   ├─ macro_news_1.json
-    │   │   └─ high_conv_1.json
-    │   ├─ 2/
-    │   └─ 3/
-    └─ data/
-        ├─ master.csv
-        └─ universe/
+repo/
+├─ scripts/
+│   ├─ report_runner.py
+│   ├─ biblia_helper.py
+│   ├─ macro_highconv_helpers_v2.py
+│   ├─ highconv_builder.py
+│   ├─ macro_fetcher.py
+│   ├─ analyst_feed_parser.py
+│   ├─ analyst_block_builder.py       # ÚJ – analyst_1.json → „Bejelentések & fel/lemínősítések”
+│   ├─ highconv_block_builder.py      # ÚJ – high_conv_1.json / catalysts_1.json → blokkok
+│   └─ postprocess_report.py          # ÚJ – makró + analyst + catalyst + high-conv összefűzés
+├─ reports/
+│   ├─ 1/
+│   │   ├─ summary_report_1.md
+│   │   ├─ latest_1.md
+│   │   ├─ macro_news_1.json
+│   │   ├─ analyst_1.json
+│   │   ├─ catalysts_1.json
+│   │   └─ high_conv_1.json
+│   ├─ 2/
+│   └─ 3/
+└─ data/
+    ├─ master.csv
+    └─ universe/
+
 
 ## 2. Fájlok szerepköre
 
