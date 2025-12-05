@@ -1,5 +1,5 @@
 # Részvények Projekt -- BIBLIA LEÍRÁS (MD)
-BIBLIA VERZIÓ: v3.3.0
+BIBLIA VERZIÓ: v3.5.0
 
 
 ## Fájlszerkezet, szerepek és riportlogika
@@ -33,17 +33,22 @@ BIBLIA VERZIÓ: v3.3.0
 
 ## 1.3 GitHub Actions workflow-k (.github/workflows)
 
-    .github/
-    └─ workflows/
-       ├─ run_report.yml            # Napi automata #1/#2/#3 report pipeline
-       │                            # 1) report_runner.py
-       │                            # 2) macro_fetcher.py
-       │                            # 3) highconv_builder.py
-       │                            # 4) analyst_feed_parser.py
-       │                            # 5) postprocess_report.py
-       │                            # Feltölti gist-re a summary_report_1.md végleges verzióját
-       └─ update_biblia_docs.yml    # Dokumentáció automatikus frissítése (biblia, README, changelog)
-                                    # A változásokat commitolja a repo-ba
+.github/
+└─ workflows/
+   ├─ run_report.yml
+   │   - Napi automata #1/#2/#3 report pipeline
+   │   - Futtatja a Python modulokat sorrendben:
+   │       1) report_runner.py
+   │       2) macro_fetcher.py
+   │       3) highconv_builder.py
+   │       4) analyst_feed_parser.py
+   │       5) postprocess_report.py
+   │   - Feltölti gist-re a summary_report_1.md végleges verzióját
+   │
+   └─ update_biblia_docs.yml
+       - Dokumentáció automatikus frissítése (biblia, README, changelog)
+       - A változásokat commitolja a repo-ba
+
 
 
 ## 2. Fájlok szerepköre
@@ -71,38 +76,38 @@ MASTER alapján
 -   input → helper → output feldolgozás
 
 
-### scripts/analyst_feed_parser.py – elemzői/catalyst feed (ÚJ)
-
-- Feladat: az Apps Script webapp által szolgáltatott egységes JSON feed (`?type=analyst`, `?type=catalyst`) feldolgozása.
-- Környezeti változók:
-  - `ANALYST_FEED_URL`   – analyst feed endpoint (JSON)
-  - `CATALYST_FEED_URL`  – catalyst feed endpoint (JSON)
-- Kimenetek:
-  - `reports/analyst_1.json`   – elemzői események (#1/#2/#3 „Bejelentések & fel/lemínősítések” blokkhoz)
-  - `reports/catalysts_1.json` – katalizátorok (#1/#2/#3 „Közelgő katalizátorok” blokkhoz)
-- Tickerenként csoportosít, és *forrás-prioritást* rendel minden eseményhez.
-- A legjobb forrásból származó eseményt jelöli `is_primary = true` flaggel, amelyet a
-  `analyst_block_builder` / `highconv_block_builder` használhat a 1 mondatos indokhoz.
-
-#### Elemzői feed – forrás-prioritás (#1/#2/#3)
-
-Ha ugyanarra a tickerre / eseményre több hírforrás is ad információt, az 1 mondatos
-magyarázat és a „fő” event kiválasztásánál a sorrend *mindig* ez:
-
-1. **Yahoo Finance**
-2. **Bloomberg**
-3. **MarketBeat**
-4. **Reuters / AP / hivatalos IR** (Investor Relations)
-5. Egyéb források (csak ha a fenti négy közül egyik sincs)
-
-A priorizálás technikailag a `source` mező best-effort normalizálásával és egy
-`source_rank` mezővel valósul meg (`1` a legjobb, `9` az ismeretlen).
-
 ### scripts/analyst_block_builder.py
 
 - `reports/1/analyst_1.json` → „Bejelentések & fel/lemínősítések” markdown blokk építése
 - ticker / dátum / PT / rating / megjegyzés mezők összefésülése egy-egy listaponttá
 - csak formáz, nem számol újra; a nyers adatot az Apps Script feed + analyst_feed_parser.py adja
+
+### scripts/analyst_feed_parser.py – elemzői/catalyst feed (ÚJ)
+
+- Feladat: az Apps Script webapp által szolgáltatott egységes JSON feed (`?type=analyst`, `?type=catalyst`) feldolgozása.
+- Környezeti változók (GitHub Secrets → env):
+  - `ANALYST_FEED_URL_1/2/3`   – #1/#2/#3 analyst feed endpoint
+  - `CATALYST_FEED_URL_1/2/3`  – #1/#2/#3 catalyst feed endpoint
+- Kimenetek:
+  - `reports/1/analyst_1.json`, `reports/2/analyst_2.json`, `reports/3/analyst_3.json`
+  - `reports/1/catalysts_1.json`, `reports/2/catalysts_2.json`, `reports/3/catalysts_3.json`
+- Tickerenként csoportosít, és *forrás-prioritást* rendel minden eseményhez.
+- A legjobb forrásból származó eseményt jelöli `is_primary = true` flaggel, amelyet a
+  `analyst_block_builder.py` / `highconv_block_builder.py` használ az 1 mondatos okhoz.
+
+#### Elemzői hírek forrás-prioritása (#1/#2/#3)
+
+Azonos tickerhez / eseményhez tartozó több forrás esetén mindig az alábbi sorrend dönt:
+
+1. **Yahoo Finance**
+2. **Bloomberg**
+3. **MarketBeat**
+4. **Reuters / AP / hivatalos IR**
+5. Egyéb források (csak ha a fenti négy között nincs találat)
+
+A priorizálás technikailag a `source` mező normalizálásával és egy `source_rank` mezővel
+valósul meg (`1` a legjobb, `9` az ismeretlen), és az `is_primary` jelölés kerül fel a
+legjobb (prioritás + időbélyeg) eseményre.
 
 ### scripts/highconv_block_builder.py
 
@@ -164,78 +169,63 @@ Legalább 2 teljesüljön: - elemzői felminősítések - guide emelés -
 konszenzus-felhúzás - 3--12 hónapos katalizátor - relatív erő / 52w high
 közeli
 
-
 ---
 
-## 7. End-to-end folyamat áttekintése (példa)
+## 7. End-to-end folyamat áttekintése (példával)
 
-### 7.1 Apps Script → Python pipeline (konkrét adatút)
+### 7.1 Apps Script → Python pipeline
 
-1) **Apps Script webapp**
+1. **Apps Script webapp**
    - Endpoint: `...?type=analyst` és `...?type=catalyst`
    - Összegyűjti a híreket Yahoo Finance / Bloomberg / MarketBeat / Reuters / AP / IR forrásokból.
-   - Normalizált JSON-t ad vissza.
+   - Normalizált JSON-t ad vissza (#1/#2/#3 ablakokra bontva).
 
-2) **analyst_feed_parser.py**
+2. **scripts/analyst_feed_parser.py**
    - Letölti az Apps Script JSON-t.
-   - Ticker szerint csoportosít.
-   - Meghatározza a `source_rank` értéket (1–9).
-   - Kijelöli a `is_primary = true` eseményt.
-   - Kimenetek:
-     * `reports/analyst_1.json`
-     * `reports/catalysts_1.json`
+   - Tickerenként csoportosítja az eseményeket.
+   - Forrás-prioritást számol (`source_rank`), kijelöli az `is_primary = true` eventet.
+   - Kiírja az egységesített feedet:
+     - `reports/{report}/analyst_{report}.json`
+     - `reports/{report}/catalysts_{report}.json`
 
-3) **report_runner.py (mode=1)**
-   - Lekéri az árakat (AH/PM ablak).
-   - Felépíti a #1 riport törzsét (Lefedettség, tickerlisták, mozgások).
+3. **scripts/report_runner.py**
+   - Megcsinálja a #1 / #2 / #3 alap riportot (árak, lefedettség, mozgások).
+   - Kimenet: `reports/{report}/summary_report_{report}.md` (nyers).
 
-4) **postprocess_report.py**
-   - Makró-blokk beillesztése.
-   - Analyst blokkok → végére.
-   - Katalizátor blokkok → végére.
-   - High-conv blokkok → végére.
-   - Tisztítja a „Job summary generated…” sort.
+4. **scripts/macro_fetcher.py + highconv_builder.py**
+   - Makró-hírek, high-conv pontszámok, katalizátorok JSON-okba (`macro_news_*.json`, `high_conv_*.json`, `catalysts_*.json`).
 
-### 7.2 Példa: NVDA esemény átfolyása
+5. **scripts/postprocess_report.py**
+   - Beolvassa a nyers markdown-t + a fenti JSON-okat.
+   - Beilleszti a makró blokkot, az analyst blokkot, a katalizátor blokkot és a high-conv blokkot.
+   - Törli a „Job summary generated at run-time…” sort.
+   - Kimenet: végleges, biblia szerinti `summary_report_{report}.md`.
 
-- Apps Script több hírforrást talál:
-  - Yahoo: „NVDA shares rise after AI server demand beats expectations”
-  - Bloomberg: „Nvidia climbs on improving hyperscale demand”
-  - MarketBeat: „Analyst raises price target to $150”
-  - Reuters: „Nvidia says it expects strong Q4 revenue”
+6. **GitHub Actions – gist PATCH**
+   - A `run_report.yml` a végleges markdown-t feltölti a fix gist ID-re (#1/#2/#3),
+   - a step summary-ben kiírja a raw URL-t (amit te nézel).
 
-- analyst_feed_parser:
+### 7.2 Példa: NVDA esemény útja
+
+- Apps Script több forrást talál NVDA-ra (Yahoo, Bloomberg, MarketBeat, Reuters).
+- `analyst_feed_parser.py`:
   - Yahoo → `source_rank = 1`
   - Bloomberg → `source_rank = 2`
   - MarketBeat → `source_rank = 3`
   - Reuters → `source_rank = 4`
-  - Első esemény lesz a primary (Yahoo)
-
-- analyst_1.json:
-  - NVDA elemnél:
-    * első entry: `is_primary = true`
-    * többi: `is_primary = false`
-
-- analyst_block_builder:
-  - A primary eventből írja a fő sort.
-  - Ha több event van, beteszi alálőve.
-
-- Kész riportban:
-  ```
-  ### Bejelentések & fel/lemínősítések
-  - NVDA
-    - 2025-11-18 – Yahoo Finance – Upgrade – rating: EW → OW – PT: 130 → 150 USD
-  ```
+  - A legjobb event kapja az `is_primary = true` jelölést.
+- `analyst_1.json`-ban az NVDA-hoz tartozó első (primary) eventből lesz a fő sor
+  a „Bejelentések & fel/lemínősítések” blokkban, a többi csak kiegészítő információ.
 
 ---
 
 ## 8. JSON minimál layout követelmények
 
-A feed-parser és a bloképítők toleránsak, de a minimum elvárások:
+A feed-parser és a bloképítők *toleránsak*, de az alábbi minimumokat várják.
 
-### 8.1 analyst feed JSON
+### 8.1 analyst feed JSON (Apps Script output)
 
-Bármelyik szerkezet elfogadott:
+Elfogadott példák:
 
 ```json
 [
@@ -249,17 +239,21 @@ Bármelyik szerkezet elfogadott:
 ]
 ```
 
-Vagy:
+vagy
 
 ```json
 {
   "items": [
-    { ... }
+    {
+      "ticker": "NVDA",
+      "source": "Yahoo Finance",
+      "headline": "..."
+    }
   ]
 }
 ```
 
-### 8.2 catalyst feed JSON
+### 8.2 catalyst feed JSON (Apps Script output)
 
 ```json
 [
@@ -272,34 +266,36 @@ Vagy:
 ]
 ```
 
-### 8.3 analyst_1.json (feed-parser után)
+### 8.3 analyst_{report}.json (feed-parser után)
 
-Már tartalmaz:
+A parser már hozzáadja az alábbi mezőket (a meglévők mellé):
 
-- `source_rank`
+- `source_rank` (1–9)
 - `source_normalized`
 - `datetime_norm`
-- `is_primary`
+- `is_primary` (true/false)
+- `feed_type` (analyst/catalyst)
 
-### 8.4 Katalizátor és high-conv JSON-ok
+### 8.4 catalysts_{report}.json és high_conv_{report}.json
 
-- `catalysts_1.json` listát tartalmaz.
-- `high_conv_1.json` listát tartalmaz (Apps Script tölti).
-
----
-
-## 9. Modulok szerepe rövid táblázatban
-
-| Modul | Feladat | Bemenet | Kimenet |
-|-------|---------|---------|---------|
-| report_runner.py | #1/#2/#3 alapjelentés | Yahoo árak, tickerlista | raw summary_report_X.md |
-| macro_fetcher.py | makróhírek | Reuters/Yahoo API | macro_news_1.json |
-| analyst_feed_parser.py | elemzői/katalizátor feed tisztítása, priorizálása | Apps Script JSON | analyst_1.json, catalysts_1.json |
-| analyst_block_builder.py | analyst blokk | analyst_1.json | markdown blokk |
-| highconv_block_builder.py | katalizátor + high-conv blokkok | catalysts_1.json, high_conv_1.json | markdown blokkok |
-| postprocess_report.py | végső #1/#2/#3 felépítés | summary_report_1.md + blokkok | kész jelentés |
-| biblia_helper.py | formázási utilok | n/a | belső használat |
-| macro_highconv_helpers_v2.py | high-conv és makró segédlogika | JSON feedek | szűrt adatok |
+- `catalysts_{report}.json` egyszerű lista az eseményekről (ticker, dátum, típus, leírás).
+- `high_conv_{report}.json` a high-conv pontszámokat és rövid indokokat tartalmazza.
+- A builderek (highconv_block_builder) csak néhány kulcsra támaszkodnak; hiányzó mezők
+  esetén a blokk egyszerűen rövidebb lesz.
 
 ---
+
+## 9. Modulok szerepe – gyors áttekintő táblázat
+
+| Modul                         | Feladat                                                     | Bemenet                               | Kimenet                                      |
+|------------------------------|-------------------------------------------------------------|---------------------------------------|----------------------------------------------|
+| `scripts/report_runner.py`   | #1/#2/#3 alap riport (árak, lefedettség, mozgások)          | Yahoo árak, tickerlista               | `summary_report_{report}.md` (nyers)         |
+| `scripts/macro_fetcher.py`   | Makró / FED / politika hírek lekérése                       | Reuters / Yahoo / egyéb makró forrás | `macro_news_{report}.json`                   |
+| `scripts/highconv_builder.py`| High-conv pontszámok, katalizátor-ok számítása              | Apps Script / külső feedek            | `high_conv_{report}.json`, `catalysts_*.json`|
+| `scripts/analyst_feed_parser.py` | Elemzői / catalyst feed tisztítása, priorizálása      | Apps Script JSON feed                 | `analyst_{report}.json`, `catalysts_{report}.json` |
+| `scripts/analyst_block_builder.py` | Bejelentések & fel/lemínősítések blokk építése      | `analyst_{report}.json`               | markdown blokk (#1/#2/#3 végére)            |
+| `scripts/highconv_block_builder.py` | Katalizátor + high-conv blokkok építése            | `high_conv_{report}.json`, `catalysts_{report}.json` | 2 markdown blokk (#1/#2/#3 végére) |
+| `scripts/postprocess_report.py` | Kész #1/#2/#3 jelentés összeállítása, takarítás        | nyers markdown + JSON-ok              | végleges `summary_report_{report}.md`        |
+| `scripts/biblia_helper.py`   | Formázási / közös segédfüggvények                          | –                                     | csak belső használat                         |
+| `scripts/macro_highconv_helpers_v2.py` | Makró + high-conv segédfüggvények              | –                                     | csak belső használat                         |
 
