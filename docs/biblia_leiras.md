@@ -1,5 +1,5 @@
 # Részvények Projekt -- BIBLIA LEÍRÁS (MD)
-BIBLIA VERZIÓ: v3.5.0
+BIBLIA VERZIÓ: v3.6.0
 
 
 ## Fájlszerkezet, szerepek és riportlogika
@@ -299,3 +299,19 @@ A parser már hozzáadja az alábbi mezőket (a meglévők mellé):
 | `scripts/biblia_helper.py`   | Formázási / közös segédfüggvények                          | –                                     | csak belső használat                         |
 | `scripts/macro_highconv_helpers_v2.py` | Makró + high-conv segédfüggvények              | –                                     | csak belső használat                         |
 
+
+
+## 1.x High-conv JSON builder (highconv_builder.py – v1.0.0)
+
+- Szerepe: a listán kívüli, 3–12 hónapos high-conv jelöltek JSON feedjének (`HIGHCONV_FEED_URL_1/2/3` vagy `HIGHCONV_FEED_URL`)
+  lekérése és mentése a `reports/high_conv_<report>.json` fájlba.
+- A JSON struktúra rugalmas, de a `highconv_block_builder.py` az alábbi kulcsokat használja, ha léteznek:
+  - `ticker` – pl. `"NVDA"`
+  - `thesis` vagy `idea` – rövid befektetési sztori
+  - `catalyst` vagy `reason` – konkrét katalizátor / indok
+  - `score` – opcionális score
+- Hibakezelés:
+  - Ha nincs URL, vagy a lekérés/parsolás hibás, a script `[]`-t ír a célfájlba,
+    így a #1/#2/#3 pipeline nem szakad meg, legfeljebb high-conv blokk nélkül fut le.
+- A #1-es riportnál a `postprocess_report.py` a `reports/high_conv_1.json` fájlt használja
+  a „Listán kívüli, 3–12 hónapos high-conv jelöltek” blokk felépítéséhez.
