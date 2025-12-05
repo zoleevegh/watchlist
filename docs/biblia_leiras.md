@@ -1,6 +1,4 @@
 # Részvények Projekt -- BIBLIA LEÍRÁS (MD)
-BIBLIA VERZIÓ: v3.4.0
-
 
 ## Fájlszerkezet, szerepek és riportlogika
 
@@ -13,42 +11,18 @@ BIBLIA VERZIÓ: v3.4.0
     │   ├─ macro_highconv_helpers_v2.py
     │   ├─ highconv_builder.py
     │   ├─ macro_fetcher.py
-    │   ├─ analyst_feed_parser.py
-    │   ├─ analyst_block_builder.py
-    │   ├─ highconv_block_builder.py
-    │   └─ postprocess_report.py
+    │   └─ analyst_feed_parser.py
     ├─ reports/
     │   ├─ 1/
     │   │   ├─ summary_report_1.md
     │   │   ├─ latest_1.md
     │   │   ├─ macro_news_1.json
-    │   │   ├─ analyst_1.json
-    │   │   ├─ catalysts_1.json
     │   │   └─ high_conv_1.json
     │   ├─ 2/
     │   └─ 3/
     └─ data/
         ├─ master.csv
         └─ universe/
-
-## 1.3 GitHub Actions workflow-k (.github/workflows)
-
-    .github/
-    └─ workflows/
-       ├─ run_report.yml
-       │   - Napi automata #1/#2/#3 report pipeline
-       │   - Futtatja a Python modulokat sorrendben:
-       │       1) report_runner.py
-       │       2) macro_fetcher.py
-       │       3) highconv_builder.py
-       │       4) analyst_feed_parser.py
-       │       5) postprocess_report.py
-       │   - Feltölti gist-re a summary_report_1.md végleges verzióját
-       │
-       └─ update_biblia_docs.yml
-           - Dokumentáció automatikus frissítése (biblia, README, changelog)
-           - A változásokat commitolja a repo-ba
-
 
 ## 2. Fájlok szerepköre
 
@@ -74,30 +48,6 @@ MASTER alapján
 -   #1/#2/#3 futtatások logikája
 -   input → helper → output feldolgozás
 
-
-### scripts/analyst_block_builder.py
-
-- `reports/1/analyst_1.json` → „Bejelentések & fel/lemínősítések” markdown blokk építése
-- események ticker szerint csoportosítva; ticker alatt időrendben (legfrissebb elöl) több sor is lehet
-- ticker / dátum / PT / rating / megjegyzés mezők összefésülése egy-egy jól olvasható listaponttá
-- csak formáz, nem számol újra; a nyers adatot az Apps Script feed + analyst_feed_parser.py adja
-
-### scripts/highconv_block_builder.py
-
-- `reports/1/high_conv_1.json` és `reports/1/catalysts_1.json` → két blokk:
-    - „Közelgő katalizátorok”
-    - „Listán kívüli, 3–12 hónapos high-conv jelöltek”
-- a highconv_builder.py által számolt pontszámot és leírást formázza markdownná
-
-### scripts/postprocess_report.py
-
-- bemenet: `reports/1/summary_report_1.md` + `reports/1/macro_news_1.json` + `analyst_1.json` + `catalysts_1.json` + `high_conv_1.json`
-- lefut a #1 report_runner.py után
-- lépések:
-    1. „Politika / FED / Makró” blokk beszúrása a „Lefedettség:” sor után
-    2. „Job summary generated at run-time …” sor(ok) eltávolítása
-    3. analista blokk + katalizátor blokk + high-conv blokk hozzáfűzése a jelentés végére
-- ez adja a gist-re kikerülő, végleges #1-es markdown jelentést
 ## 3. Jelentések logikája
 
 ### #1 After-hours + Premarket
@@ -128,8 +78,7 @@ MASTER alapján
 2.  Apps Script → analyst feed
 3.  macro_fetcher → makróhírek
 4.  highconv_builder → high_conv_1.json
-5.  analyst_feed_parser → analyst_1.json / catalysts_1.json
-6.  postprocess_report + analyst_block_builder + highconv_block_builder → summary_report_1.md véglegesítése
+5.  macro_highconv_helpers_v2 → summary_report_1.md véglegesítése
 
 ## 5. Fallback logika
 
