@@ -1,5 +1,5 @@
 # Részvények Projekt -- BIBLIA LEÍRÁS (MD)
-BIBLIA VERZIÓ: v3.6.0
+BIBLIA VERZIÓ: v3.7.0
 
 
 ## Fájlszerkezet, szerepek és riportlogika
@@ -301,17 +301,42 @@ A parser már hozzáadja az alábbi mezőket (a meglévők mellé):
 
 
 
-## 1.x High-conv JSON builder (highconv_builder.py – v1.0.0)
 
-- Szerepe: a listán kívüli, 3–12 hónapos high-conv jelöltek JSON feedjének (`HIGHCONV_FEED_URL_1/2/3` vagy `HIGHCONV_FEED_URL`)
-  lekérése és mentése a `reports/high_conv_<report>.json` fájlba.
-- A JSON struktúra rugalmas, de a `highconv_block_builder.py` az alábbi kulcsokat használja, ha léteznek:
-  - `ticker` – pl. `"NVDA"`
-  - `thesis` vagy `idea` – rövid befektetési sztori
-  - `catalyst` vagy `reason` – konkrét katalizátor / indok
-  - `score` – opcionális score
+## 1.x High-conv builder (highconv_builder.py – sheet-alapú, kizárásos logika)
+
+- Szerepe: a 3–12 hónapos, **listán kívüli high-conviction jelöltek** automatikus azonosítása és
+  a `reports/1/high_conv_1.json` fájl legenerálása. A high-conv blokk csak olyan neveket tartalmazhat,
+  amelyek **nincsenek sem a portfóliódban, sem a MASTER watchlisten**.
+- Források:
+  - **ANALYST_FEED_URL**: a működő Apps Script analyst endpoint (`type=analyst`, `report=1`, `days=DAYS_BACK`),
+    amely az utolsó ~30 nap releváns elemzői eseményeit adja vissza.
+  - **EXCLUDE_TICKERS_CSV_URL**: a kézi futásoknál is használt MASTER Google Sheets CSV linked
+    (portfólió + watchlist). Ebből épül a dinamikus kizárási halmaz (ticker oszlop alapján).
+  - Opcionális: `exclude_tickers.txt` + `EXTRA_EXCLUDE_TICKERS` – kézi, fix kizárások.
+
+- Logika (röviden):
+  - Az analyst feed eseményeiből ticker-szinten **jelzőket** épít (`TickerSignals`):
+    - több friss pozitív analyst esemény (upgrade / PT emelés / pozitív coverage),
+    - guidance / outlook emelés,
+    - konszenzus EPS/árbevétel felfelé módosulása (placeholder),
+    - közelgő 3–12 hónapos katalizátor (earnings event, investor day, launch, approval, stb.),
+    - 52 hetes csúcshoz közeli ár (Yahoo Finance snapshot alapján, ≤5% távolság).
+  - Ezekből **pontszámot** számol (score), és csak az a ticker mehet tovább, amely:
+    - **nincs** a kizárási halmazban (portfólió + watchlist + extra),
+    - legalább `MIN_SIGNAL_COUNT` (≥2) erős jelzést ad,
+    - és eléri a `MIN_SCORE` küszöböt (alapbeállítás: 0.6).
+
+- Kimenet:
+  - `reports/1/high_conv_1.json` – lista dict-elemekkel, pl.:
+    - `ticker` – pl. `"NVDA"`,
+    - `thesis` – 1–3 mondatos tömör befektetési sztori, a jelek összefoglalása,
+    - `score` – 0–1 közötti pontszám, két tizedre kerekítve,
+    - `signals` – szöveges felsorolás, milyen jelek teljesültek.
+  - Ezt a fájlt a `highconv_block_builder.py` olvassa, és a #1-es riport végére építi be
+    a „**Listán kívüli, 3–12 hónapos high-conviction jelöltek**” blokkot.
+
 - Hibakezelés:
-  - Ha nincs URL, vagy a lekérés/parsolás hibás, a script `[]`-t ír a célfájlba,
-    így a #1/#2/#3 pipeline nem szakad meg, legfeljebb high-conv blokk nélkül fut le.
-- A #1-es riportnál a `postprocess_report.py` a `reports/high_conv_1.json` fájlt használja
-  a „Listán kívüli, 3–12 hónapos high-conv jelöltek” blokk felépítéséhez.
+  - Ha az analyst feed üres vagy hibás, vagy nincs releváns jelölt:
+    - a builder üres listát ír a `high_conv_1.json`-ba,
+    - a #1-es riportban **nem jelenik meg** high-conv blokk (ez nem hiba, csak „nincs jelölt” állapot).
+
