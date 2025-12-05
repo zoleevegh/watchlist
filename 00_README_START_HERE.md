@@ -1,8 +1,8 @@
 # 00_README_START_HERE.md
-DOKUMENTUM VERZIÓ: v3.2.0
+DOKUMENTUM VERZIÓ: v3.4.0
 
 # Részvények Projekt – BELÉPÉSI PONT
-# Verzió: 1.0.0 (2025-12-04)
+# Verzió: 1.1.0 (2025-12-05)
 
 Ez a fájl a **projekt induló dokumentuma**.  
 Ha új ChatGPT sessiont nyitsz, vagy 0-ról kell újraépíteni a működést,  
