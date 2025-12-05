@@ -1,5 +1,5 @@
 # Részvények Projekt -- BIBLIA LEÍRÁS (MD)
-BIBLIA VERZIÓ: v3.2.0
+BIBLIA VERZIÓ: v3.3.0
 
 
 ## Fájlszerkezet, szerepek és riportlogika
@@ -75,6 +75,33 @@ MASTER alapján
 -   #1/#2/#3 futtatások logikája
 -   input → helper → output feldolgozás
 
+
+### scripts/analyst_feed_parser.py – elemzői/catalyst feed (ÚJ)
+
+- Feladat: az Apps Script webapp által szolgáltatott egységes JSON feed (`?type=analyst`, `?type=catalyst`) feldolgozása.
+- Környezeti változók:
+  - `ANALYST_FEED_URL`   – analyst feed endpoint (JSON)
+  - `CATALYST_FEED_URL`  – catalyst feed endpoint (JSON)
+- Kimenetek:
+  - `reports/analyst_1.json`   – elemzői események (#1/#2/#3 „Bejelentések & fel/lemínősítések” blokkhoz)
+  - `reports/catalysts_1.json` – katalizátorok (#1/#2/#3 „Közelgő katalizátorok” blokkhoz)
+- Tickerenként csoportosít, és *forrás-prioritást* rendel minden eseményhez.
+- A legjobb forrásból származó eseményt jelöli `is_primary = true` flaggel, amelyet a
+  `analyst_block_builder` / `highconv_block_builder` használhat a 1 mondatos indokhoz.
+
+#### Elemzői feed – forrás-prioritás (#1/#2/#3)
+
+Ha ugyanarra a tickerre / eseményre több hírforrás is ad információt, az 1 mondatos
+magyarázat és a „fő” event kiválasztásánál a sorrend *mindig* ez:
+
+1. **Yahoo Finance**
+2. **Bloomberg**
+3. **MarketBeat**
+4. **Reuters / AP / hivatalos IR** (Investor Relations)
+5. Egyéb források (csak ha a fenti négy közül egyik sincs)
+
+A priorizálás technikailag a `source` mező best-effort normalizálásával és egy
+`source_rank` mezővel valósul meg (`1` a legjobb, `9` az ismeretlen).
 
 ### scripts/analyst_block_builder.py
 
