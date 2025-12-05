@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-\"\"\"Builds the 'Bejelentések & fel/lemínősítések' markdown block from analyst JSON.
+"""Builds the 'Bejelentések & fel/lemínősítések' markdown block from analyst JSON.
 
-Verzió: v1.1.0
+Verzió: v1.2.0
 
 Várt JSON (rugalmasan kezelve):
     {
@@ -24,7 +24,7 @@ Várt JSON (rugalmasan kezelve):
 
 - A gyökér lehet lista is.
 - A kulcs lehet 'events', 'items', 'analyst', 'data' stb.
-\"\"\"
+"""
 
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Sequence
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 CANDIDATE_KEYS: Sequence[str] = ("events", "items", "analyst", "data")
 
@@ -49,7 +49,7 @@ def _load_json(path: Path) -> Any:
 
 
 def _extract_events(data: Any) -> List[Dict[str, Any]]:
-    \"\"\"Return a flat list of event dicts from a flexible JSON structure.\"\"\"
+    """Return a flat list of event dicts from a flexible JSON structure."""
     if data is None:
         return []
 
@@ -115,13 +115,13 @@ def _parse_date(ev: Dict[str, Any]) -> datetime:
 
 
 def build_block_from_events(events: Iterable[Dict[str, Any]]) -> str:
-    \"\"\"Build markdown block from iterable of analyst event dicts.
+    """Build markdown block from iterable of analyst event dicts.
 
     Újdonságok v1.1.0:
     - Események *ticker szerint* csoportosítva
     - Egy ticker alatt több sor is szerepelhet (időrendben, legfrissebb elöl)
     - Robusztusabb JSON-kezelés / forráshoz kötött mezők
-    \"\"\"
+    """
     events = list(events)
     if not events:
         return ""
@@ -195,10 +195,10 @@ def build_block_from_events(events: Iterable[Dict[str, Any]]) -> str:
 
 
 def build_block_from_file(path: Path) -> str:
-    \"\"\"Load JSON from *path* and build markdown block. Returns '' if nothing.\"\"\"
+    """Load JSON from *path* and build markdown block. Returns '' if nothing."""
     data = _load_json(path)
     events = _extract_events(data)
     return build_block_from_events(events)
 
 
-__all__ = [\"build_block_from_events\", \"build_block_from_file\", \"__version__\"]
+__all__ = ["build_block_from_events", "build_block_from_file", "__version__"]
