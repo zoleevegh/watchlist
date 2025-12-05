@@ -175,32 +175,44 @@ A #1-es jelentésben jelenleg a Python-script (report_runner.py) feladata:
     - Watchlist blokk (csak ≥K),
     - Időbélyeg: „Job summary generated at run-time (...)”.
 
-MI NEM FUT MÉG AUTOMATÁN, CSAK WEBES / MANUÁLIS RÉTEGBEN
---------------------------------------------------------
-A #1-es jelentés célállapota a biblia szerint, de JELENLEG (2.2.3 környékén)
-ezeket még nem a Python-script intézi:
 
-- Politika/FED / „Trump-napihír” tartalmi kitöltése:
-    - most a workflow `macro` paraméteréből jön egy szöveg,
-      amit ember ír (Reuters/AP/FED hírek alapján).
+Ezen felül a #1-es pipeline további Python moduljai:
 
-- „Bejelentések & fel/lemínősítések” blokk:
-    - MarketBeat / StreetInsider / TipRanks alapján,
-    - automata összefűzés még nincs leprogramozva.
+- macro_fetcher.py
+    - makró/FED/politikai hírblokkok automatikus kigyűjtése (Reuters/AP/Bloomberg/Dow Jones prioritás szerint),
+    - az eredményt `reports/macro_news_1.json` formában adja át a postprocess modulnak.
 
-- „Közeli katalizátorok” (earnings, guidemódosítás, események):
-    - earnings-calendar alapú automata kigyűjtés még nincs scriptben.
+- highconv_builder.py
+    - a high-conviction jelöltekhez tartozó `reports/high_conv_1.json` felépítése,
+    - a katalizátor-blokkhoz tartozó `reports/catalysts_1.json` felépítése (earnings, guidance, M&A, regulatory).
 
-- „Listán kívüli, 3–12 hó high-conviction jelöltek”:
-    - Yahoo + MarketBeat kombó alapján,
-    - jelenleg manuális összeállítás, scriptben TODO.
+- analyst_feed_parser.py
+    - az Apps Script analyst webapp (MarketBeat / StreetInsider / stb. aggregált feedje) lekérése,
+    - az eredmény `reports/analyst_1.json`-ba mentése, amelyből a „Bejelentések & fel/lemínősítések” blokk épül.
 
-- „Eladott pozíciók – aktuális ár az eladási árhoz képest” blokk:
-    - az Eladasi ar oszlop beolvasása már elképzelhető,
-      de dedikált riportblokk (pl. „X% alá/fölé jött az exithez képest”)
-      még NINCS generálva Pythonból.
+- postprocess_report.py
+    - a fenti JSON-okból egységes `summary_report_1.md` felépítése,
+    - blokkok: Lefedettség, Makró/FED, Darabszámos, Watchlist, Bejelentések & fel/lemínősítések,
+      Katalizátorok, Listán kívüli 3–12 hó high-conviction jelöltek.
+
+PYTHONON KÍVÜL MARADÓ / RÉSZBEN MANUÁLIS ELEMEK
+----------------------------------------------
+A #1-es jelentés célállapota a biblia szerint ma már nagyrészt Python-scriptből fut
+(makró, bejelentések, katalizátorok, high-conviction blokkok). Jelenleg kimondottan
+„backlog” státuszban az alábbi elem maradt:
+
+- „Eladott pozíciók – aktuális ár az eladási árhoz képest” dedikált blokk:
+    - az „Eladasi ar” oszlop beolvasása már működik (diff_pct = (current_price - eladasi_ar) / eladasi_ar * 100),
+    - de külön, önálló riportblokk (pl. „X% alá/fölé jött az exithez képest”) még NINCS generálva Pythonból,
+      csak kiegészítő információként használható.
 
 A KÖVETKEZŐ LÉPÉSEK #1-HEZ
+---------------------------
+A script fejlesztésének következő, biblia szerinti lépése #1-nél elsősorban az
+„Eladasi ar” alapú, külön riportblokk leprogramozása (pl. „re-entry radar”, „túl drága a korábbi exithez képest”).
+Ezen felül a meglévő blokkoknál (makró, bejelentések, katalizátorok, high-conviction)
+inkább finomhangolásról, formátum-tisztításról és forrás-robosztusságról van szó, nem új logikai elemről.
+
 ---------------------------
 Ha a script fejlesztése tovább halad, a fenti PYTHON- vs. MANUÁLIS-lista
 szolgál kiindulópontként. A cél, hogy:
