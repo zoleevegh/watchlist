@@ -52,7 +52,6 @@ BIBLIA VERZIÓ: v3.3.0
 
 ## 2. Fájlok szerepköre
 
-
 ### scripts/biblia_helper.py
 
 Segédfüggvények: - #1/#2/#3 riport logika ellenőrző listái - makró és
@@ -79,7 +78,8 @@ MASTER alapján
 ### scripts/analyst_block_builder.py
 
 - `reports/1/analyst_1.json` → „Bejelentések & fel/lemínősítések” markdown blokk építése
-- ticker / dátum / PT / rating / megjegyzés mezők összefésülése egy-egy listaponttá
+- események ticker szerint csoportosítva; ticker alatt időrendben (legfrissebb elöl) több sor is lehet
+- ticker / dátum / PT / rating / megjegyzés mezők összefésülése egy-egy jól olvasható listaponttá
 - csak formáz, nem számol újra; a nyers adatot az Apps Script feed + analyst_feed_parser.py adja
 
 ### scripts/highconv_block_builder.py
