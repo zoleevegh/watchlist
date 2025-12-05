@@ -157,6 +157,60 @@ jobs:
             Write-Host "Nincs summary fájl (expected: $summaryPath)"
           }
 
+      - name: Postprocess report (#1/#2/#3)
+        shell: pwsh
+        run: |
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+          $env:PYTHONIOENCODING = "utf-8"
+
+          $report = "${{ steps.vars.outputs.report }}"
+          if (-not $report) { $report = "1" }
+
+          # Analyst / catalyst feed URL-k report szerint
+          if ($report -eq "1") {
+            $analystUrl  = "${{ env.ANALYST_FEED_URL_1 }}"
+            $catalystUrl = "${{ env.CATALYST_FEED_URL_1 }}"
+          }
+          elseif ($report -eq "2") {
+            $analystUrl  = "${{ env.ANALYST_FEED_URL_2 }}"
+            $catalystUrl = "${{ env.CATALYST_FEED_URL_2 }}"
+          }
+          elseif ($report -eq "3") {
+            $analystUrl  = "${{ env.ANALYST_FEED_URL_3 }}"
+            $catalystUrl = "${{ env.CATALYST_FEED_URL_3 }}"
+          }
+          else {
+            Write-Host "Ismeretlen report szám: $report"
+            exit 1
+          }
+
+          $analystOut   = "reports\analyst_${report}.json"
+          $catalystsOut = "reports\catalysts_${report}.json"
+
+          if (Test-Path "scripts\analyst_feed_parser.py") {
+            python -X utf8 "scripts\analyst_feed_parser.py" `
+              --analyst-url "$analystUrl" `
+              --catalyst-url "$catalystUrl" `
+              --analyst-out "$analystOut" `
+              --catalysts-out "$catalystsOut"
+          }
+          else {
+            Write-Host "analyst_feed_parser.py nem található – analyst/catalyst blokkok nélkül fut tovább."
+          }
+
+          if (Test-Path "scripts\postprocess_report.py") {
+            $mdPath    = "reports\summary_report_${report}.md"
+            $bundleDir = "reports"
+
+            python -X utf8 "scripts\postprocess_report.py" `
+              --md "$mdPath" `
+              --bundle-dir "$bundleDir"
+          }
+          else {
+            Write-Host "postprocess_report.py nem található – nyers riport marad."
+          }
+
+
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
