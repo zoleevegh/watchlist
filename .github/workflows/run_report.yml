@@ -199,13 +199,14 @@ jobs:
           }
 
 
-          # High-conv jelöltek buildelése (scripts\highconv_builder.py)
-          if (Test-Path "scripts\highconv_builder.py") {
-            python -X utf8 "scripts\highconv_builder.py"
-          }
-          else {
-            Write-Host "highconv_builder.py nem található – high-conv blokk nélkül fut tovább."
-          }
+# High-conv jelöltek buildelése (scripts\highconv_builder.py)
+if (Test-Path "scripts\highconv_builder.py") {
+  python -X utf8 "scripts\highconv_builder.py"
+}
+else {
+  Write-Host "highconv_builder.py nem található – high-conv blokk nélkül fut tovább."
+}
+
           if (Test-Path "scripts\postprocess_report.py") {
             $mdPath    = "reports\summary_report_${report}.md"
             $bundleDir = "reports"
