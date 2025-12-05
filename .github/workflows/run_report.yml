@@ -28,6 +28,9 @@ jobs:
       MACRO_FEED_URL_1: "https://script.google.com/macros/s/AKfycbwNP9FOflY4nAYt1o4U5C0ozg3IrlyJM8KGXpFLzCGOdBAOAh6zeAOum5iQswZufxrB/exec?type=macro&report=1"
       MACRO_FEED_URL_2: "https://script.google.com/macros/s/AKfycbwNP9FOflY4nAYt1o4U5C0ozg3IrlyJM8KGXpFLzCGOdBAOAh6zeAOum5iQswZufxrB/exec?type=macro&report=2"
       MACRO_FEED_URL_3: "https://script.google.com/macros/s/AKfycbwNP9FOflY4nAYt1o4U5C0ozg3IrlyJM8KGXpFLzCGOdBAOAh6zeAOum5iQswZufxrB/exec?type=macro&report=3"
+HIGHCONV_FEED_URL_1: ""
+HIGHCONV_FEED_URL_2: ""
+HIGHCONV_FEED_URL_3: ""
 
     steps:
       - name: Checkout
@@ -197,6 +200,36 @@ jobs:
           else {
             Write-Host "analyst_feed_parser.py nem található – analyst/catalyst blokkok nélkül fut tovább."
           }
+
+
+# High-conv feed URL report szerint (opcionális)
+if ($report -eq "1") {
+  $highconvUrl = "${{ env.HIGHCONV_FEED_URL_1 }}"
+}
+elseif ($report -eq "2") {
+  $highconvUrl = "${{ env.HIGHCONV_FEED_URL_2 }}"
+}
+elseif ($report -eq "3") {
+  $highconvUrl = "${{ env.HIGHCONV_FEED_URL_3 }}"
+}
+else {
+  $highconvUrl = ""
+}
+
+if (Test-Path "scripts\highconv_builder.py") {
+  if ($highconvUrl) {
+    python -X utf8 "scripts\highconv_builder.py" `
+      --report $report `
+      --url "$highconvUrl"
+  }
+  else {
+    python -X utf8 "scripts\highconv_builder.py" `
+      --report $report
+  }
+}
+else {
+  Write-Host "highconv_builder.py nem található – high-conv blokk nélkül fut tovább."
+}
 
           if (Test-Path "scripts\postprocess_report.py") {
             $mdPath    = "reports\summary_report_${report}.md"
