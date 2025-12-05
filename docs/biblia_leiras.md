@@ -168,3 +168,143 @@ A priorizálás technikailag a `source` mező best-effort normalizálásával é
 Legalább 2 teljesüljön: - elemzői felminősítések - guide emelés -
 konszenzus-felhúzás - 3--12 hónapos katalizátor - relatív erő / 52w high
 közeli
+
+
+---
+
+## 7. End-to-end folyamat áttekintése (példa)
+
+### 7.1 Apps Script → Python pipeline (konkrét adatút)
+
+1) **Apps Script webapp**
+   - Endpoint: `...?type=analyst` és `...?type=catalyst`
+   - Összegyűjti a híreket Yahoo Finance / Bloomberg / MarketBeat / Reuters / AP / IR forrásokból.
+   - Normalizált JSON-t ad vissza.
+
+2) **analyst_feed_parser.py**
+   - Letölti az Apps Script JSON-t.
+   - Ticker szerint csoportosít.
+   - Meghatározza a `source_rank` értéket (1–9).
+   - Kijelöli a `is_primary = true` eseményt.
+   - Kimenetek:
+     * `reports/analyst_1.json`
+     * `reports/catalysts_1.json`
+
+3) **report_runner.py (mode=1)**
+   - Lekéri az árakat (AH/PM ablak).
+   - Felépíti a #1 riport törzsét (Lefedettség, tickerlisták, mozgások).
+
+4) **postprocess_report.py**
+   - Makró-blokk beillesztése.
+   - Analyst blokkok → végére.
+   - Katalizátor blokkok → végére.
+   - High-conv blokkok → végére.
+   - Tisztítja a „Job summary generated…” sort.
+
+### 7.2 Példa: NVDA esemény átfolyása
+
+- Apps Script több hírforrást talál:
+  - Yahoo: „NVDA shares rise after AI server demand beats expectations”
+  - Bloomberg: „Nvidia climbs on improving hyperscale demand”
+  - MarketBeat: „Analyst raises price target to $150”
+  - Reuters: „Nvidia says it expects strong Q4 revenue”
+
+- analyst_feed_parser:
+  - Yahoo → `source_rank = 1`
+  - Bloomberg → `source_rank = 2`
+  - MarketBeat → `source_rank = 3`
+  - Reuters → `source_rank = 4`
+  - Első esemény lesz a primary (Yahoo)
+
+- analyst_1.json:
+  - NVDA elemnél:
+    * első entry: `is_primary = true`
+    * többi: `is_primary = false`
+
+- analyst_block_builder:
+  - A primary eventből írja a fő sort.
+  - Ha több event van, beteszi alálőve.
+
+- Kész riportban:
+  ```
+  ### Bejelentések & fel/lemínősítések
+  - NVDA
+    - 2025-11-18 – Yahoo Finance – Upgrade – rating: EW → OW – PT: 130 → 150 USD
+  ```
+
+---
+
+## 8. JSON minimál layout követelmények
+
+A feed-parser és a bloképítők toleránsak, de a minimum elvárások:
+
+### 8.1 analyst feed JSON
+
+Bármelyik szerkezet elfogadott:
+
+```json
+[
+  {
+    "ticker": "NVDA",
+    "source": "Yahoo Finance",
+    "headline": "...",
+    "summary": "...",
+    "datetime": "2025-11-18T13:52:00Z"
+  }
+]
+```
+
+Vagy:
+
+```json
+{
+  "items": [
+    { ... }
+  ]
+}
+```
+
+### 8.2 catalyst feed JSON
+
+```json
+[
+  {
+    "ticker": "NVDA",
+    "event_date": "2026-02-15",
+    "type": "earnings",
+    "description": "Q4 FY25 report"
+  }
+]
+```
+
+### 8.3 analyst_1.json (feed-parser után)
+
+Már tartalmaz:
+
+- `source_rank`
+- `source_normalized`
+- `datetime_norm`
+- `is_primary`
+
+### 8.4 Katalizátor és high-conv JSON-ok
+
+- `catalysts_1.json` listát tartalmaz.
+- `high_conv_1.json` listát tartalmaz (Apps Script tölti).
+
+---
+
+## 9. Modulok szerepe rövid táblázatban
+
+| Modul | Feladat | Bemenet | Kimenet |
+|-------|---------|---------|---------|
+| report_runner.py | #1/#2/#3 alapjelentés | Yahoo árak, tickerlista | raw summary_report_X.md |
+| macro_fetcher.py | makróhírek | Reuters/Yahoo API | macro_news_1.json |
+| analyst_feed_parser.py | elemzői/katalizátor feed tisztítása, priorizálása | Apps Script JSON | analyst_1.json, catalysts_1.json |
+| analyst_block_builder.py | analyst blokk | analyst_1.json | markdown blokk |
+| highconv_block_builder.py | katalizátor + high-conv blokkok | catalysts_1.json, high_conv_1.json | markdown blokkok |
+| postprocess_report.py | végső #1/#2/#3 felépítés | summary_report_1.md + blokkok | kész jelentés |
+| biblia_helper.py | formázási utilok | n/a | belső használat |
+| macro_highconv_helpers_v2.py | high-conv és makró segédlogika | JSON feedek | szűrt adatok |
+
+---
+
