@@ -1,510 +1,383 @@
-"""
-highconv_builder.py
-(Sheet-alapú, kizárásos high-conv builder – FRISSÍTETT LINKKEL + ÚJ OUTPUT ÚTTAL)
+name: Run Report (Windows)
+
+on:
+  workflow_dispatch:
+    inputs:
+      report:
+        description: 'Jelentés: 1=AH+PM, 2=Open→Close (előző nap), 3=Ma Open→Most'
+        default: '1'
+        required: false
+  repository_dispatch:
+    types: [run_report]
+
+jobs:
+  run:
+    runs-on: windows-latest
+    env:
+      # ← IDE írd a Google Sheets "Publish to web" CSV linkjét (MASTER)
+      DEFAULT_CSV_URL: https://docs.google.com/spreadsheets/d/e/2PACX-1vTf5h3xx4LWJvI-e7PSyc8g6uGZT-H6pCeuwEqs7NqeCDKuAltTpL_ncPOWMtooRw/pub?output=csv
+
+      # Analyst / Catalyst feed webapp (Apps Script)
+      ANALYST_FEED_URL_1: "https://script.google.com/macros/s/AKfycbxxCqoEMGbvMayN4iz6JpfXQzaR9m5tobVmzw_CopDtPnjfRDdnX2Os2289ZCp25uez/exec?type=analyst&report=1"
+      CATALYST_FEED_URL_1: "https://script.google.com/macros/s/AKfycbxxCqoEMGbvMayN4iz6JpfXQzaR9m5tobVmzw_CopDtPnjfRDdnX2Os2289ZCp25uez/exec?type=catalyst&report=1"
+      ANALYST_FEED_URL_2: "https://script.google.com/macros/s/AKfycbxxCqoEMGbvMayN4iz6JpfXQzaR9m5tobVmzw_CopDtPnjfRDdnX2Os2289ZCp25uez/exec?type=analyst&report=2"
+      CATALYST_FEED_URL_2: "https://script.google.com/macros/s/AKfycbxxCqoEMGbvMayN4iz6JpfXQzaR9m5tobVmzw_CopDtPnjfRDdnX2Os2289ZCp25uez/exec?type=catalyst&report=2"
+      ANALYST_FEED_URL_3: "https://script.google.com/macros/s/AKfycbxxCqoEMGbvMayN4iz6JpfXQzaR9m5tobVmzw_CopDtPnjfRDdnX2Os2289ZCp25uez/exec?type=analyst&report=3"
+      CATALYST_FEED_URL_3: "https://script.google.com/macros/s/AKfycbxxCqoEMGbvMayN4iz6JpfXQzaR9m5tobVmzw_CopDtPnjfRDdnX2Os2289ZCp25uez/exec?type=catalyst&report=3"
+      # Makró / FED / piaci hangulat feed (Apps Script webapp – új)
+      MACRO_FEED_URL_1: "https://script.google.com/macros/s/AKfycbwNP9FOflY4nAYt1o4U5C0ozg3IrlyJM8KGXpFLzCGOdBAOAh6zeAOum5iQswZufxrB/exec?type=macro&report=1"
+      MACRO_FEED_URL_2: "https://script.google.com/macros/s/AKfycbwNP9FOflY4nAYt1o4U5C0ozg3IrlyJM8KGXpFLzCGOdBAOAh6zeAOum5iQswZufxrB/exec?type=macro&report=2"
+      MACRO_FEED_URL_3: "https://script.google.com/macros/s/AKfycbwNP9FOflY4nAYt1o4U5C0ozg3IrlyJM8KGXpFLzCGOdBAOAh6zeAOum5iQswZufxrB/exec?type=macro&report=3"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas requests yfinance pytz feedparser beautifulsoup4
+
+      - name: Resolve inputs (report, macro)
+        id: vars
+        shell: pwsh
+        run: |
+          $report = "${{ github.event.inputs.report }}"
+          if (-not $report) { $report = "${{ github.event.client_payload.report }}" }
+          if (-not $report) { $report = "3" }
+
+          $macro = "${{ github.event.inputs.macro }}"
+          if (-not $macro) { $macro = "${{ github.event.client_payload.macro }}" }
+          if (-not $macro) { $macro = "auto" }
+
+          "report=$report" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "macro=$macro"   | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+          Write-Host "REPORT: $report"
+          Write-Host "MACRO:  $macro"
+
+      - name: Fetch macro news (Yahoo/CNBC/Bloomberg)
+        shell: pwsh
+        run: |
+          $report = "${{ steps.vars.outputs.report }}"
+          if (-not $report) { $report = "1" }
+
+          if (-not (Test-Path "scripts\macro_news_fetcher.py")) {
+            Write-Host "macro_news_fetcher.py nem található – makróhírek nélkül fut tovább."
+          }
+          else {
+            python "scripts\macro_news_fetcher.py" $report
+          }
+
+
+      - name: Fetch MASTER CSV (robust)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path reports | Out-Null
+          $out    = "reports\master.csv"
+          $csvUrl = "${{ env.DEFAULT_CSV_URL }}"
+
+          Write-Host "Letöltés (DEFAULT_CSV_URL): $csvUrl"
+          & curl.exe -fL --retry 3 --retry-all-errors -A "Mozilla/5.0" "$csvUrl" -o "$out"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "CSV letöltés sikertelen (curl exit $LASTEXITCODE)"
+            exit 1
+          }
+
+          if ((Get-Item "$out").Length -lt 10) {
+            Write-Error "A CSV túl kicsi / üres"
+            exit 1
+          }
+
+          $first = Get-Content "$out" -TotalCount 1
+          if ($first -match "<!DOCTYPE html>|<html") {
+            Write-Error "Nem CSV érkezett (HTML). Ellenőrizd a Publish to web linket."
+            exit 1
+          }
+
+          Get-Content "$out" -TotalCount 5 | ForEach-Object { Write-Host "CSV> $_" }
+
+      - name: Build raw analyst & catalyst events (#1/#2/#3)
+        shell: pwsh
+        run: |
+          $report = "${{ steps.vars.outputs.report }}"
+          if (-not $report) { $report = "1" }
+
+          if (-not (Test-Path "scripts\crawler_analyst_catalyst.py")) {
+            Write-Host "crawler_analyst_catalyst.py nem található – raw_analyst/raw_catalysts nélkül fut tovább."
+          }
+          else {
+            python -X utf8 "scripts\crawler_analyst_catalyst.py" --report $report
+          }
+
+      - name: Build analyst & catalyst JSON (events_fetcher) (#1/#2/#3)
+        shell: pwsh
+        run: |
+          $report = "${{ steps.vars.outputs.report }}"
+          if (-not $report) { $report = "1" }
+
+          if (-not (Test-Path "scripts\events_fetcher.py")) {
+            Write-Host "events_fetcher.py nem található – analyst/catalyst blokk nélkül fut tovább."
+          }
+          else {
+            python -X utf8 "scripts\events_fetcher.py" --report $report --universe-json "reports/latest_${report}.json"
+          }
+
+      - name: Run report (#1/#2/#3)
+        shell: pwsh
+        run: |
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+          $env:PYTHONIOENCODING = "utf-8"
+
+          $report = "${{ steps.vars.outputs.report }}"
+          $csv    = "reports\master.csv"
+          $macro  = "${{ steps.vars.outputs.macro }}"
+
+          if (-not (Test-Path "scripts\report_runner.py")) {
+            Write-Error "scripts\report_runner.py hiányzik a repóban"
+            exit 1
+          }
+
+          $summaryPath = "reports\summary_report_${report}.md"
+
+          python -X utf8 "scripts\report_runner.py" `
+            --report $report `
+            --csv "$csv" `
+            --summary "$summaryPath" `
+
+          if (Test-Path $summaryPath) {
+            Get-Content $summaryPath | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8
+          } else {
+            Write-Host "Nincs summary fájl (expected: $summaryPath)"
+          }
+
+      - name: Postprocess report (#1/#2/#3)
+        shell: pwsh
+        run: |
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+          $env:PYTHONIOENCODING = "utf-8"
+
+          $report = "${{ steps.vars.outputs.report }}"
+          if (-not $report) { $report = "1" }
+
+          # Analyst / catalyst feed URL-k report szerint
+          if ($report -eq "1") {
+            $analystUrl  = "${{ env.ANALYST_FEED_URL_1 }}"
+            $catalystUrl = "${{ env.CATALYST_FEED_URL_1 }}"
+          }
+          elseif ($report -eq "2") {
+            $analystUrl  = "${{ env.ANALYST_FEED_URL_2 }}"
+            $catalystUrl = "${{ env.CATALYST_FEED_URL_2 }}"
+          }
+          elseif ($report -eq "3") {
+            $analystUrl  = "${{ env.ANALYST_FEED_URL_3 }}"
+            $catalystUrl = "${{ env.CATALYST_FEED_URL_3 }}"
+          }
+          else {
+            Write-Host "Ismeretlen report szám: $report"
+            exit 1
+          }
+
+          $analystOut   = "reports\analyst_${report}.json"
+          $catalystsOut = "reports\catalysts_${report}.json"
+
+          if (Test-Path "scripts\analyst_feed_parser.py") {
+            python -X utf8 "scripts\analyst_feed_parser.py" `
+              --analyst-url "$analystUrl" `
+              --catalyst-url "$catalystUrl" `
+              --analyst-out "$analystOut" `
+              --catalysts-out "$catalystsOut"
+          }
+          else {
+            Write-Host "analyst_feed_parser.py nem található – analyst/catalyst blokkok nélkül fut tovább."
+          }
+
+
+if (Test-Path "scripts\highconv_builder.py") {
+  python -X utf8 "scripts\highconv_builder.py"
+}
+else {
+  Write-Host "highconv_builder.py nem található – high-conv blokk nélkül fut tovább."
+}
+
+          if (Test-Path "scripts\postprocess_report.py") {
+            $mdPath    = "reports\summary_report_${report}.md"
+            $bundleDir = "reports"
+
+            python -X utf8 "scripts\postprocess_report.py" `
+              --md "$mdPath" `
+              --bundle-dir "$bundleDir"
+          }
+          else {
+            Write-Host "postprocess_report.py nem található – nyers riport marad."
+          }
+
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: report-bundle
+          path: reports/**
+          if-no-files-found: warn
+
+      # Fix Gist frissítése – ebbe kerül mindig a legutóbbi #1-es jelentés
+      - name: Update fixed Gist with #1 report
+        if: always()
+        shell: pwsh
+        env:
+          # Ezt az ID-t a saját Gist URL-edből vedd ki:
+          # https://gist.github.com/zoleevegh/THIS_IS_THE_GIST_ID
+          GIST_ID: 5df443b8a46ef863cdc97aad62756510   # <- ha más az ID-d, írd át
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+        run: |
+          if (-not $env:GIST_TOKEN) {
+            Write-Host "No GIST_TOKEN secret – skip Gist update."
+            exit 0
+          }
+
+          $path = "reports\summary_report_1.md"
+
+          if (-not (Test-Path $path)) {
+            Write-Host "summary_report_1.md nem található – valószínűleg nem #1-es riport futott. Skip."
+            exit 0
+          }
+
+          Write-Host "summary_report_1.md beolvasása: $path"
+          $content = Get-Content -Raw $path
+
+          $body = @{
+            files = @{
+              "summary_report_1.md" = @{
+                content = $content
+              }
+            }
+          }
+
+          $json = $body | ConvertTo-Json -Depth 5
+
+          $url  = "https://api.github.com/gists/$($env:GIST_ID)"
+          Write-Host "PATCH $url"
+
+          $resp = curl.exe -s -X PATCH $url `
+            -H "Authorization: Bearer $($env:GIST_TOKEN)" `
+            -H "Accept: application/vnd.github+json" `
+            -H "Content-Type: application/json" `
+            -d $json
+
+          Write-Host "Gist PATCH response:"
+          Write-Host $resp
+
+          # ⬇⬇ Itt írjuk ki a cache-bontó raw URL-t az aktuális run ID-val
+          "Raw URL for this run:" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          "https://gist.githubusercontent.com/zoleevegh/5df443b8a46ef863cdc97aad62756510/raw/summary_report_1.md?run=$env:GITHUB_RUN_ID" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+
+      # Fix Gist frissítése – ebbe kerül mindig a legutóbbi #2-es jelentés
+      - name: Update fixed Gist with #2 report
+        if: always()
+        shell: pwsh
+        env:
+          # Ezt az ID-t a saját #2-es Gist URL-edből vedd ki:
+          # https://gist.github.com/zoleevegh/31b8daf60f983fbdfe37e3d0f2251fc7
+          GIST_ID: 31b8daf60f983fbdfe37e3d0f2251fc7   # fix #2-es jelentés Gist ID
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+        run: |
+          if (-not $env:GIST_TOKEN) {
+            Write-Host "No GIST_TOKEN secret – skip Gist update for #2."
+            exit 0
+          }
+
+          $path = "reports\summary_report_2.md"
+
+          if (-not (Test-Path $path)) {
+            Write-Host "summary_report_2.md nem található – valószínűleg nem #2-es riport futott. Skip."
+            exit 0
+          }
+
+          Write-Host "summary_report_2.md beolvasása: $path"
+          $content = Get-Content -Raw $path
+
+          $body = @{
+            files = @{
+              "summary_report_2.md" = @{
+                content = $content
+              }
+            }
+          }
+
+          $json = $body | ConvertTo-Json -Depth 5
+
+          $url  = "https://api.github.com/gists/$($env:GIST_ID)"
+          Write-Host "PATCH $url (report #2)"
+
+          $resp = curl.exe -s -X PATCH $url `
+            -H "Authorization: Bearer $($env:GIST_TOKEN)" `
+            -H "Accept: application/vnd.github+json" `
+            -H "Content-Type: application/json" `
+            -d $json
+
+          Write-Host "Gist PATCH response (#2):"
+          Write-Host $resp
+
+          "Raw URL for #2 fixed gist:" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          "https://gist.githubusercontent.com/zoleevegh/31b8daf60f983fbdfe37e3d0f2251fc7/raw/summary_report_2.md" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+
+
+      # Fix Gist frissítése – ebbe kerül mindig a legutóbbi #3-as jelentés
+      - name: Update fixed Gist with #3 report
+        if: always()
+        shell: pwsh
+        env:
+          # Ezt az ID-t a saját #3-as Gist URL-edből vedd ki:
+          # https://gist.github.com/zoleevegh/8f77c3b0ec040030d492859095686030
+          GIST_ID: 8f77c3b0ec040030d492859095686030   # fix #3-as jelentés Gist ID
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+        run: |
+          if (-not $env:GIST_TOKEN) {
+            Write-Host "No GIST_TOKEN secret – skip Gist update for #3."
+            exit 0
+          }
+
+          $path = "reports\summary_report_3.md"
+
+          if (-not (Test-Path $path)) {
+            Write-Host "summary_report_3.md nem található – valószínűleg nem #3-as riport futott. Skip."
+            exit 0
+          }
+
+          Write-Host "summary_report_3.md beolvasása: $path"
+          $content = Get-Content -Raw $path
+
+          $body = @{
+            files = @{
+              "summary_report_3.md" = @{
+                content = $content
+              }
+            }
+          }
+
+          $json = $body | ConvertTo-Json -Depth 5
+
+          $url  = "https://api.github.com/gists/$($env:GIST_ID)"
+          Write-Host "PATCH $url (report #3)"
+
+          $resp = curl.exe -s -X PATCH $url `
+            -H "Authorization: Bearer $($env:GIST_TOKEN)" `
+            -H "Accept: application/vnd.github+json" `
+            -H "Content-Type: application/json" `
+            -d $json
+
+          Write-Host "Gist PATCH response (#3):"
+          Write-Host $resp
+
+          "Raw URL for #3 fixed gist:" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          "https://gist.githubusercontent.com/zoleevegh/8f77c3b0ec040030d492859095686030/raw/summary_report_3.md" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
 
-3–12 hónapos „high-conviction” jelöltek automatikus azonosítása és high_conv_1.json generálása.
-
-FRISSÍTÉSEK EHHEZ A VERZIÓHOZ
------------------------------
-- ANALYST_FEED_URL: a JELENLEGI, működő Apps Script analyst endpointod
-    https://script.google.com/macros/s/AKfycbx5geIQ-eAnAqzjbPmTd5k59Hn_MnLiKh_9c8ft0nSWd2P3BQt1o5Dv6JQqNJi4q7X4Ow/exec
-
-- EXCLUDE_TICKERS_CSV_URL: a kézi futásoknál is használt MASTER CSV linked
-    https://docs.google.com/spreadsheets/d/e/2PACX-1vS0vpBd1ADF3_Godyflgh3-TbJoj_CCRBJ4QHeLiZCY12tHPWuTIL5OZBTByMApdT92vjS2pRpI1koM/pub?output=csv
-
-- OUTPUT_PATH: a #1 biblia-struktúrához igazítva most már
-    reports/1/high_conv_1.json
-
-A kizárandó tickereket (portfólió + watchlist) dinamikusan a fenti CSV-ből olvassa,
-nem kell semmit txt-be írogatnod. A txt csak opcionális extra rásegítés.
-
-HASZNÁLAT
----------
-1) Tedd ezt a fájlt a projekted scripts/ mappájába:
-       scripts/highconv_builder.py
-
-2) Futtatás (repo gyökeréből, ahol a reports/ mappa is van):
-       pip install requests   (ha még nincs)
-       python scripts/highconv_builder.py
-
-3) Eredmény:
-       reports/1/high_conv_1.json
-
-   Ezt a macro_highconv_helpers_v2.py script fogja beolvasni, és a
-   „Listán kívüli, 3–12 hónapos high-conviction jelöltek” blokkot a #1-es riport
-   végére bevarrja.
-"""
-
-from __future__ import annotations
-
-import csv
-import json
-from collections import defaultdict
-from dataclasses import dataclass
-from datetime import datetime, timezone
-from io import StringIO
-from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Set
-
-import requests
-
-
-# --- KONFIGURÁCIÓ --------------------------------------------------------------
-
-# Apps Script analyst feed URL – FRISSÍTETT, JELENLEGI LINK
-ANALYST_FEED_URL = (
-    "https://script.google.com/macros/s/"
-    "AKfycbx5geIQ-eAnAqzjbPmTd5k59Hn_MnLiKh_9c8ft0nSWd2P3BQt1o5Dv6JQqNJi4q7X4Ow"
-    "/exec"
-)
-
-# Hány napra visszamenőleg nézzük az analyst eseményeket a high-convhez
-DAYS_BACK = 30
-
-# Dinamikus kizárási lista Google Sheets CSV-ből
-# A kézi futásoknál is használt MASTER CSV linked
-EXCLUDE_TICKERS_CSV_URL = (
-    "https://docs.google.com/spreadsheets/d/e/"
-    "2PACX-1vS0vpBd1ADF3_Godyflgh3-TbJoj_CCRBJ4QHeLiZCY12tHPWuTIL5OZBTByMApdT92vjS2pRpI1koM/"
-    "pub?output=csv"
-)
-
-# Opcionális extra kizárási txt fájl (egy sor = ticker, vagy vesszővel elválasztott lista)
-EXCLUDE_TICKERS_FILE = "exclude_tickers.txt"
-
-# Alapból üres kézi halmaz; ha akarsz, itt is megadhatsz pár tickert fixen
-EXTRA_EXCLUDE_TICKERS: Set[str] = set()
-
-# Yahoo Finance quote endpoint (több ticker egyszerre)
-YAHOO_QUOTE_URL = "https://query1.finance.yahoo.com/v7/finance/quote"
-
-# High-conv pontszám küszöb
-MIN_SCORE = 0.6
-
-# Min. jel szám (az 5 biblia-jelölés közül)
-MIN_SIGNAL_COUNT = 2
-
-# high_conv_1.json kimeneti fájl – BIBLIA SZERINTI HELYRE RAKVA
-OUTPUT_PATH = Path("reports/1/high_conv_1.json")
-
-
-# --- ADATSTRUKTÚRÁK ------------------------------------------------------------
-
-
-@dataclass
-class AnalystEvent:
-    ticker: str
-    date: datetime
-    firm: str
-    action: str
-    from_rating: str
-    to_rating: str
-    price_target: Optional[float]
-    notes: str
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "AnalystEvent":
-        ticker = str(data.get("ticker") or "").upper()
-        date_str = str(data.get("date") or "")
-        date = _parse_date(date_str)
-        firm = str(data.get("firm") or "").strip()
-        action = str(data.get("action") or "").strip()
-        from_rating = str(data.get("from_rating") or "").strip()
-        to_rating = str(data.get("to_rating") or "").strip()
-        pt = data.get("price_target")
-        try:
-            price_target = float(pt) if pt not in (None, "", "null") else None
-        except Exception:
-            price_target = None
-        notes = str(data.get("notes") or "").strip()
-
-        return cls(
-            ticker=ticker,
-            date=date,
-            firm=firm,
-            action=action,
-            from_rating=from_rating,
-            to_rating=to_rating,
-            price_target=price_target,
-            notes=notes,
-        )
-
-
-@dataclass
-class TickerSignals:
-    ticker: str
-    positive_analyst_events: int = 0
-    has_guidance_upgrade: bool = False
-    has_consensus_revision_up: bool = False  # jelenleg placeholder
-    has_future_catalyst: bool = False
-    near_52w_high: bool = False
-    score: float = 0.0
-
-
-# --- SEGÉD FÜGGVÉNYEK ----------------------------------------------------------
-
-
-def _parse_date(value: str) -> datetime:
-    """
-    ISO vagy 'YYYY-MM-DD' -> datetime (UTC). Ha nem érthető, 'most'.
-    """
-    if not value:
-        return datetime.now(timezone.utc)
-    try:
-        if "T" in value:
-            v = value.replace("Z", "+00:00")
-            return datetime.fromisoformat(v)
-        return datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-    except Exception:
-        return datetime.now(timezone.utc)
-
-
-def load_exclude_tickers() -> Set[str]:
-    """
-    Dinamikus kizárási lista építése:
-      - EXTRA_EXCLUDE_TICKERS (hardcode)
-      - EXCLUDE_TICKERS_CSV_URL (Google Sheets CSV)
-      - EXCLUDE_TICKERS_FILE (opcionális txt)
-    """
-    tickers: Set[str] = set(t.upper() for t in EXTRA_EXCLUDE_TICKERS)
-
-    # 1) CSV-ből
-    if EXCLUDE_TICKERS_CSV_URL and EXCLUDE_TICKERS_CSV_URL.startswith("http"):
-        try:
-            resp = requests.get(EXCLUDE_TICKERS_CSV_URL, timeout=30)
-            resp.raise_for_status()
-            text = resp.text
-            f = StringIO(text)
-            reader = csv.reader(f)
-            rows = list(reader)
-            if rows:
-                header = [h.strip() for h in rows[0]]
-                data_rows = rows[1:] if any(header) else rows
-
-                # Ticker oszlop index
-                ticker_idx = 0
-                for i, name in enumerate(header):
-                    if name.lower() == "ticker":
-                        ticker_idx = i
-                        break
-
-                for row in data_rows:
-                    if len(row) <= ticker_idx:
-                        continue
-                    t = row[ticker_idx].strip().upper()
-                    if t:
-                        tickers.add(t)
-        except Exception as e:
-            print(f"[highconv_builder] FIGYELEM: CSV kizárási lista betöltése sikertelen: {e}")
-
-    # 2) Opcionális txt fájl
-    path = Path(EXCLUDE_TICKERS_FILE)
-    if path.is_file():
-        try:
-            text = path.read_text(encoding="utf-8")
-            for line in text.splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                for part in line.replace(";", ",").split(","):
-                    t = part.strip().upper()
-                    if t:
-                        tickers.add(t)
-        except Exception as e:
-            print(f"[highconv_builder] FIGYELEM: txt kizárási lista betöltése sikertelen: {e}")
-
-    return tickers
-
-
-def fetch_analyst_events() -> List[AnalystEvent]:
-    """
-    Apps Script analyst feed hívása.
-    Várja, hogy a válasz JSON-ben:
-        { "ok": true, "events": [ ... ] }
-    legyen.
-    """
-    params = {"type": "analyst", "report": "1", "days": str(DAYS_BACK)}
-    resp = requests.get(ANALYST_FEED_URL, params=params, timeout=30)
-    resp.raise_for_status()
-    data = resp.json()
-
-    events_raw = []
-    if isinstance(data, dict):
-        events_raw = data.get("events") or data.get("items") or []
-    elif isinstance(data, list):
-        events_raw = data
-    else:
-        events_raw = []
-
-    events: List[AnalystEvent] = []
-    for item in events_raw:
-        try:
-            ev = AnalystEvent.from_dict(item)
-        except Exception:
-            continue
-        if not ev.ticker:
-            continue
-        events.append(ev)
-
-    return events
-
-
-def classify_events(events: Iterable[AnalystEvent]) -> Dict[str, TickerSignals]:
-    """
-    Analyst eseményekből biblia-jelölések és pontszám számítása ticker szinten.
-    """
-    by_ticker: Dict[str, List[AnalystEvent]] = defaultdict(list)
-    for ev in events:
-        by_ticker[ev.ticker].append(ev)
-
-    result: Dict[str, TickerSignals] = {}
-
-    for ticker, evs in by_ticker.items():
-        sig = TickerSignals(ticker=ticker)
-
-        # 1) Pozitív analyst események (upgrade, PT emelés, pozitív coverage)
-        positive_count = 0
-        for ev in evs:
-            act = ev.action.lower()
-            notes = ev.notes.lower()
-            if any(kw in act for kw in ["upgrade", "initiated", "overweight", "outperform", "buy"]):
-                positive_count += 1
-                continue
-            if "pt emelés" in notes or "price target raised" in notes or "pt raised" in notes:
-                positive_count += 1
-        sig.positive_analyst_events = positive_count
-
-        # 2) Guidance / outlook emelés
-        for ev in evs:
-            notes = ev.notes.lower()
-            if any(
-                kw in notes
-                for kw in [
-                    "guidance raised",
-                    "raises guidance",
-                    "emelt guidance",
-                    "iránymutatás-emel",
-                    "outlook raised",
-                    "outlook improved",
-                ]
-            ):
-                sig.has_guidance_upgrade = True
-                break
-
-        # 3) Konszenzus EPS/árbevétel felfelé módosul – jelenleg placeholder
-        sig.has_consensus_revision_up = False
-
-        # 4) Közelgő katalizátor (3–12 hónap)
-        for ev in evs:
-            notes = ev.notes.lower()
-            if any(
-                kw in notes
-                for kw in [
-                    "product launch",
-                    "terméklaunch",
-                    "pdufa",
-                    "phase 3 readout",
-                    "earnings event",
-                    "capital markets day",
-                    "investor day",
-                    "approval",
-                    "jóváhagyás",
-                ]
-            ):
-                sig.has_future_catalyst = True
-                break
-
-        result[ticker] = sig
-
-    return result
-
-
-def fetch_yahoo_snapshot(tickers: Iterable[str]) -> Dict[str, Dict[str, Any]]:
-    """
-    Yahoo Finance quote snapshot – több tickerre egyszerre.
-    Visszaad egy dictet: {ticker: quote_dict}.
-    """
-    tickers_list = sorted({t.upper() for t in tickers if t})
-    if not tickers_list:
-        return {}
-
-    symbols = ",".join(tickers_list)
-    resp = requests.get(YAHOO_QUOTE_URL, params={"symbols": symbols}, timeout=20)
-    resp.raise_for_status()
-    data = resp.json()
-
-    result: Dict[str, Dict[str, Any]] = {}
-    quotes = data.get("quoteResponse", {}).get("result", [])
-    for q in quotes:
-        symbol = str(q.get("symbol") or "").upper()
-        if not symbol:
-            continue
-        result[symbol] = q
-
-    return result
-
-
-def apply_52w_high_signal(signals: Dict[str, TickerSignals], yahoo_quotes: Dict[str, Dict[str, Any]]) -> None:
-    """
-    Beállítja a near_52w_high jelzőt a Yahoo-ból jövő adatok alapján:
-    aktuális ár max. 5%-nál legyen távol a 12 havi csúcstól.
-    """
-    for ticker, sig in signals.items():
-        q = yahoo_quotes.get(ticker)
-        if not q:
-            continue
-
-        price = q.get("regularMarketPrice") or q.get("postMarketPrice")
-        high_52w = q.get("fiftyTwoWeekHigh")
-
-        try:
-            price_f = float(price)
-            high_f = float(high_52w)
-        except Exception:
-            continue
-
-        if high_f <= 0:
-            continue
-
-        distance = (high_f - price_f) / high_f
-        if distance <= 0.05:
-            sig.near_52w_high = True
-
-
-def compute_scores(signals: Dict[str, TickerSignals]) -> None:
-    """
-    A biblia 5 jelölését pontszámokká alakítja.
-    Egyszerű súlyozás:
-      - 1) pozitív analyst események (>=2): +0.4
-      - 2) guidance upgrade: +0.3
-      - 3) konszenzus felhúzás (placeholder): +0.2
-      - 4) közelgő katalizátor: +0.2
-      - 5) near 52w high: +0.2
-    """
-    for sig in signals.values():
-        score = 0.0
-        if sig.positive_analyst_events >= 2:
-            score += 0.4
-        if sig.has_guidance_upgrade:
-            score += 0.3
-        if sig.has_consensus_revision_up:
-            score += 0.2
-        if sig.has_future_catalyst:
-            score += 0.2
-        if sig.near_52w_high:
-            score += 0.2
-        sig.score = score
-
-
-def select_highconv(signals: Dict[str, TickerSignals], exclude_tickers: Set[str]) -> List[TickerSignals]:
-    """
-    Kiválasztja a high-conv jelölteket:
-      - nincs a kizárandó halmazban,
-      - elég jel (MIN_SIGNAL_COUNT),
-      - elég pont (MIN_SCORE).
-    """
-    candidates: List[TickerSignals] = []
-
-    for ticker, sig in signals.items():
-        if ticker in exclude_tickers:
-            continue
-
-        signal_flags = [
-            sig.positive_analyst_events >= 2,
-            sig.has_guidance_upgrade,
-            sig.has_consensus_revision_up,
-            sig.has_future_catalyst,
-            sig.near_52w_high,
-        ]
-        signal_count = sum(1 for f in signal_flags if f)
-
-        if signal_count < MIN_SIGNAL_COUNT:
-            continue
-        if sig.score < MIN_SCORE:
-            continue
-
-        candidates.append(sig)
-
-    candidates.sort(key=lambda s: s.score, reverse=True)
-    return candidates
-
-
-def build_highconv_json(candidates: List[TickerSignals]) -> List[Dict[str, Any]]:
-    """
-    A TickerSignals listát high_conv_1.json kompatibilis dict-listává alakítja.
-    """
-    items: List[Dict[str, Any]] = []
-    for sig in candidates:
-        thesis_parts: List[str] = []
-
-        if sig.positive_analyst_events >= 2:
-            thesis_parts.append("Több friss felminősítés / céláremelés nagy házaktól.")
-        if sig.has_guidance_upgrade:
-            thesis_parts.append("A vállalat emelte az iránymutatását / pozitív guide-ot adott.")
-        if sig.has_future_catalyst:
-            thesis_parts.append("Közelgő 3–12 hónapos katalizátor (esemény / terméklaunch / jóváhagyás).")
-        if sig.near_52w_high:
-            thesis_parts.append("Árfolyam 52 hetes csúcs közelében, relatív erő fennáll.")
-
-        thesis = " ".join(thesis_parts).strip()
-
-        signals_list: List[str] = []
-        if sig.positive_analyst_events >= 2:
-            signals_list.append(f"{sig.positive_analyst_events} friss pozitív analyst esemény (upgrade / PT emelés).")
-        if sig.has_guidance_upgrade:
-            signals_list.append("Iránymutatás / outlook emelése.")
-        if sig.has_consensus_revision_up:
-            signals_list.append("EPS / árbevétel konszenzus felfelé módosult.")
-        if sig.has_future_catalyst:
-            signals_list.append("Közelgő specifikus katalizátor 3–12 hónapon belül.")
-        if sig.near_52w_high:
-            signals_list.append("Árfolyam 5%-on belül az 52 hetes csúcstól.")
-
-        item = {
-            "ticker": sig.ticker,
-            "company": "",  # opcionálisan később kitölthető Yahoo 'shortName'-ből
-            "thesis": thesis,
-            "score": round(sig.score, 2),
-            "signals": signals_list,
-        }
-        items.append(item)
-
-    return items
-
-
-def save_json(path: Path, data: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-
-
-def main() -> None:
-    exclude_tickers = load_exclude_tickers()
-    print(f"[highconv_builder] Kizárandó tickerek összesen: {len(exclude_tickers)} db")
-
-    print(f"[highconv_builder] Analyst feed letöltése (utolsó {DAYS_BACK} nap)...")
-    events = fetch_analyst_events()
-    print(f"[highconv_builder] Analyst események: {len(events)} db")
-
-    if not events:
-        print("[highconv_builder] Nincs analyst esemény – high_conv_1.json üres lesz.")
-        save_json(OUTPUT_PATH, [])
-        return
-
-    sigs = classify_events(events)
-
-    print("[highconv_builder] Yahoo snapshot lekérése...")
-    yahoo_quotes = fetch_yahoo_snapshot(sigs.keys())
-    apply_52w_high_signal(sigs, yahoo_quotes)
-
-    compute_scores(sigs)
-
-    candidates = select_highconv(sigs, exclude_tickers)
-    print(f"[highconv_builder] High-conv jelöltek: {len(candidates)} db")
-
-    items = build_highconv_json(candidates)
-    save_json(OUTPUT_PATH, items)
-    print(f"[highconv_builder] high_conv_1.json elkészült: {OUTPUT_PATH.resolve()}")
-
-
-if __name__ == "__main__":
-    main()
