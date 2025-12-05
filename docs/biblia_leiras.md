@@ -1,5 +1,5 @@
 # Részvények Projekt -- BIBLIA LEÍRÁS (MD)
-BIBLIA VERZIÓ: v3.3.0
+BIBLIA VERZIÓ: v3.4.0
 
 
 ## Fájlszerkezet, szerepek és riportlogika
