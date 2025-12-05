@@ -136,24 +136,43 @@ jobs:
           $env:PYTHONIOENCODING = "utf-8"
 
           $report = "${{ steps.vars.outputs.report }}"
+          if (-not $report) { $report = "1" }
+
           $csv    = "reports\master.csv"
           $macro  = "${{ steps.vars.outputs.macro }}"
 
-          if (-not (Test-Path "scripts\report_runner.py")) {
-            Write-Error "scripts\report_runner.py hiányzik a repóban"
-            exit 1
+          if ($report -eq "3") {
+            # ÚJ: dedikált runner a #3 jelentéshez
+            if (-not (Test-Path "scripts\report_runner_3.py")) {
+              Write-Error "scripts\report_runner_3.py hiányzik a repóban (#3 mód)"
+              exit 1
+            }
+
+            $summaryPath = "reports\summary_report_3.md"
+
+            python -X utf8 "scripts\report_runner_3.py"
+
           }
+          else {
+            # Régi, közös runner #1 és #2 jelentéshez
+            if (-not (Test-Path "scripts\report_runner.py")) {
+              Write-Error "scripts\report_runner.py hiányzik a repóban"
+              exit 1
+            }
 
-          $summaryPath = "reports\summary_report_${report}.md"
+            $summaryPath = "reports\summary_report_${report}.md"
 
-          python -X utf8 "scripts\report_runner.py" `
-            --report $report `
-            --csv "$csv" `
-            --summary "$summaryPath" `
+            python -X utf8 "scripts\report_runner.py" `
+              --report $report `
+              --csv "$csv" `
+              --summary "$summaryPath" `
+              --macro "$macro"
+          }
 
           if (Test-Path $summaryPath) {
             Get-Content $summaryPath | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8
-          } else {
+          }
+          else {
             Write-Host "Nincs summary fájl (expected: $summaryPath)"
           }
 
