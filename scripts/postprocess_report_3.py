@@ -1,21 +1,42 @@
 # postprocess_report_3.py
-# Version: v1.0.0
+# Version: v1.1.0
 """Postprocess module for assembling the final summary_report_3.md.
 
-This is a skeleton based on the approved architecture.
-It expects:
-- A raw markdown header file (summary_report_3_raw.md)
-- latest_3.json (intraday prices)
-- analyst_3.json
-- catalysts_3.json
-- high_conv_1.json
+v1.1.0:
+- Integrates real calls to blocks_intraday_3 and blocks_events_3.
+- Adds ordering, safety checks, and consistent markdown assembly.
+- Still defensive: missing blocks do not crash the report.
 
-The orchestrator stitches all blocks into the final formatted report #3.
-Actual logic will be implemented in later versions.
+Expected inputs:
+- raw_summary_path: markdown with coverage + macro
+- latest_json_path: intraday computed JSON
+- analyst_json_path: Apps Script analyst feed
+- catalysts_json_path: Apps Script catalyst feed
+- highconv_json_path: high-conv JSON
 """
 
 import json
 from typing import Any, Optional
+
+# --- Real imports (modules must exist in /scripts) ---
+try:
+    from blocks_intraday_3 import build_intraday_blocks
+except Exception:
+    def build_intraday_blocks(_):
+        return ("### Darabszámos tickerek – Open→Most\n(Hiba: intraday modul nem elérhető)\n",
+                "### Watchlist – releváns ticker-mozgások\n(Hiba: intraday modul nem elérhető)\n")
+
+try:
+    from blocks_events_3 import (
+        build_analyst_block,
+        build_catalyst_block,
+        build_highconv_block,
+    )
+except Exception:
+    def build_analyst_block(_): return "### Bejelentések és fel/lemínősítések\n(Hiba: events modul nem elérhető)\n"
+    def build_catalyst_block(_): return "### Közelgő katalizátorok\n(Hiba: events modul nem elérhető)\n"
+    def build_highconv_block(_): return "### High-conv jelöltek\n(Hiba: events modul nem elérhető)\n"
+
 
 def _load_json(path: str) -> Optional[Any]:
     try:
@@ -24,6 +45,7 @@ def _load_json(path: str) -> Optional[Any]:
     except Exception:
         return None
 
+
 def _load_text(path: str) -> str:
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -31,20 +53,6 @@ def _load_text(path: str) -> str:
     except Exception:
         return ""
 
-# --- PLACEHOLDERS to be wired with real implementations ---
-def _build_intraday_blocks(latest_json: Any):
-    return "### Darabszámos tickerek – Open→Most\n", "### Watchlist – releváns ticker-mozgások\n"
-
-def _build_analyst_block(analyst_json: Any):
-    return "### Bejelentések és fel/lemínősítések (nyitástól mostanáig)\n"
-
-def _build_catalyst_block(catalysts_json: Any):
-    return "### Közelgő katalizátorok (mai módosítások)\n"
-
-def _build_highconv_block(highconv_json: Any):
-    return "### Listán kívüli, 3–12 hónapos high-conv jelöltek\n"
-
-# -----------------------------------------------------------
 
 def run_postprocess_3(
     raw_summary_path: str,
@@ -54,35 +62,39 @@ def run_postprocess_3(
     highconv_json_path: str,
     output_path: str
 ):
-    """Main assembly function for summary_report_3.md (v1.0.0 skeleton)."""
+    """Main assembly function for summary_report_3.md (v1.1.0)."""
 
-    # Load raw header / macro part
+    # 1) Raw header (coverage + macro)
     raw_header = _load_text(raw_summary_path)
 
-    # Load JSONs
+    # 2) JSON inputs
     latest_json = _load_json(latest_json_path)
     analyst_json = _load_json(analyst_json_path)
     catalysts_json = _load_json(catalysts_json_path)
     highconv_json = _load_json(highconv_json_path)
 
-    # Build individual blocks
-    pos_block, wl_block = _build_intraday_blocks(latest_json)
-    analyst_block = _build_analyst_block(analyst_json)
-    catalyst_block = _build_catalyst_block(catalysts_json)
-    highconv_block = _build_highconv_block(highconv_json)
+    # 3) Build major blocks
+    pos_block, wl_block = build_intraday_blocks(latest_json)
+    analyst_block = build_analyst_block(analyst_json)
+    catalyst_block = build_catalyst_block(catalysts_json)
+    highconv_block = build_highconv_block(highconv_json)
 
-    # Assemble final
-    final = (
-        raw_header + "\n"
-        + pos_block + "\n"
-        + wl_block + "\n"
-        + analyst_block + "\n"
-        + catalyst_block + "\n"
-        + highconv_block + "\n"
-    )
+    # 4) Assemble final markdown in canonical #3 order
+    sections = [
+        raw_header.strip(),
+        pos_block.strip(),
+        wl_block.strip(),
+        analyst_block.strip(),
+        catalyst_block.strip(),
+        highconv_block.strip(),
+        "",
+    ]
 
-    # Write final report
+    final_md = "\n\n".join(sec for sec in sections if sec)
+
+    # 5) Write the final summary_report_3.md
     with open(output_path, "w", encoding="utf-8") as f:
-        f.write(final)
+        f.write(final_md + "\n")
 
     return output_path
+
