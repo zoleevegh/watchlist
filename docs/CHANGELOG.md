@@ -19,3 +19,8 @@ DOKUMENTUM VERZIÓ: v3.4.0
 - Frissítve: `docs/biblia_leiras.md` BIBLIA VERZIÓ: v3.4.0 – pontosítva a scripts/fájlok szerepkörének leírása, a #1/#2/#3 pipeline és a block builderek közötti adatfolyam.
 - Frissítve: `00_README_START_HERE.md` DOKUMENTUM VERZIÓ: v3.4.0, Verzió: 1.1.0 – a belépési pont szövege összhangba hozva a jelenlegi makró / analyst / catalyst / high-conv / postprocess pipeline-nal.
 - Rögzítve: az analyst / high-conv / catalyst blokkok már teljesen integrált, automata #1-es workflow-elemek; a korábbi „TODO” jellegű megjegyzések kivezetve a dokumentációból.
+
+
+## v3.5.0 – 2025-12-09
+- Hozzáadva: ChatGPT bibliás #1 jelentés fallback mechanizmusa.
+- Dokumentálva, hogy ChatGPT teljes #1 bibliás riportot készít a Gist RAW alapján.
