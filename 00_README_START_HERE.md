@@ -158,3 +158,25 @@ python scripts/postprocess_report.py --md reports/1/summary_report_1.md --bundle
 
 Így a gist-re már a teljes, biblia szerinti #1-es jelentés kerül ki.
 
+
+## 3.1 ChatGPT által generált #1 BIBLIA riport (hivatalos fallback)
+
+Ha a #1-es jelentést a pipeline bármely része (runner, postprocess, gist írás) nem állítja elő
+a BIBLIA szerinti formátumban, akkor ChatGPT képes automatikusan elkészíteni a teljes #1 riportot
+a Gist RAW tartalmából.
+
+### Hogyan kell kérni?
+
+*Kérek egy teljes #1 bibliás jelentést erre a Gist linkre: <raw gist link>*
+
+### A generált riport blokkjai:
+
+1. Lefedettség
+2. Politika / FED / Makró
+3. Darabszámos tickerek (AH/PM)
+4. Watchlist tickerek (AH/PM)
+5. Bejelentések & fel/lemínősítések
+6. Közeli katalizátorok
+7. Listán kívüli high-conv (3–12 hó)
+
+Ez a fallback akkor is működik, ha a scriptek hibásak vagy hiányos a summary_report_1.md.
