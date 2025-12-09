@@ -1,30 +1,49 @@
-# Részvények Projekt -- BIBLIA LEÍRÁS (MD)
-
-## Fájlszerkezet, szerepek és riportlogika
-
-## 1. Könyvtárszerkezet
+1. Könyvtárszerkezet
 
     repo/
-    ├─ scripts/
-    │   ├─ report_runner.py
-    │   ├─ biblia_helper.py
-    │   ├─ macro_highconv_helpers_v2.py
-    │   ├─ highconv_builder.py
-    │   ├─ macro_fetcher.py
-    │   └─ analyst_feed_parser.py
+    ├─ 00_README_START_HERE.md
+    ├─ README.md
+    ├─ .github/
+    │   └─ workflows/
+    │       ├─ run_report.yml
+    │       └─ update_biblia_docs.yml
+    ├─ docs/
+    │   ├─ CHANGELOG.md
+    │   └─ biblia_leiras.md
     ├─ reports/
     │   ├─ 1/
-    │   │   ├─ summary_report_1.md
-    │   │   ├─ latest_1.md
-    │   │   ├─ macro_news_1.json
-    │   │   └─ high_conv_1.json
-    │   ├─ 2/
+    │   │   ├─ analyst_1.json
+    │   │   ├─ catalysts_1.json
+    │   │   ├─ report.json
+    │   │   └─ report_summary.md
     │   └─ 3/
-    └─ data/
-        ├─ master.csv
-        └─ universe/
-
-## 2. Fájlok szerepköre
+    │       ├─ summary_report_3.md
+    │       ├─ analyst_1.json
+    │       ├─ catalysts_1.json
+    │       ├─ latest_1.json
+    │       ├─ latest_1.md
+    │       ├─ latest_3.json
+    │       ├─ latest_3.md
+    │       ├─ raw_analyst_1.json
+    │       └─ raw_catalysts_1.json
+    ├─ scripts/
+    │   ├─ analyst_block_builder.py
+    │   ├─ analyst_feed_parser.py
+    │   ├─ biblia_helper.py
+    │   ├─ blocks_events_3.py
+    │   ├─ blocks_intraday_3.py
+    │   ├─ crawler_analyst_catalyst.py
+    │   ├─ events_fetcher.py
+    │   ├─ export_biblia_md.py
+    │   ├─ highconv_block_builder.py
+    │   ├─ highconv_builder.py
+    │   ├─ macro_fetcher.py
+    │   ├─ macro_highconv_helpers_v2.py
+    │   ├─ macro_news_fetcher.py
+    │   ├─ macro_news_fetcher.py
+    │   ├─ postprocess_report.py
+    │   ├─ postprocess_report_3.py
+    │   ├─ report_runner.py
 
 ### scripts/biblia_helper.py
 
