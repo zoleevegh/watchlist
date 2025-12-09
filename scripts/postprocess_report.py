@@ -7,11 +7,14 @@ Usage (example):
 This script is intentionally tolerant to JSON layout; it only relies on a few key names.
 """
 
+from __future__ import annotations
+
+
 SCRIPT_VERSION = "v3.0.0-biblia-1"
 
 
 def _update_script_version(md: str) -> str:
-    """Replace the 'Script verzió:' sor a fejlécben, ha létezik."""
+    """Replace the 'Script verzió:' line in the header, if present."""
     lines = md.splitlines()
     for i, line in enumerate(lines):
         if line.strip().startswith("Script verzió:"):
@@ -19,8 +22,6 @@ def _update_script_version(md: str) -> str:
             break
     return "\n".join(lines)
 
-
-from __future__ import annotations
 
 import argparse
 import json
