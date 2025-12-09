@@ -3,7 +3,6 @@
 ```text
 repo/
 ├─ 00_README_START_HERE.md
-├─ README.md
 ├─ .github/
 │   └─ workflows/
 │       ├─ run_report.yml
@@ -33,20 +32,17 @@ repo/
 │   ├─ biblia_helper.py
 │   ├─ blocks_events_3.py
 │   ├─ blocks_intraday_3.py
-│   ├─ crawler_analyst_catalyst.py
-│   ├─ events_fetcher.py
 │   ├─ export_biblia_md.py
 │   ├─ highconv_block_builder.py
 │   ├─ highconv_builder.py
 │   ├─ macro_fetcher.py
 │   ├─ macro_highconv_helpers_v2.py
-│   ├─ macro_news_fetcher.py
 │   ├─ postprocess_report.py
 │   ├─ postprocess_report_3.py
-│   ├─ report_runner.py
-│   └─ report_runner_Yahoo.py   (archív, nem használt)
+│   └─ report_runner.py
+```
 
-### scripts/biblia_helper.py
+scripts/biblia_helper.py
 
 Segédfüggvények: - #1/#2/#3 riport logika ellenőrző listái - makró és
 hírblokkok formázása - high-conv kritérium-értékelés - ticker-szűrés a
