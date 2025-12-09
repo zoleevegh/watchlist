@@ -13,26 +13,14 @@ SCRIPT_VERSION = "v3.0.0-biblia-1"
 
 
 def _update_script_version(md: str) -> str:
-    """Replace the '**Script verzió:** ...' fragment in the first header line, if present."""
-    marker = "**Script verzió:**"
-    if marker not in md:
-        return md
-    # We only touch the first occurrence
-    before, rest = md.split(marker, 1)
-    # rest starts with space + current version + rest of header
-    # v3 string:
-    new_fragment = f"{marker} {SCRIPT_VERSION}"
-    # Eltávolítjuk a régi verziót a marker utáni első szóig
-    # (a régi verzió valószínűleg szóközök nélkül egy tokenként szerepel)
-    # Keressük az első szóközt a rest-ben
-    rest_stripped = rest.lstrip()
-    # vágjuk az első space után
-    first_space = rest_stripped.find(" ")
-    if first_space != -1:
-        rest_after_version = rest_stripped[first_space:]
-    else:
-        rest_after_version = ""
-    return before + new_fragment + rest_after_version
+    """Update the '**Script verzió:** ...' line in the header, if present."""
+    lines = md.splitlines()
+    for i, line in enumerate(lines):
+        if "**Script verzió:**" in line:
+            prefix, _ = line.split("**Script verzió:**", 1)
+            lines[i] = f"{prefix}**Script verzió:** {SCRIPT_VERSION}"
+            break
+    return "\n".join(lines)
 
 
 import argparse
