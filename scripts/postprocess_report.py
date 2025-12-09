@@ -7,6 +7,19 @@ Usage (example):
 This script is intentionally tolerant to JSON layout; it only relies on a few key names.
 """
 
+SCRIPT_VERSION = "v3.0.0-biblia-1"
+
+
+def _update_script_version(md: str) -> str:
+    """Replace the 'Script verzió:' sor a fejlécben, ha létezik."""
+    lines = md.splitlines()
+    for i, line in enumerate(lines):
+        if line.strip().startswith("Script verzió:"):
+            lines[i] = f"Script verzió: {SCRIPT_VERSION}"
+            break
+    return "\n".join(lines)
+
+
 from __future__ import annotations
 
 import argparse
@@ -158,6 +171,7 @@ def main() -> None:
     highconv_json = bundle_dir / "high_conv_1.json"
 
     md = _read_md(md_path)
+    md = _update_script_version(md)
 
     # 1) Makró blokk a lefedettség után
     macro_block = _build_macro_block(macro_json)
