@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+"""report_runner.py – v3.0.0-biblia-prep
+
+Megjegyzés: Ez a verzió a korábbi teljes runner logikát megtartja.
+A bibliás formátum finomhangolása külön lépésekben történik.
+"""
+
 import argparse
 import csv
 import datetime as dt
