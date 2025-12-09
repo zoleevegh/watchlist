@@ -90,3 +90,9 @@ MASTER alapján
 Legalább 2 teljesüljön: - elemzői felminősítések - guide emelés -
 konszenzus-felhúzás - 3--12 hónapos katalizátor - relatív erő / 52w high
 közeli
+
+
+# Fallback logika – ChatGPT által generált #1 BIBLIA jelentés
+
+A rendszerben hivatalosan támogatott, hogy ha a #1-es jelentést a pipeline nem hozza létre
+BIBLIA szerint, akkor ChatGPT a Gist RAW tartalmából generálja a teljes formátumot.
