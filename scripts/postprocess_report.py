@@ -9,20 +9,6 @@ This script is intentionally tolerant to JSON layout; it only relies on a few ke
 
 from __future__ import annotations
 
-SCRIPT_VERSION = "v3.0.0-biblia-1"
-
-
-def _update_script_version(md: str) -> str:
-    """Update the '**Script verzió:** ...' line in the header, if present."""
-    lines = md.splitlines()
-    for i, line in enumerate(lines):
-        if "**Script verzió:**" in line:
-            prefix, _ = line.split("**Script verzió:**", 1)
-            lines[i] = f"{prefix}**Script verzió:** {SCRIPT_VERSION}"
-            break
-    return "\n".join(lines)
-
-
 import argparse
 import json
 from pathlib import Path
@@ -172,7 +158,6 @@ def main() -> None:
     highconv_json = bundle_dir / "high_conv_1.json"
 
     md = _read_md(md_path)
-    md = _update_script_version(md)
 
     # 1) Makró blokk a lefedettség után
     macro_block = _build_macro_block(macro_json)
