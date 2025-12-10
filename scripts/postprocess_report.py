@@ -7,6 +7,7 @@ Usage (example):
 This script is intentionally tolerant to JSON layout; it only relies on a few key names.
 """
 
+# postprocess_report.py – v3.1.0-keep-job-summary
 from __future__ import annotations
 
 import argparse
@@ -114,16 +115,14 @@ def _insert_macro_block(md: str, macro_block: str) -> str:
 
 
 def _strip_job_summary(md: str) -> str:
-    lines = md.splitlines()
-    out = []
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith("Job summary generated at run-time"):
-            # skip
-            continue
-        out.append(line)
-    return "\n".join(out).rstrip() + "\n"
+    """Normalize trailing whitespace, but KEEP job summary and raw URL lines.
 
+    This allows downstream ellenőrzés (timestamp + gist raw link) directly from the MD.
+
+    """
+    lines = md.splitlines()
+
+    return "\n".join(lines).rstrip() + "\n"
 
 def _append_blocks(md: str, *blocks: str) -> str:
     out = md.rstrip().splitlines()
