@@ -2,12 +2,16 @@
 """Post-process #1 report markdown with macro / analyst / catalyst / high-conv blocks.
 
 Usage (example):
-    python postprocess_report.py --md reports/summary_report_1.md --bundle-dir bundle
+    python postprocess_report.py --md reports/summary_report_1.md --bundle-dir reports
 
-This script is intentionally tolerant to JSON layout; it only relies on a few key names.
+Ez a verzió:
+- Makró / analyst / catalyst / high-conv blokkokat illeszt a #1 jelentéshez.
+- MEGTARTJA a GitHub "Job summary generated..." blokkot a végén.
+- Visszamenőleg kompatibilis: elfogadja a --report argumentet is,
+  de jelenleg figyelmen kívül hagyja (a #1-es jelentést kezeli).
 """
 
-# postprocess_report.py – v3.1.0-keep-job-summary
+# postprocess_report.py – v3.2.0-keep-job-summary-backcompat
 from __future__ import annotations
 
 import argparse
@@ -22,6 +26,9 @@ from highconv_block_builder import (
 )
 
 
+# ---------- I/O segédfüggvények ----------
+
+
 def _read_md(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
@@ -31,6 +38,7 @@ def _write_md(path: Path, content: str) -> None:
 
 
 def _load_json(path: Path) -> Any:
+    """JSON betöltés – ha nincs / hibás, None-t ad vissza."""
     if not path.is_file():
         return None
     try:
@@ -39,14 +47,15 @@ def _load_json(path: Path) -> Any:
         return None
 
 
-# ---------- Macro blokk ----------
+# ---------- Makró blokk ----------
 
 
 def _build_macro_block(macro_json_path: Path) -> str:
     data = _load_json(macro_json_path)
     if not data:
         return ""
-    # Try several possible layouts: {headlines:[...]}, {items:[...]}, or list
+
+    # Több lehetséges layout: {headlines:[...]}, {items:[...]}, {news:[...]}, list, stb.
     if isinstance(data, list):
         items = data
     elif isinstance(data, dict):
@@ -61,8 +70,9 @@ def _build_macro_block(macro_json_path: Path) -> str:
     else:
         items = []
 
-    lines = ["### Politika / FED / Makró", ""]
+    lines: list[str] = ["### Politika / FED / Makró", ""]
     count = 0
+
     for raw in items:
         if isinstance(raw, str):
             txt = raw.strip()
@@ -79,6 +89,7 @@ def _build_macro_block(macro_json_path: Path) -> str:
                 lines.append(f"- {' – '.join(parts)}")
         else:
             continue
+
         count += 1
         if count >= 8:
             break
@@ -94,44 +105,48 @@ def _build_macro_block(macro_json_path: Path) -> str:
 
 
 def _insert_macro_block(md: str, macro_block: str) -> str:
+    """Makróblokk beszúrása a 'Lefedettség:' sor UTÁN."""
     if not macro_block:
         return md
+
     lines = md.splitlines()
     idx = None
+
     for i, line in enumerate(lines):
         if line.strip().startswith("Lefedettség:"):
             idx = i
             break
+
     if idx is None:
-        # prepend if we can't find the coverage block
+        # Ha nincs Lefedettség blokk, egyszerűen a tetejére tesszük
         return macro_block + "\n" + md
-    # Insert macro block *after* the Lefedettség sor
-    out = []
+
+    out: list[str] = []
     out.extend(lines[: idx + 1])
-    out.append("")
-    out.append(macro_block)
+    out.append("")          # üres sor
+    out.append(macro_block) # teljes makróblokk
     out.extend(lines[idx + 1 :])
+
     return "\n".join(out)
 
 
 def _strip_job_summary(md: str) -> str:
-    """Normalize trailing whitespace, but KEEP job summary and raw URL lines.
-
-    This allows downstream ellenőrzés (timestamp + gist raw link) directly from the MD.
-
-    """
+    """Csak normalizálja az utolsó soremelést, a Job summary blokkot BENT hagyja."""
     lines = md.splitlines()
-
     return "\n".join(lines).rstrip() + "\n"
 
+
 def _append_blocks(md: str, *blocks: str) -> str:
+    """Analyst / catalyst / high-conv blokkok hozzáfűzése a jelentés végéhez."""
     out = md.rstrip().splitlines()
-    out.append("")  # biztosan egy üres sor a végén
+    out.append("")  # biztosan legyen egy üres sor a végén
+
     for block in blocks:
         if block:
             out.append("")
             out.extend(block.rstrip().splitlines())
             out.append("")
+
     return "\n".join(out).rstrip() + "\n"
 
 
@@ -139,18 +154,33 @@ def _append_blocks(md: str, *blocks: str) -> str:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Post-process #1 report markdown.")
+    parser = argparse.ArgumentParser(
+        description="Post-process #1 report markdown (makró + analyst + catalyst + high-conv blokkok)."
+    )
     parser.add_argument("--md", required=True, help="Path to summary_report_1.md")
     parser.add_argument(
         "--bundle-dir",
         required=True,
-        help="Directory where macro_news_1.json / analyst_1.json / catalysts_1.json / high_conv_1.json are located.",
+        help=(
+            "Directory where macro_news_1.json / analyst_1.json / "
+            "catalysts_1.json / high_conv_1.json are located."
+        ),
     )
+    # Visszamenő kompatibilitás: a runner egyes verziói még átadják a --report kapcsolót.
+    # Ezt itt elfogadjuk, de jelenleg NEM használjuk (a #1-es reporthoz kötött a script).
+    parser.add_argument(
+        "--report",
+        default="1",
+        help="(Backcompat) Jelentésszám; jelenleg figyelmen kívül hagyjuk, csak a #1-hez használjuk.",
+    )
+
     args = parser.parse_args()
 
     md_path = Path(args.md)
     bundle_dir = Path(args.bundle_dir)
 
+    # Jelenleg fix #1-es neveket használunk – a --report csak azért létezik,
+    # hogy a régi hívások ne döntsenek hibára.
     macro_json = bundle_dir / "macro_news_1.json"
     analyst_json = bundle_dir / "analyst_1.json"
     catalysts_json = bundle_dir / "catalysts_1.json"
@@ -162,7 +192,7 @@ def main() -> None:
     macro_block = _build_macro_block(macro_json)
     md = _insert_macro_block(md, macro_block)
 
-    # 2) Végéről leszedjük a Job summary sort
+    # 2) Végéről whitespace-normalizálás (Job summary BENN marad)
     md = _strip_job_summary(md)
 
     # 3) Analyst + katalizátor + high-conv blokkok a jelentés végére
