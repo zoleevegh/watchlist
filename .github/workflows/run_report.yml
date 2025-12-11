@@ -1,4 +1,4 @@
-name: Run Report (Windows)
+name: Run Report (Windows) # v2.2.0
 
 on:
   workflow_dispatch:
@@ -6,6 +6,10 @@ on:
       report:
         description: 'Jelentés: 1=AH+PM, 2=Open→Close (előző nap), 3=Ma Open→Most'
         default: '1'
+        required: false
+      macro:
+        description: 'Makró feed mód: auto/force/skip'
+        default: 'auto'
         required: false
   repository_dispatch:
     types: [run_report]
@@ -17,7 +21,7 @@ jobs:
       # ← IDE írd a Google Sheets "Publish to web" CSV linkjét (MASTER)
       DEFAULT_CSV_URL: https://docs.google.com/spreadsheets/d/e/2PACX-1vTf5h3xx4LWJvI-e7PSyc8g6uGZT-H6pCeuwEqs7NqeCDKuAltTpL_ncPOWMtooRw/pub?output=csv
 
-      # Analyst / Catalyst feed webapp (új Apps Script)
+      # Analyst / Catalyst feed webapp (Apps Script – ÚJ ID)
       ANALYST_FEED_URL_1: "https://script.google.com/macros/s/AKfycbzFY0L5KPCJaPc8QugZWaibJwQUOTs_fs1gR1gTHBSlzsyhr2THMIm0dzeslwzCm3AzJw/exec?type=analyst&report=1"
       CATALYST_FEED_URL_1: "https://script.google.com/macros/s/AKfycbzFY0L5KPCJaPc8QugZWaibJwQUOTs_fs1gR1gTHBSlzsyhr2THMIm0dzeslwzCm3AzJw/exec?type=catalyst&report=1"
 
@@ -27,7 +31,7 @@ jobs:
       ANALYST_FEED_URL_3: "https://script.google.com/macros/s/AKfycbzFY0L5KPCJaPc8QugZWaibJwQUOTs_fs1gR1gTHBSlzsyhr2THMIm0dzeslwzCm3AzJw/exec?type=analyst&report=3"
       CATALYST_FEED_URL_3: "https://script.google.com/macros/s/AKfycbzFY0L5KPCJaPc8QugZWaibJwQUOTs_fs1gR1gTHBSlzsyhr2THMIm0dzeslwzCm3AzJw/exec?type=catalyst&report=3"
 
-      # Makró / FED / piaci hangulat feed (Apps Script webapp – új)
+      # Makró / FED / piaci hangulat feed (Apps Script webapp – külön MACRO projekt)
       MACRO_FEED_URL_1: "https://script.google.com/macros/s/AKfycbwNP9FOflY4nAYt1o4U5C0ozg3IrlyJM8KGXpFLzCGOdBAOAh6zeAOum5iQswZufxrB/exec?type=macro&report=1"
       MACRO_FEED_URL_2: "https://script.google.com/macros/s/AKfycbwNP9FOflY4nAYt1o4U5C0ozg3IrlyJM8KGXpFLzCGOdBAOAh6zeAOum5iQswZufxrB/exec?type=macro&report=2"
       MACRO_FEED_URL_3: "https://script.google.com/macros/s/AKfycbwNP9FOflY4nAYt1o4U5C0ozg3IrlyJM8KGXpFLzCGOdBAOAh6zeAOum5iQswZufxrB/exec?type=macro&report=3"
@@ -53,7 +57,7 @@ jobs:
         run: |
           $report = "${{ github.event.inputs.report }}"
           if (-not $report) { $report = "${{ github.event.client_payload.report }}" }
-          if (-not $report) { $report = "3" }
+          if (-not $report) { $report = "1" }
 
           $macro = "${{ github.event.inputs.macro }}"
           if (-not $macro) { $macro = "${{ github.event.client_payload.macro }}" }
@@ -71,13 +75,17 @@ jobs:
           $report = "${{ steps.vars.outputs.report }}"
           if (-not $report) { $report = "1" }
 
-          if (-not (Test-Path "scripts\macro_news_fetcher.py")) {
-            Write-Host "macro_news_fetcher.py nem található – makróhírek nélkül fut tovább."
+          $macroMode = "${{ steps.vars.outputs.macro }}"
+          if (-not $macroMode) { $macroMode = "auto" }
+
+          if (-not (Test-Path "scripts\macro_fetcher.py")) {
+            Write-Host "macro_fetcher.py nem található – makróhírek nélkül fut tovább."
           }
           else {
-            python "scripts\macro_news_fetcher.py" $report
+            python -X utf8 "scripts\macro_fetcher.py" `
+              --report $report `
+              --mode $macroMode
           }
-
 
       - name: Fetch MASTER CSV (robust)
         shell: pwsh
@@ -129,7 +137,9 @@ jobs:
             Write-Host "events_fetcher.py nem található – analyst/catalyst blokk nélkül fut tovább."
           }
           else {
-            python -X utf8 "scripts\events_fetcher.py" --report $report --universe-json "reports/latest_${report}.json"
+            python -X utf8 "scripts\events_fetcher.py" `
+              --report $report `
+              --universe-json "reports\latest_${report}.json"
           }
 
       - name: Run report (#1/#2/#3)
@@ -139,8 +149,9 @@ jobs:
           $env:PYTHONIOENCODING = "utf-8"
 
           $report = "${{ steps.vars.outputs.report }}"
+          if (-not $report) { $report = "1" }
+
           $csv    = "reports\master.csv"
-          $macro  = "${{ steps.vars.outputs.macro }}"
 
           if (-not (Test-Path "scripts\report_runner.py")) {
             Write-Error "scripts\report_runner.py hiányzik a repóban"
@@ -152,7 +163,7 @@ jobs:
           python -X utf8 "scripts\report_runner.py" `
             --report $report `
             --csv "$csv" `
-            --summary "$summaryPath" `
+            --summary "$summaryPath"
 
           if (Test-Path $summaryPath) {
             Get-Content $summaryPath | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8
@@ -201,7 +212,6 @@ jobs:
             Write-Host "analyst_feed_parser.py nem található – analyst/catalyst blokkok nélkül fut tovább."
           }
 
-
           # High-conv jelöltek buildelése (scripts\highconv_builder.py)
           if (Test-Path "scripts\highconv_builder.py") {
             python -X utf8 "scripts\highconv_builder.py"
@@ -210,30 +220,38 @@ jobs:
             Write-Host "highconv_builder.py nem található – high-conv blokk nélkül fut tovább."
           }
 
-
           if ($report -eq "3") {
             if (Test-Path "scripts\report_runner_3.py") {
-              Write-Host "3-as jelentés: runner_3/postprocess_report_3 futtatása..."
+              Write-Host "#3-as jelentés: runner_3/postprocess_report_3 futtatása..."
               python -X utf8 "scripts\report_runner_3.py"
             }
             else {
               Write-Host "report_runner_3.py nem található – #3-as jelentés intraday postprocess nélkül marad."
             }
           }
+          elseif ($report -eq "2") {
+            if (Test-Path "scripts\postprocess_report_2.py") {
+              Write-Host "#2-es jelentés: postprocess_report_2.py fut..."
+              python -X utf8 "scripts\postprocess_report_2.py"
+            }
+            else {
+              Write-Host "postprocess_report_2.py nem található – nyers #2-es riport marad."
+            }
+          }
           else {
             if (Test-Path "scripts\postprocess_report.py") {
-              $mdPath    = "reports\summary_report_${report}.md"
+              $mdPath    = "reports\summary_report_1.md"
               $bundleDir = "reports"
 
               python -X utf8 "scripts\postprocess_report.py" `
+                --report 1 `
                 --md "$mdPath" `
                 --bundle-dir "$bundleDir"
             }
             else {
-              Write-Host "postprocess_report.py nem található – nyers riport marad."
+              Write-Host "postprocess_report.py nem található – nyers #1-es riport marad."
             }
           }
-
 
       - name: Upload artifacts
         if: always()
@@ -243,31 +261,26 @@ jobs:
           path: reports/**
           if-no-files-found: warn
 
-      # Fix Gist frissítése – ebbe kerül mindig a legutóbbi #1-es jelentés
+      # Fix Gist frissítése – #1-es jelentés
       - name: Update fixed Gist with #1 report
         if: always()
         shell: pwsh
         env:
-          # Ezt az ID-t a saját Gist URL-edből vedd ki:
-          # https://gist.github.com/zoleevegh/THIS_IS_THE_GIST_ID
-          GIST_ID: 5df443b8a46ef863cdc97aad62756510   # <- ha más az ID-d, írd át
+          GIST_ID: 5df443b8a46ef863cdc97aad62756510
           GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
         run: |
           if (-not $env:GIST_TOKEN) {
-            Write-Host "No GIST_TOKEN secret – skip Gist update."
+            Write-Host "No GIST_TOKEN secret – skip Gist update (#1)."
             exit 0
           }
 
           $path = "reports\summary_report_1.md"
-
           if (-not (Test-Path $path)) {
             Write-Host "summary_report_1.md nem található – valószínűleg nem #1-es riport futott. Skip."
             exit 0
           }
 
-          Write-Host "summary_report_1.md beolvasása: $path"
           $content = Get-Content -Raw $path
-
           $body = @{
             files = @{
               "summary_report_1.md" = @{
@@ -277,9 +290,7 @@ jobs:
           }
 
           $json = $body | ConvertTo-Json -Depth 5
-
           $url  = "https://api.github.com/gists/$($env:GIST_ID)"
-          Write-Host "PATCH $url"
 
           $resp = curl.exe -s -X PATCH $url `
             -H "Authorization: Bearer $($env:GIST_TOKEN)" `
@@ -287,39 +298,29 @@ jobs:
             -H "Content-Type: application/json" `
             -d $json
 
-          Write-Host "Gist PATCH response:"
-          Write-Host $resp
-
-          # ⬇⬇ Itt írjuk ki a cache-bontó raw URL-t az aktuális run ID-val
           "Raw URL for this run:" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
           "https://gist.githubusercontent.com/zoleevegh/5df443b8a46ef863cdc97aad62756510/raw/summary_report_1.md?run=$env:GITHUB_RUN_ID" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
 
-
-      # Fix Gist frissítése – ebbe kerül mindig a legutóbbi #2-es jelentés
+      # Fix Gist – #2-es jelentés
       - name: Update fixed Gist with #2 report
         if: always()
         shell: pwsh
         env:
-          # Ezt az ID-t a saját #2-es Gist URL-edből vedd ki:
-          # https://gist.github.com/zoleevegh/31b8daf60f983fbdfe37e3d0f2251fc7
-          GIST_ID: 31b8daf60f983fbdfe37e3d0f2251fc7   # fix #2-es jelentés Gist ID
+          GIST_ID: 31b8daf60f983fbdfe37e3d0f2251fc7
           GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
         run: |
           if (-not $env:GIST_TOKEN) {
-            Write-Host "No GIST_TOKEN secret – skip Gist update for #2."
+            Write-Host "No GIST_TOKEN secret – skip Gist update (#2)."
             exit 0
           }
 
           $path = "reports\summary_report_2.md"
-
           if (-not (Test-Path $path)) {
             Write-Host "summary_report_2.md nem található – valószínűleg nem #2-es riport futott. Skip."
             exit 0
           }
 
-          Write-Host "summary_report_2.md beolvasása: $path"
           $content = Get-Content -Raw $path
-
           $body = @{
             files = @{
               "summary_report_2.md" = @{
@@ -329,9 +330,7 @@ jobs:
           }
 
           $json = $body | ConvertTo-Json -Depth 5
-
           $url  = "https://api.github.com/gists/$($env:GIST_ID)"
-          Write-Host "PATCH $url (report #2)"
 
           $resp = curl.exe -s -X PATCH $url `
             -H "Authorization: Bearer $($env:GIST_TOKEN)" `
@@ -339,39 +338,29 @@ jobs:
             -H "Content-Type: application/json" `
             -d $json
 
-          Write-Host "Gist PATCH response (#2):"
-          Write-Host $resp
-
           "Raw URL for #2 fixed gist:" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
           "https://gist.githubusercontent.com/zoleevegh/31b8daf60f983fbdfe37e3d0f2251fc7/raw/summary_report_2.md" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
 
-
-
-      # Fix Gist frissítése – ebbe kerül mindig a legutóbbi #3-as jelentés
+      # Fix Gist – #3-as jelentés
       - name: Update fixed Gist with #3 report
         if: always()
         shell: pwsh
         env:
-          # Ezt az ID-t a saját #3-as Gist URL-edből vedd ki:
-          # https://gist.github.com/zoleevegh/8f77c3b0ec040030d492859095686030
-          GIST_ID: 8f77c3b0ec040030d492859095686030   # fix #3-as jelentés Gist ID
+          GIST_ID: 8f77c3b0ec040030d492859095686030
           GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
         run: |
           if (-not $env:GIST_TOKEN) {
-            Write-Host "No GIST_TOKEN secret – skip Gist update for #3."
+            Write-Host "No GIST_TOKEN secret – skip Gist update (#3)."
             exit 0
           }
 
           $path = "reports\summary_report_3.md"
-
           if (-not (Test-Path $path)) {
             Write-Host "summary_report_3.md nem található – valószínűleg nem #3-as riport futott. Skip."
             exit 0
           }
 
-          Write-Host "summary_report_3.md beolvasása: $path"
           $content = Get-Content -Raw $path
-
           $body = @{
             files = @{
               "summary_report_3.md" = @{
@@ -381,9 +370,7 @@ jobs:
           }
 
           $json = $body | ConvertTo-Json -Depth 5
-
           $url  = "https://api.github.com/gists/$($env:GIST_ID)"
-          Write-Host "PATCH $url (report #3)"
 
           $resp = curl.exe -s -X PATCH $url `
             -H "Authorization: Bearer $($env:GIST_TOKEN)" `
@@ -391,9 +378,5 @@ jobs:
             -H "Content-Type: application/json" `
             -d $json
 
-          Write-Host "Gist PATCH response (#3):"
-          Write-Host $resp
-
           "Raw URL for #3 fixed gist:" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
           "https://gist.githubusercontent.com/zoleevegh/8f77c3b0ec040030d492859095686030/raw/summary_report_3.md" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-
