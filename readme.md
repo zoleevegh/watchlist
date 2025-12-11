@@ -93,7 +93,6 @@ GitHub Action: `.github/workflows/run_report.yml`
 ```text
 repo/
 - README.md  ← ez a dokumentum
-- 00_README_START_HERE.md
 - .github/workflows/
     - run_report.yml
     - update_biblia_docs.yml
