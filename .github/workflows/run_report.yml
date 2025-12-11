@@ -26,6 +26,7 @@ jobs:
 
       ANALYST_FEED_URL_3: "https://script.google.com/macros/s/AKfycbzFY0L5KPCJaPc8QugZWaibJwQUOTs_fs1gR1gTHBSlzsyhr2THMIm0dzeslwzCm3AzJw/exec?type=analyst&report=3"
       CATALYST_FEED_URL_3: "https://script.google.com/macros/s/AKfycbzFY0L5KPCJaPc8QugZWaibJwQUOTs_fs1gR1gTHBSlzsyhr2THMIm0dzeslwzCm3AzJw/exec?type=catalyst&report=3"
+
       # Makró / FED / piaci hangulat feed (Apps Script webapp – új)
       MACRO_FEED_URL_1: "https://script.google.com/macros/s/AKfycbwNP9FOflY4nAYt1o4U5C0ozg3IrlyJM8KGXpFLzCGOdBAOAh6zeAOum5iQswZufxrB/exec?type=macro&report=1"
       MACRO_FEED_URL_2: "https://script.google.com/macros/s/AKfycbwNP9FOflY4nAYt1o4U5C0ozg3IrlyJM8KGXpFLzCGOdBAOAh6zeAOum5iQswZufxrB/exec?type=macro&report=2"
