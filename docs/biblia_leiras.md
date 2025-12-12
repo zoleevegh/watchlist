@@ -1,4 +1,5 @@
 # Részvényjelentés Automata – BIBLIA leírás  
+**Verzió:** v3.6.0  
 
 Ez a dokumentum írja le a teljes #1 / #2 / #3 riport-pipeline architektúráját, a
 fájlszerkezetet, a fő scripteket és a BIBLIA szerinti logikát.
@@ -15,25 +16,28 @@ repo/
 │       ├─ run_report.yml
 │       └─ update_biblia_docs.yml
 ├─ docs/
+│   ├─ CHANGELOG.md
 │   └─ biblia_leiras.md
 ├─ reports/
-│   ├─ analyst_1.json
-│   ├─ catalysts_1.json
-│   ├─ macro_news_1.json
-│   ├─ macro_news_2.json
-│   ├─ macro_news_3.json
-│   ├─ high_conv_1.json
-│   ├─ latest_1.json
-│   ├─ latest_1.md
-│   ├─ latest_3.json
-│   ├─ latest_3.md
-│   ├─ raw_analyst_1.json
-│   ├─ raw_catalysts_1.json
-│   ├─ summary_report_1.md
-│   ├─ summary_report_2.md
-│   └─ summary_report_3.md
+│   ├─ 1/
+│   │   ├─ analyst_1.json
+│   │   ├─ catalysts_1.json
+│   │   ├─ macro_news_1.json
+│   │   ├─ high_conv_1.json
+│   │   └─ summary_report_1.md
+│   ├─ 2/
+│   │   ├─ analyst_2.json
+│   │   ├─ catalysts_2.json
+│   │   ├─ macro_news_2.json
+│   │   └─ summary_report_2.md
+│   └─ 3/
+│       ├─ latest_3.json
+│       ├─ latest_3.md
+│       ├─ macro_news_3.json
+│       ├─ summary_report_3.md
+│       ├─ raw_analyst_1.json
+│       └─ raw_catalysts_1.json
 └─ scripts/
-
     ├─ analyst_block_builder.py
     ├─ analyst_feed_parser.py
     ├─ biblia_helper.py
@@ -52,9 +56,6 @@ repo/
 ```
 
 ---
-
-
-⚠️ Megjegyzés: a reports mappa **lapos**, nincs /1 /2 /3 almappa.
 
 ## 2. Scripts – szerepek és felelősségek
 
@@ -330,3 +331,32 @@ A válaszban ChatGPT köteles:
 - a BIBLIA szerinti blokkstruktúrát követni,
 - a +3,00% vagy nagyobb mozgásokat pontos százalékértékkel és 1 mondatos indoklással jelezni,
 - a forrás-prioritást (Reuters/SEC/MarketBeat/Yahoo) a háttérben betartani.
+
+---
+
+## Cache-kezelés és „legfrissebb futás” ellenőrzése (KÖTELEZŐ)
+
+A GitHub Gist **RAW URL cache-elt** (GitHub CDN / Cloudflare).
+Ezért **TILOS** cache-bontás nélküli RAW URL alapján megállapítani,
+hogy egy jelentés a legutóbbi futásból származik-e.
+
+### Kötelező ellenőrzési szabály
+A jelentést **csak akkor tekintsd aktuálisnak**, ha:
+
+1. A RAW URL végén szerepel a cache-bontó paraméter:
+   ```
+   ?run=GITHUB_RUN_ID
+   ```
+2. A jelentés fejlécében lévő időpont **megegyezik** a GitHub Actions
+   futás idejével (Job summary generated at run-time).
+3. A `reports/summary_report_X.md` fájl **megegyezik** a bundle ZIP tartalmával.
+
+Ha a fenti három feltétel közül **bármelyik hiányzik**:
+→ a jelentés **NEM tekinthető frissnek**.
+
+### Tiltott gyakorlat
+- cache-bontás nélküli RAW URL használata
+- UI preview alapján történő ellenőrzés
+- régebbi, lokálisan feltöltött `summary_report_X.md` vizsgálata
+
+Ez a szabály **minden #1 / #2 / #3 jelentésre kötelező**.
