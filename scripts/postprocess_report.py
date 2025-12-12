@@ -11,7 +11,7 @@ Ez a verzió:
   de jelenleg figyelmen kívül hagyja (a #1-es jelentést kezeli).
 """
 
-# postprocess_report.py – v3.2.0-keep-job-summary-backcompat
+# postprocess_report.py – v3.3.0-biblia1-nullblocks
 from __future__ import annotations
 
 import argparse
@@ -51,9 +51,8 @@ def _load_json(path: Path) -> Any:
 
 
 def _build_macro_block(macro_json_path: Path) -> str:
+    """BIBLIA #1: Makró blokk MINDIG megjelenik (akkor is, ha üres)."""
     data = _load_json(macro_json_path)
-    if not data:
-        return ""
 
     # Több lehetséges layout: {headlines:[...]}, {items:[...]}, {news:[...]}, list, stb.
     if isinstance(data, list):
@@ -70,7 +69,7 @@ def _build_macro_block(macro_json_path: Path) -> str:
     else:
         items = []
 
-    lines: list[str] = ["### Politika / FED / Makró", ""]
+    lines: list[str] = ["### Makró / Politika / FED", ""]
     count = 0
 
     for raw in items:
@@ -95,12 +94,25 @@ def _build_macro_block(macro_json_path: Path) -> str:
             break
 
     if count == 0:
-        return ""
+        lines.append("- Nincs piacmozgató makró/FED/politikai headline az AH/PM sávban.")
 
     lines.append("")
     return "\n".join(lines)
 
 
+
+def _ensure_block(block: str, title: str, empty_line: str) -> str:
+    """Biztosítja, hogy a blokk mindig megjelenjen.
+    - Ha a block üres: title + empty_line.
+    - Ha nem üres: ha nincs benne '### ' címsor, hozzáadjuk a címet a tetejére.
+    """
+    b = (block or "").strip()
+    if not b:
+        return f"### {title}\n\n- {empty_line}\n"
+    if "###" not in b.splitlines()[0]:
+        # ha a builder nem tett címet, rátesszük
+        return f"### {title}\n\n{b}\n"
+    return b + "\n"
 # ---------- Markdown manipuláció ----------
 
 
@@ -196,9 +208,25 @@ def main() -> None:
     md = _strip_job_summary(md)
 
     # 3) Analyst + katalizátor + high-conv blokkok a jelentés végére
-    analyst_block = build_analyst_block(analyst_json)
-    catalysts_block = build_catalysts_block_from_file(catalysts_json)
-    highconv_block = build_highconv_block_from_file(highconv_json)
+    analyst_block_raw = build_analyst_block(analyst_json)
+    catalysts_block_raw = build_catalysts_block_from_file(catalysts_json)
+    highconv_block_raw = build_highconv_block_from_file(highconv_json)
+
+    analyst_block = _ensure_block(
+        analyst_block_raw,
+        title="Bejelentések & fel/lemínősítések",
+        empty_line="Nincs új, anyagilag lényeges vállalati közlés vagy elemzői lépés az AH/PM sávban.",
+    )
+    catalysts_block = _ensure_block(
+        catalysts_block_raw,
+        title="Közeli katalizátorok",
+        empty_line="Nincs kiemelendő, közelgő katalizátor az AH/PM sávban.",
+    )
+    highconv_block = _ensure_block(
+        highconv_block_raw,
+        title="Listán kívüli, 3–12 hónapos high-conviction jelöltek",
+        empty_line="Nincs új, ismételt erős jelzés a listán kívül az AH/PM sávban.",
+    )
 
     md = _append_blocks(md, analyst_block, catalysts_block, highconv_block)
 
