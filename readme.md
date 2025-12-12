@@ -117,3 +117,19 @@ repo/
     - macro_highconv_helpers_v2.py
     - export_biblia_md.py
     - biblia_helper.py
+
+---
+
+## ⚠️ #1 JELENTÉS – AUTOMATIKUS WEBES HÍREK (KANONIKUS)
+
+A felhasználónak **NEM kell külön jeleznie**, hogy „hírekkel”.
+
+👉 **„#1 jelentés” = AUTOMATIKUSAN webes hírekkel készül.**
+
+**Időkapu (szigorú):**
+- After-hours (AH): 22:00–02:00 CEST
+- Premarket (PM): 10:00–15:30 CEST
+
+A #1 jelentésben szereplő hírek és indoklások **kizárólag** ebből az időkapuból származhatnak.
+Más idősávból származó információ nem kerülhet be.
+
