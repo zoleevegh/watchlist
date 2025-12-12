@@ -46,7 +46,26 @@ from io import StringIO
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set
 
+import time
+import random
+
 import requests
+
+VERSION = "v1.0.1-rate-limit-safe"
+
+# Yahoo rate-limit / retry config
+YAHOO_BATCH_SIZE = 50
+YAHOO_MAX_RETRIES = 6
+YAHOO_BASE_SLEEP_SEC = 1.0
+
+SESSION = requests.Session()
+SESSION.headers.update({
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Connection": "keep-alive",
+})
+
 
 
 # --- KONFIGURÁCIÓ --------------------------------------------------------------
@@ -319,30 +338,73 @@ def classify_events(events: Iterable[AnalystEvent]) -> Dict[str, TickerSignals]:
     return result
 
 
+def _sleep_backoff(attempt: int) -> None:
+    # Exponential backoff + jitter
+    base = YAHOO_BASE_SLEEP_SEC * (2 ** max(0, attempt))
+    jitter = random.uniform(0.0, 0.25 * base)
+    time.sleep(min(30.0, base + jitter))
+
+
 def fetch_yahoo_snapshot(tickers: Iterable[str]) -> Dict[str, Dict[str, Any]]:
     """
     Yahoo Finance quote snapshot – több tickerre egyszerre.
-    Visszaad egy dictet: {ticker: quote_dict}.
+
+    FONTOS: A Yahoo 429 / rate-limit esetén NEM dobjuk el a teljes futást.
+    - batch-eljük a tickereket (YAHOO_BATCH_SIZE)
+    - 429/5xx esetén retry + backoff
+    - végső sikertelenségnél a batch kimarad, a futás megy tovább
     """
     tickers_list = sorted({t.upper() for t in tickers if t})
     if not tickers_list:
         return {}
 
-    symbols = ",".join(tickers_list)
-    resp = requests.get(YAHOO_QUOTE_URL, params={"symbols": symbols}, timeout=20)
-    resp.raise_for_status()
-    data = resp.json()
-
     result: Dict[str, Dict[str, Any]] = {}
-    quotes = data.get("quoteResponse", {}).get("result", [])
-    for q in quotes:
-        symbol = str(q.get("symbol") or "").upper()
-        if not symbol:
-            continue
-        result[symbol] = q
+
+    # Batches
+    for i in range(0, len(tickers_list), YAHOO_BATCH_SIZE):
+        batch = tickers_list[i : i + YAHOO_BATCH_SIZE]
+        symbols = ",".join(batch)
+
+        last_err: Optional[str] = None
+        for attempt in range(YAHOO_MAX_RETRIES):
+            try:
+                resp = SESSION.get(
+                    YAHOO_QUOTE_URL,
+                    params={"symbols": symbols},
+                    timeout=20,
+                    headers={"Cache-Control": "no-cache", "Pragma": "no-cache"},
+                )
+
+                # Rate limit
+                if resp.status_code == 429:
+                    last_err = "HTTP 429 Too Many Requests"
+                    _sleep_backoff(attempt)
+                    continue
+
+                # Transient server errors
+                if 500 <= resp.status_code < 600:
+                    last_err = f"HTTP {resp.status_code}"
+                    _sleep_backoff(attempt)
+                    continue
+
+                resp.raise_for_status()
+
+                data = resp.json()
+                quotes = data.get("quoteResponse", {}).get("result", []) or []
+                for q in quotes:
+                    symbol = str(q.get("symbol") or "").upper()
+                    if symbol:
+                        result[symbol] = q
+                last_err = None
+                break
+            except Exception as e:
+                last_err = str(e)
+                _sleep_backoff(attempt)
+
+        if last_err:
+            print(f"[highconv_builder] FIGYELEM: Yahoo snapshot batch kihagyva ({len(batch)} ticker): {last_err}")
 
     return result
-
 
 def apply_52w_high_signal(signals: Dict[str, TickerSignals], yahoo_quotes: Dict[str, Dict[str, Any]]) -> None:
     """
@@ -478,7 +540,8 @@ def save_json(path: Path, data: Any) -> None:
 
 
 def main() -> None:
-    exclude_tickers = load_exclude_tickers()
+    print(f"[highconv_builder] Verzió: {VERSION}")
+exclude_tickers = load_exclude_tickers()
     print(f"[highconv_builder] Kizárandó tickerek összesen: {len(exclude_tickers)} db")
 
     print(f"[highconv_builder] Analyst feed letöltése (utolsó {DAYS_BACK} nap)...")
@@ -493,8 +556,11 @@ def main() -> None:
     sigs = classify_events(events)
 
     print("[highconv_builder] Yahoo snapshot lekérése...")
+try:
     yahoo_quotes = fetch_yahoo_snapshot(sigs.keys())
     apply_52w_high_signal(sigs, yahoo_quotes)
+except Exception as e:
+    print(f"[highconv_builder] FIGYELEM: Yahoo snapshot sikertelen (folytatom 52w jel nélkül): {e}")
 
     compute_scores(sigs)
 
