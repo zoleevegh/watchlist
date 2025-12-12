@@ -4,7 +4,7 @@
 Usage:
     python postprocess_report.py --md reports/summary_report_1.md --bundle-dir reports
 
-postprocess_report.py – v3.3.2-biblia1-reflow-dedupe-jobsumend
+postprocess_report.py – v3.3.3-biblia1-reflow-dedupe-jobsumend
 
 Fixek (#1):
 - Kötelező blokkok mindig megjelennek (null-blokkokkal).
@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 from typing import Any, List, Tuple
 
