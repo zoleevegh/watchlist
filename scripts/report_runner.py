@@ -733,7 +733,7 @@ def generate_report2_macro_only(
     else:
         lines.append("### 🚀 Listán kívüli, 3–12 hónapos high-conviction jelöltek")
         lines.append("- Nincs új, ismételt erős jelzés a vizsgált időablakban.")
-text = "\n".join(lines)
+    text = "\n".join(lines)
 
     # JSON váz – makró + event-listák
     payload = {
@@ -820,7 +820,7 @@ def generate_report3_macro_only(
     else:
         lines.append("### 🚀 Listán kívüli, 3–12 hónapos high-conviction jelöltek")
         lines.append("- Nincs új, ismételt erős jelzés a vizsgált időablakban.")
-text = "\n".join(lines)
+    text = "\n".join(lines)
 
     payload = {
         "mode": 3,
