@@ -360,3 +360,27 @@ Ha a fenti három feltétel közül **bármelyik hiányzik**:
 - régebbi, lokálisan feltöltött `summary_report_X.md` vizsgálata
 
 Ez a szabály **minden #1 / #2 / #3 jelentésre kötelező**.
+
+---
+
+## 🔒 KANONIKUS SZABÁLY – #1 JELENTÉS WEBES HÍREKKEL
+
+A felhasználónak **NEM kell külön kérnie**, hogy a #1 jelentés „webes hírekkel” készüljön.
+
+👉 **„#1 jelentés” = AUTOMATIKUSAN webes hírekkel készül.**
+
+### Időkapu (kizárólag):
+- After-hours (AH): 22:00–02:00 CEST
+- Premarket (PM): 10:00–15:30 CEST
+
+### Blokkonkénti forrásszabály:
+- **Makró / Politika / FED:** WEBES (Reuters / AP), mindig
+- **Darabszámos tickerek:** ár/% script, indok webes ha van
+- **Watchlist ≥ ±3%:** trigger script, indok webes ha van
+- **Bejelentések & fel/lemínősítések:** WEBES, mindig
+- **Közelgő katalizátorok:** WEBES, csak konkrét esemény esetén
+- **Listán kívüli 3–12 hó high‑conviction:** nem automatikus
+- **Job summary:** technikai blokk, nem webes
+
+Ha egy blokkban nincs releváns hír, azt **explicit módon jelezni kell**.
+
