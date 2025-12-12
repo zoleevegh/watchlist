@@ -1,4 +1,4 @@
-name: Run Report (Windows) # v2.2.1
+name: Run Report (Windows) # v2.2.0
 
 on:
   workflow_dispatch:
@@ -240,18 +240,13 @@ jobs:
           }
           else {
             if (Test-Path "scripts\postprocess_report.py") {
-              $mdPath    = "reports\summary_report_${report}.md"
+              $mdPath    = "reports\summary_report_1.md"
               $bundleDir = "reports"
 
               python -X utf8 "scripts\postprocess_report.py" `
                 --report 1 `
                 --md "$mdPath" `
                 --bundle-dir "$bundleDir"
-
-
-              if (Test-Path $mdPath) {
-                Get-Content $mdPath | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8
-              }
             }
             else {
               Write-Host "postprocess_report.py nem található – nyers #1-es riport marad."
@@ -268,7 +263,7 @@ jobs:
 
       # Fix Gist frissítése – #1-es jelentés
       - name: Update fixed Gist with #1 report
-        if: always() && steps.vars.outputs.report == \'1\'
+        if: always()
         shell: pwsh
         env:
           GIST_ID: 5df443b8a46ef863cdc97aad62756510
@@ -308,7 +303,7 @@ jobs:
 
       # Fix Gist – #2-es jelentés
       - name: Update fixed Gist with #2 report
-        if: always() && steps.vars.outputs.report == \'2\'
+        if: always()
         shell: pwsh
         env:
           GIST_ID: 31b8daf60f983fbdfe37e3d0f2251fc7
