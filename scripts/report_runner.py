@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""report_runner.py – v3.0.0-biblia-prep
+"""report_runner.py – v3.0.1-biblia-prep-yahoo-fallback-coveragefix
 
 Megjegyzés: Ez a verzió a korábbi teljes runner logikát megtartja.
 A bibliás formátum finomhangolása külön lépésekben történik.
@@ -9,6 +9,7 @@ import argparse
 import csv
 import datetime as dt
 import json
+import re
 import math
 import os
 import sys
@@ -88,7 +89,7 @@ SESSION.headers.update(
 )
 
 DEFAULT_K = 3.0
-DEFAULT_SCRIPT_VERSION = "2.3.5-biblia-yahoo-us-time-quote-spark-meta-prevclose-helper-macro-analyst-catalyst-hc-hiconv-auto-r2r3finom-spark-ahpm-bstyle-biblia1-nullblocks-hotfix"
+DEFAULT_SCRIPT_VERSION = "v3.0.1-biblia-prep-yahoo-fallback-coveragefix"
 AH_PM_MODE = "spark"  # alapértelmezett: Yahoo quote/spark alapú AH/PM
 
 
@@ -448,6 +449,9 @@ def generate_model_report(
     quote_map: Dict[str, Tuple[Optional[float], Optional[float], Optional[float]]] = {}
     if ah_pm_mode == "spark":
         quote_map = fetch_yahoo_quote_batch(all_symbols)
+        if all_symbols and not quote_map:
+            debug("[WARN] Yahoo quote batch üres/blocked – chart fallback kényszerítve minden tickerre.")
+            ah_pm_mode = "chart"
 
 
     missing: Dict[str, str] = {}
@@ -487,6 +491,11 @@ def generate_model_report(
         except Exception as e:
             # Valódi forráshiba / HTTP hiba / stb. – ez lefedettség-hiba
             missing[sym] = str(e)
+            continue
+
+        # Ha sem bázisár, sem AH/PM % nem állt elő, ez lefedettségi hiba (ne fusson át csendben).
+        if rth_close is None and ah_pct is None and pm_pct is None:
+            missing[sym] = "nincs AH/PM adat (Yahoo quote+chart nem adott értelmezhető értéket)"
             continue
 
         is_position = sym in positions and positions[sym].get("quantity", 0) > 0
