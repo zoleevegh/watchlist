@@ -97,7 +97,6 @@ repo/
     - run_report.yml
     - update_biblia_docs.yml
 - docs/
-    - CHANGELOG.md
     - biblia_leiras.md (a teljes módszertan)
 - reports/
     - 1/ (AH/PM JSON + summary_report_1.md)
