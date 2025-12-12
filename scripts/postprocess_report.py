@@ -1,15 +1,12 @@
 #!/usr/bin/env python3
-"""Post-process #1 report markdown with macro / analyst / catalyst / high-conv blocks.
+"""postprocess_report.py – v3.3.4-biblia1-force-reflow
 
-Usage:
-    python postprocess_report.py --md reports/summary_report_1.md --bundle-dir reports
+#1: kényszerített tördelés akkor is, ha a runner 1 sorba lapította a teljes jelentést.
 
-postprocess_report.py – v3.3.3-biblia1-reflow-dedupe-jobsumend
-
-Fixek (#1):
 - Kötelező blokkok mindig megjelennek (null-blokkokkal).
-- Deduplikáció: ha a runner már beleírta a Makró / 5-6-7 blokkokat, ezeket kiszedi és egyszer rakja vissza.
-- Job summary blokkot a fájl LEGVÉGÉRE mozgatja (Raw URL sorokkal együtt).
+- Dedupe: Makró + 5/6/7 blokkok egyszer szerepelnek.
+- Job summary blokk a fájl LEGVÉGÉRE kerül.
+- FORCE REFLOW: minden '###' és '- ' elem új soron indul, még teljesen lapított inputnál is.
 """
 
 from __future__ import annotations
@@ -20,39 +17,11 @@ import re
 from pathlib import Path
 from typing import Any, List, Tuple
 
-def _reflow_md(raw: str) -> str:
-    """Best-effort markdown tördelés, ha a runner 1-2 sorba "összelapította" a jelentést.
-
-Cél:
-- a fő meta sorok külön sorba kerüljenek
-- minden '###' címsor új soron kezdődjön
-- a bulletpontok új soron kezdődjenek
-"""
-    s = raw.replace("\r\n", "\n").replace("\r", "\n")
-
-    # Új sorok kényszerítése a fő meta tagokra
-    for token in ["**Script verzió:**", "**Futás ideje:**", "**Időablakok", "**Árforrás:**", "Lefedettség:"]:
-        s = re.sub(rf"\s+({re.escape(token)})", r"\n\1", s)
-
-    # Headings: minden '### ' kezdjen új soron
-    s = re.sub(r"\s+(###\s+)", r"\n\n\1", s)
-
-    # Bullet: ' - ' új sorra (de ne bontsa szét a minuszjeleket százalékoknál)
-    s = re.sub(r"\s+-\s+", r"\n- ", s)
-
-    # Tömörítés: max 2 üres sor egymás után
-    s = re.sub(r"\n{3,}", "\n\n", s)
-
-    return s.strip() + "\n"
-
-
 from analyst_block_builder import build_block_from_file as build_analyst_block
 from highconv_block_builder import (
     build_catalysts_block_from_file,
     build_highconv_block_from_file,
 )
-
-# ---------- I/O segédfüggvények ----------
 
 def _read_md(path: Path) -> str:
     return path.read_text(encoding="utf-8")
@@ -68,10 +37,36 @@ def _load_json(path: Path) -> Any:
     except Exception:
         return None
 
-# ---------- Blokk builder-ek ----------
+def _force_reflow(raw: str) -> str:
+    s = raw.replace("\r\n", "\n").replace("\r", "\n")
+
+    # 1) biztosítsuk, hogy ezek a tokenek mindig új soron induljanak
+    tokens = [
+        "## After-hours & Premarket",
+        "**Script verzió:**",
+        "**Futás ideje:**",
+        "**Időablakok",
+        "**Árforrás:**",
+        "Lefedettség:",
+        "### ",
+        "Job summary generated at run-time",
+        "Raw URL for this run:",
+    ]
+    for t in tokens:
+        s = s.replace(t, f"\n{t}")
+
+    # 2) Headings: minden '### ' előtt 2 sortörés (szebb)
+    s = re.sub(r"\n\s*(###\s+)", r"\n\n\1", s)
+
+    # 3) bullet: minden ' - ' vagy '\t- ' új sorra
+    s = re.sub(r"\s+-\s+", r"\n- ", s)
+
+    # 4) több üres sort tömörít
+    s = re.sub(r"\n{3,}", "\n\n", s)
+
+    return s.strip() + "\n"
 
 def _build_macro_block(macro_json_path: Path) -> str:
-    """BIBLIA #1: Makró blokk MINDIG megjelenik (akkor is, ha üres)."""
     data = _load_json(macro_json_path)
 
     if isinstance(data, list):
@@ -113,7 +108,7 @@ def _build_macro_block(macro_json_path: Path) -> str:
             break
 
     if count == 0:
-        lines.append("- Nincs piacmozgató makró/FED/politikai headline az AH/PM sávban.")
+        lines.append("- Nem érkezett a #1 jelentés kritériumait teljesítő makró/FED/politikai headline az AH/PM sávban.")
 
     lines.append("")
     return "\n".join(lines)
@@ -127,8 +122,6 @@ def _ensure_block(block: str, title: str, empty_line: str) -> str:
         return f"### {title}\n\n{b}\n"
     return b + "\n"
 
-# ---------- Markdown segédek ----------
-
 def _find_first(lines: List[str], predicate) -> int:
     for i, line in enumerate(lines):
         if predicate(line):
@@ -136,13 +129,11 @@ def _find_first(lines: List[str], predicate) -> int:
     return -1
 
 def _extract_job_summary(lines: List[str]) -> Tuple[List[str], List[str]]:
-    """Kiemeli a Job summary blokkot (a sorától a fájl végéig) és visszaadja: (body_lines, job_lines)."""
     idx = _find_first(lines, lambda s: s.strip().startswith("Job summary generated at run-time"))
     if idx == -1:
         return lines, []
     body = lines[:idx]
     job = lines[idx:]
-    # trim leading/trailing empties in job block
     while job and job[0].strip() == "":
         job = job[1:]
     while body and body[-1].strip() == "":
@@ -150,9 +141,7 @@ def _extract_job_summary(lines: List[str]) -> Tuple[List[str], List[str]]:
     return body, job
 
 def _remove_section_by_heading(lines: List[str], heading_variants: List[str]) -> List[str]:
-    """Eltávolítja az első előforduló '### {heading}' szekciót (a következő ###-ig). Többször ismétli, amíg van."""
     out = lines[:]
-    # remove repeatedly
     while True:
         idx = -1
         for i, line in enumerate(out):
@@ -161,31 +150,25 @@ def _remove_section_by_heading(lines: List[str], heading_variants: List[str]) ->
                 break
         if idx == -1:
             break
-        # find end
         j = idx + 1
         while j < len(out):
             if out[j].strip().startswith("### ") and j != idx:
                 break
             j += 1
         out = out[:idx] + out[j:]
-        # clean double empty lines around removal
         while idx < len(out) and idx > 0 and out[idx-1].strip()=="" and out[idx].strip()=="":
             out.pop(idx)
     return out
 
 def _insert_macro_after_coverage(lines: List[str], macro_block: str) -> List[str]:
-    if not macro_block:
-        return lines
     idx = _find_first(lines, lambda s: s.strip().startswith("Lefedettség:"))
     macro_lines = macro_block.rstrip().splitlines()
     if idx == -1:
-        # top
         return macro_lines + [""] + lines
     return lines[:idx+1] + [""] + macro_lines + [""] + lines[idx+1:]
 
 def _append_blocks(lines: List[str], blocks: List[str]) -> List[str]:
     out = lines[:]
-    # ensure trailing single blank
     while out and out[-1].strip() == "":
         out.pop()
     out.append("")
@@ -195,19 +178,16 @@ def _append_blocks(lines: List[str], blocks: List[str]) -> List[str]:
             continue
         out.extend(b_lines)
         out.append("")
-    # trim end to single newline handled later
     while out and out[-1].strip() == "":
         out.pop()
     return out
 
-# ---------- CLI ----------
-
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Post-process #1 report markdown (BIBLIA blocks + dedupe + job summary end).")
-    parser.add_argument("--md", required=True, help="Path to summary_report_1.md")
-    parser.add_argument("--bundle-dir", required=True, help="Directory with macro/analyst/catalyst/high-conv json files.")
-    parser.add_argument("--report", default="1", help="(Backcompat) ignored; kept for old callers.")
-    args = parser.parse_args()
+    p = argparse.ArgumentParser()
+    p.add_argument("--md", required=True)
+    p.add_argument("--bundle-dir", required=True)
+    p.add_argument("--report", default="1")
+    args = p.parse_args()
 
     md_path = Path(args.md)
     bundle_dir = Path(args.bundle_dir)
@@ -218,55 +198,44 @@ def main() -> None:
     highconv_json = bundle_dir / "high_conv_1.json"
 
     raw = _read_md(md_path)
-    raw = _reflow_md(raw)
+    raw = _force_reflow(raw)
     lines = raw.splitlines()
 
-    # 0) Job summary blokk kiemelése (mindig a végére tesszük vissza)
     body_lines, job_lines = _extract_job_summary(lines)
 
-    # 1) Deduplikáció: ha a runner már beírta a blokkokat, kiszedjük
-    body_lines = _remove_section_by_heading(body_lines, ["### Makró / Politika / FED", "### Politika / FED / Makró", "### Politika / FED / Makró"])
+    body_lines = _remove_section_by_heading(body_lines, ["### Makró / Politika / FED", "### Politika / FED / Makró"])
     body_lines = _remove_section_by_heading(body_lines, ["### Bejelentések & fel/lemínősítések", "### 🧩 Bejelentések & fel/lemínősítések"])
     body_lines = _remove_section_by_heading(body_lines, ["### Közeli katalizátorok", "### ⏳ Közelgő katalizátorok", "### Közelgő katalizátorok"])
     body_lines = _remove_section_by_heading(body_lines, ["### Listán kívüli, 3–12 hónapos high-conviction jelöltek", "### 🚀 Listán kívüli, 3–12 hónapos high-conviction jelöltek"])
 
-    # 2) Makró blokk beszúrása a lefedettség után (mindig)
     macro_block = _build_macro_block(macro_json)
     body_lines = _insert_macro_after_coverage(body_lines, macro_block)
 
-    # 3) Builder blokkok (mindig, null-blokkal)
-    analyst_block_raw = build_analyst_block(analyst_json)
-    catalysts_block_raw = build_catalysts_block_from_file(catalysts_json)
-    highconv_block_raw = build_highconv_block_from_file(highconv_json)
-
     analyst_block = _ensure_block(
-        analyst_block_raw,
-        title="Bejelentések & fel/lemínősítések",
-        empty_line="Nincs új, anyagilag lényeges vállalati közlés vagy elemzői lépés az AH/PM sávban.",
+        build_analyst_block(analyst_json),
+        "Bejelentések & fel/lemínősítések",
+        "Nem érkezett a #1 jelentés kritériumait teljesítő vállalati közlés vagy elemzői lépés az AH/PM sávban.",
     )
     catalysts_block = _ensure_block(
-        catalysts_block_raw,
-        title="Közeli katalizátorok",
-        empty_line="Nincs kiemelendő, közelgő katalizátor az AH/PM sávban.",
+        build_catalysts_block_from_file(catalysts_json),
+        "Közeli katalizátorok",
+        "Nem volt a #1 jelentés kritériumait teljesítő, közelgő katalizátor az AH/PM sávban.",
     )
     highconv_block = _ensure_block(
-        highconv_block_raw,
-        title="Listán kívüli, 3–12 hónapos high-conviction jelöltek",
-        empty_line="Nincs új, ismételt erős jelzés a listán kívül az AH/PM sávban.",
+        build_highconv_block_from_file(highconv_json),
+        "Listán kívüli, 3–12 hónapos high-conviction jelöltek",
+        "Nem volt a #1 jelentés kritériumait teljesítő, listán kívüli ismételt erős jelzés az AH/PM sávban.",
     )
 
     body_lines = _append_blocks(body_lines, [analyst_block, catalysts_block, highconv_block])
 
-    # 4) Job summary blokk vissza a LEGVÉGÉRE (ha van)
     final_lines = body_lines[:]
     if job_lines:
-        # ensure one blank line before job summary
         if final_lines and final_lines[-1].strip() != "":
             final_lines.append("")
         final_lines.extend(job_lines)
 
-    text = "\n".join(final_lines).rstrip() + "\n"
-    _write_md(md_path, text)
+    _write_md(md_path, "\n".join(final_lines).rstrip() + "\n")
 
 if __name__ == "__main__":
     main()
