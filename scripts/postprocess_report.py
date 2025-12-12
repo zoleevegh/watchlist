@@ -4,7 +4,7 @@
 Usage:
     python postprocess_report.py --md reports/summary_report_1.md --bundle-dir reports
 
-postprocess_report.py – v3.3.1-biblia1-dedupe-jobsumend
+postprocess_report.py – v3.3.2-biblia1-reflow-dedupe-jobsumend
 
 Fixek (#1):
 - Kötelező blokkok mindig megjelennek (null-blokkokkal).
@@ -18,6 +18,32 @@ import argparse
 import json
 from pathlib import Path
 from typing import Any, List, Tuple
+
+def _reflow_md(raw: str) -> str:
+    """Best-effort markdown tördelés, ha a runner 1-2 sorba "összelapította" a jelentést.
+
+Cél:
+- a fő meta sorok külön sorba kerüljenek
+- minden '###' címsor új soron kezdődjön
+- a bulletpontok új soron kezdődjenek
+"""
+    s = raw.replace("\r\n", "\n").replace("\r", "\n")
+
+    # Új sorok kényszerítése a fő meta tagokra
+    for token in ["**Script verzió:**", "**Futás ideje:**", "**Időablakok", "**Árforrás:**", "Lefedettség:"]:
+        s = re.sub(rf"\s+({re.escape(token)})", r"\n\1", s)
+
+    # Headings: minden '### ' kezdjen új soron
+    s = re.sub(r"\s+(###\s+)", r"\n\n\1", s)
+
+    # Bullet: ' - ' új sorra (de ne bontsa szét a minuszjeleket százalékoknál)
+    s = re.sub(r"\s+-\s+", r"\n- ", s)
+
+    # Tömörítés: max 2 üres sor egymás után
+    s = re.sub(r"\n{3,}", "\n\n", s)
+
+    return s.strip() + "\n"
+
 
 from analyst_block_builder import build_block_from_file as build_analyst_block
 from highconv_block_builder import (
@@ -191,6 +217,7 @@ def main() -> None:
     highconv_json = bundle_dir / "high_conv_1.json"
 
     raw = _read_md(md_path)
+    raw = _reflow_md(raw)
     lines = raw.splitlines()
 
     # 0) Job summary blokk kiemelése (mindig a végére tesszük vissza)
