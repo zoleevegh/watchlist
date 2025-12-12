@@ -88,14 +88,14 @@ SESSION.headers.update(
 )
 
 DEFAULT_K = 3.0
-DEFAULT_SCRIPT_VERSION = "2.3.5-biblia-yahoo-us-time-quote-spark-meta-prevclose-helper-macro-analyst-catalyst-hc-hiconv-auto-r2r3finom-spark-ahpm-bstyle"
+DEFAULT_SCRIPT_VERSION = "2.3.5-biblia-yahoo-us-time-quote-spark-meta-prevclose-helper-macro-analyst-catalyst-hc-hiconv-auto-r2r3finom-spark-ahpm-bstyle-biblia1-nullblocks-hotfix"
 AH_PM_MODE = "spark"  # alapértelmezett: Yahoo quote/spark alapú AH/PM
 
 
 WATCHLIST_DEFAULT_PATH = "reports/master.csv"
 ANALYST_EVENTS_PATH = "reports/analyst_1.json"
 CATALYST_EVENTS_PATH = "reports/catalysts_1.json"
-HIGHCONV_EVENTS_PATH = "reports/highconviction_1.json"
+HIGHCONV_EVENTS_PATH = "reports/high_conv_1.json"
 
 
 
@@ -709,19 +709,31 @@ def generate_report2_macro_only(
         lines.append("")
         lines.append(macro_block)
 
+    
+    # 5) Bejelentések & elemzői fel/lemínősítések (KÖTELEZŐ blokk – null-blokk is)
+    lines.append("")
     if analyst_block:
-        lines.append("")
         lines.append(analyst_block)
+    else:
+        lines.append("### 🧩 Bejelentések & fel/lemínősítések")
+        lines.append("- Nincs új, anyagilag lényeges vállalati bejelentés / fel- vagy leminősítés az AH/PM sávban.")
 
+    # 6) Közelgő katalizátorok (KÖTELEZŐ blokk – null-blokk is)
+    lines.append("")
     if catalyst_block:
-        lines.append("")
         lines.append(catalyst_block)
+    else:
+        lines.append("### ⏳ Közelgő katalizátorok")
+        lines.append("- Nincs közzétett, rövid távon (napok–hetek) esedékes katalizátor a vizsgált AH/PM sávban.")
 
+    # 7) Listán kívüli, 3–12 hónapos high-conviction jelöltek (FELTÉTELES, de explicit üres blokk kell)
+    lines.append("")
     if highconv_block:
-        lines.append("")
         lines.append(highconv_block)
-
-    text = "\n".join(lines)
+    else:
+        lines.append("### 🚀 Listán kívüli, 3–12 hónapos high-conviction jelöltek")
+        lines.append("- Nincs új, ismételt erős jelzés a vizsgált időablakban.")
+text = "\n".join(lines)
 
     # JSON váz – makró + event-listák
     payload = {
@@ -784,19 +796,31 @@ def generate_report3_macro_only(
         lines.append("")
         lines.append(macro_block)
 
+    
+    # 5) Bejelentések & elemzői fel/lemínősítések (KÖTELEZŐ blokk – null-blokk is)
+    lines.append("")
     if analyst_block:
-        lines.append("")
         lines.append(analyst_block)
+    else:
+        lines.append("### 🧩 Bejelentések & fel/lemínősítések")
+        lines.append("- Nincs új, anyagilag lényeges vállalati bejelentés / fel- vagy leminősítés az AH/PM sávban.")
 
+    # 6) Közelgő katalizátorok (KÖTELEZŐ blokk – null-blokk is)
+    lines.append("")
     if catalyst_block:
-        lines.append("")
         lines.append(catalyst_block)
+    else:
+        lines.append("### ⏳ Közelgő katalizátorok")
+        lines.append("- Nincs közzétett, rövid távon (napok–hetek) esedékes katalizátor a vizsgált AH/PM sávban.")
 
+    # 7) Listán kívüli, 3–12 hónapos high-conviction jelöltek (FELTÉTELES, de explicit üres blokk kell)
+    lines.append("")
     if highconv_block:
-        lines.append("")
         lines.append(highconv_block)
-
-    text = "\n".join(lines)
+    else:
+        lines.append("### 🚀 Listán kívüli, 3–12 hónapos high-conviction jelöltek")
+        lines.append("- Nincs új, ismételt erős jelzés a vizsgált időablakban.")
+text = "\n".join(lines)
 
     payload = {
         "mode": 3,
@@ -864,11 +888,16 @@ def main() -> None:
         )
         print(text)
 
-        # Post-process #1 report (macro/analyst/catalyst/high-conv, job summary cleanup)
+        # Post-process #1 report (BIBLIA blokk-sorrend és null-blokkok biztosítása)
         try:
-            from scripts.postprocess_report import main as postprocess_main
-            postprocess_main()
-        except Exception as e:  # pragma: no cover - postprocess optional failure
+            import subprocess
+            this_dir = os.path.dirname(os.path.abspath(__file__))
+            pp_path = os.path.join(this_dir, "postprocess_report.py")
+            subprocess.run(
+                [sys.executable, pp_path, "--md", summary_path, "--bundle-dir", "reports"],
+                check=False,
+            )
+        except Exception as e:  # pragma: no cover - postprocess best-effort
             debug(f"Postprocess hiba: {e!r}")
 
     elif mode == 2:
