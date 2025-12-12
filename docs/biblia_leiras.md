@@ -1,5 +1,4 @@
 # Részvényjelentés Automata – BIBLIA leírás  
-**Verzió:** v3.6.0  
 
 Ez a dokumentum írja le a teljes #1 / #2 / #3 riport-pipeline architektúráját, a
 fájlszerkezetet, a fő scripteket és a BIBLIA szerinti logikát.
@@ -16,28 +15,25 @@ repo/
 │       ├─ run_report.yml
 │       └─ update_biblia_docs.yml
 ├─ docs/
-│   ├─ CHANGELOG.md
 │   └─ biblia_leiras.md
 ├─ reports/
-│   ├─ 1/
-│   │   ├─ analyst_1.json
-│   │   ├─ catalysts_1.json
-│   │   ├─ macro_news_1.json
-│   │   ├─ high_conv_1.json
-│   │   └─ summary_report_1.md
-│   ├─ 2/
-│   │   ├─ analyst_2.json
-│   │   ├─ catalysts_2.json
-│   │   ├─ macro_news_2.json
-│   │   └─ summary_report_2.md
-│   └─ 3/
-│       ├─ latest_3.json
-│       ├─ latest_3.md
-│       ├─ macro_news_3.json
-│       ├─ summary_report_3.md
-│       ├─ raw_analyst_1.json
-│       └─ raw_catalysts_1.json
+│   ├─ analyst_1.json
+│   ├─ catalysts_1.json
+│   ├─ macro_news_1.json
+│   ├─ macro_news_2.json
+│   ├─ macro_news_3.json
+│   ├─ high_conv_1.json
+│   ├─ latest_1.json
+│   ├─ latest_1.md
+│   ├─ latest_3.json
+│   ├─ latest_3.md
+│   ├─ raw_analyst_1.json
+│   ├─ raw_catalysts_1.json
+│   ├─ summary_report_1.md
+│   ├─ summary_report_2.md
+│   └─ summary_report_3.md
 └─ scripts/
+
     ├─ analyst_block_builder.py
     ├─ analyst_feed_parser.py
     ├─ biblia_helper.py
@@ -56,6 +52,9 @@ repo/
 ```
 
 ---
+
+
+⚠️ Megjegyzés: a reports mappa **lapos**, nincs /1 /2 /3 almappa.
 
 ## 2. Scripts – szerepek és felelősségek
 
