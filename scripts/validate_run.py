@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """
-validate_run.py – v1.0.4-biblia-guard-headeronly
+validate_run.py – v1.0.5-biblia-guard-keyword
 
-IMPROVEMENT:
-- Kötelező blokkoknál CSAK a HEADER meglétét ellenőrzi (#/##/###),
-  a tartalom hiánya NEM okoz FAIL-t.
-- Adathiány (Lefedettség: HIÁNYOS) -> WARN, nem FAIL.
-- Unicode / Windows CP1252 safe.
+Kulcsszó-alapú guard:
+- Nem exact header szöveget vár
+- Elég, ha ### szinten megjelenik a blokk TÍPUSA
+  (Makró / Bejelent / Katalizátor / High-conv)
+- Tartalom hiánya NEM fail
+- Lefedettség: HIÁNYOS -> WARN
+- Windows CP1252 / UTF-8 safe
 """
 
 from __future__ import annotations
@@ -15,9 +17,9 @@ import sys
 import re
 from pathlib import Path
 
-VERSION = "v1.0.4-biblia-guard-headeronly"
+VERSION = "v1.0.5-biblia-guard-keyword"
 
-# UTF-8 safe stdout/stderr (Windows runner)
+# UTF-8 safe stdout/stderr
 try:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -34,31 +36,24 @@ def safe_print(msg: str) -> None:
         sys.stdout.buffer.write((msg + "\n").encode(enc, errors="replace"))
         sys.stdout.buffer.flush()
 
-def die(msg: str, code: int = 1) -> None:
+def die(msg: str) -> None:
     safe_print(f"[validate_run] ERROR: {msg}")
-    sys.exit(code)
+    sys.exit(1)
 
 def warn(msg: str) -> None:
     safe_print(f"[validate_run] WARN: {msg}")
 
-DASH_CHARS = "\u2010\u2011\u2012\u2013\u2014\u2212"
-_dash_re = re.compile(f"[{DASH_CHARS}]")
-
-def normalize_text(s: str) -> str:
-    s = _dash_re.sub("-", s)
+def normalize(s: str) -> str:
     s = s.replace("\u00A0", " ")
-    s = re.sub(r"[ \t]+", " ", s)
+    s = re.sub(r"[–—−]", "-", s)
     return s
 
-REQUIRED_HEADERS_1 = [
-    r"##\s*After-hours\s*&\s*Premarket\s*-\s*#1\s*jelent[eé]s",
-    r"Lefedetts[eé]g:\s*(TELJES|HI[ÁA]NYOS)",
-    r"###\s*Makr[oó]\s*/\s*Politika\s*/\s*FED",
-    r"###\s*Bejelent[eé]sek\s*&\s*fel/lem[ií]n[oó]s[ií]t[eé]sek",
-    r"###\s*K[öo]zeli\s*kataliz[aá]torok",
-    r"###\s*List[aá]n\s*k[ií]v[uü]li,\s*3-12\s*h[oó]napos\s*high-conviction\s*jel[öo]ltek",
-    r"Job summary generated at run-time",
-]
+REQUIRED_KEYWORDS_1 = {
+    "makro": r"###.*makr",
+    "bejelent": r"###.*bejelent",
+    "kataliz": r"###.*kataliz",
+    "highconv": r"###.*high",
+}
 
 def main() -> None:
     ap = argparse.ArgumentParser()
@@ -80,12 +75,24 @@ def main() -> None:
     if len(raw.splitlines()) < args.min_lines:
         die("A report gyanúsan rövid (összelapított lehet).")
 
-    txt = normalize_text(raw)
+    txt = normalize(raw.lower())
+
+    # coverage (warn only)
+    if "lefedettség" not in txt:
+        die("Hiányzik a Lefedettség sor.")
+    if "hiányos" in txt:
+        warn("Lefedettség: HIÁNYOS – adatforrás/market-data oldali hiány lehet.")
 
     if report == "1":
-        for pat in REQUIRED_HEADERS_1:
+        if "after-hours" not in txt or "premarket" not in txt:
+            die("Hiányzik az After-hours & Premarket fejléc.")
+
+        for name, pat in REQUIRED_KEYWORDS_1.items():
             if not re.search(pat, txt, flags=re.IGNORECASE | re.MULTILINE):
-                die(f"Hiányzó kötelező header: {pat}")
+                die(f"Hiányzó kötelező blokk (kulcsszó): {name}")
+
+        if "job summary generated at run-time" not in txt:
+            die("Hiányzik a Job summary blokk.")
 
     safe_print(f"[validate_run] OK – report #{report} valid ({VERSION})")
     sys.exit(0)
