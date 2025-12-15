@@ -51,7 +51,7 @@ import random
 
 import requests
 
-VERSION = "v1.0.1-rate-limit-safe"
+VERSION = "v1.0.2-rate-limit-safe-indentfix"
 
 # Yahoo rate-limit / retry config
 YAHOO_BATCH_SIZE = 50
@@ -541,7 +541,7 @@ def save_json(path: Path, data: Any) -> None:
 
 def main() -> None:
     print(f"[highconv_builder] Verzió: {VERSION}")
-exclude_tickers = load_exclude_tickers()
+    exclude_tickers = load_exclude_tickers()
     print(f"[highconv_builder] Kizárandó tickerek összesen: {len(exclude_tickers)} db")
 
     print(f"[highconv_builder] Analyst feed letöltése (utolsó {DAYS_BACK} nap)...")
@@ -556,11 +556,11 @@ exclude_tickers = load_exclude_tickers()
     sigs = classify_events(events)
 
     print("[highconv_builder] Yahoo snapshot lekérése...")
-try:
-    yahoo_quotes = fetch_yahoo_snapshot(sigs.keys())
-    apply_52w_high_signal(sigs, yahoo_quotes)
-except Exception as e:
-    print(f"[highconv_builder] FIGYELEM: Yahoo snapshot sikertelen (folytatom 52w jel nélkül): {e}")
+    try:
+        yahoo_quotes = fetch_yahoo_snapshot(sigs.keys())
+        apply_52w_high_signal(sigs, yahoo_quotes)
+    except Exception as e:
+        print(f"[highconv_builder] FIGYELEM: Yahoo snapshot sikertelen (folytatom 52w jel nélkül): {e}")
 
     compute_scores(sigs)
 
@@ -573,4 +573,5 @@ except Exception as e:
 
 
 if __name__ == "__main__":
+    main()
     main()
