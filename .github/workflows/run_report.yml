@@ -380,3 +380,5 @@ jobs:
 
           "Raw URL for #3 fixed gist:" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
           "https://gist.githubusercontent.com/zoleevegh/8f77c3b0ec040030d492859095686030/raw/summary_report_3.md" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+- name: Validate report output
+  run: python scripts/validate_run.py --report "${{ steps.vars.outputs.report }}" --fail-on-missing
