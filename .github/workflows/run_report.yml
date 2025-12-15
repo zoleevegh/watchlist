@@ -1,4 +1,4 @@
-name: Run Report (Windows) # v2.2.4
+name: Run Report (Windows) # v2.2.6-biblia1-postprocess-orderfix-guard3
 
 on:
   workflow_dispatch:
@@ -252,9 +252,9 @@ jobs:
               Write-Host "postprocess_report.py nem található – nyers #1-es riport marad."
             }
           }
-
       - name: Validate report output
-        run: python scripts/validate_run.py --report \"${{ steps.vars.outputs.report }}\"
+        shell: pwsh
+        run: python scripts/validate_run.py --report "${{ steps.vars.outputs.report }}"
 
       - name: Upload artifacts
         if: always()
