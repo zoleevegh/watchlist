@@ -52,6 +52,7 @@ repo/
     ├─ postprocess_report_2.py
     ├─ postprocess_report_3.py
     ├─ report_runner.py
+    ├─ validate_run.py
     └─ (egyéb segédscriptek a projekt korábbi verzióiból)
 ```
 
@@ -425,35 +426,4 @@ scripts/
 ```
 
 ---
-
-## 📁 Könyvtárszerkezet – AKTUÁLIS (validate_run beépítve)
-
-A korábbi könyvtárfa-blokkba ezt a sort kell beilleszteni a `scripts/` alá:
-
-```
-scripts/
-  ...
-  validate_run.py          # CI guard: report szerkezeti validálás (postprocess után, Gist előtt)
-```
-
-Ha egyben szeretnéd látni, itt a *scripts* rész kiegészítve (a többi sor változatlan):
-
-```
-scripts/
-  analyst_block_builder.py
-  analyst_feed_parser.py
-  biblia_helper.py
-  blocks_events_3.py
-  blocks_intraday_3.py
-  export_biblia_md.py
-  highconv_block_builder.py
-  highconv_builder.py
-  macro_fetcher.py
-  macro_highconv_helpers_v2.py
-  postprocess_report.py
-  postprocess_report_2.py
-  postprocess_report_3.py
-  report_runner.py
-  validate_run.py
-```
 
