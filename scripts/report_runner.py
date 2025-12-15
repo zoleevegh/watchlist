@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""report_runner.py – v3.0.1-biblia-prep-yahoo-fallback-coveragefix
+"""report_runner.py – v3.0.2-biblia-prep-yahoo-fallback-coveragefix-mw-off
 
 Megjegyzés: Ez a verzió a korábbi teljes runner logikát megtartja.
 A bibliás formátum finomhangolása külön lépésekben történik.
@@ -76,8 +76,6 @@ except ImportError:  # pragma: no cover - optional helper
         return ""
 
 
-
-
 SESSION = requests.Session()
 SESSION.headers.update(
     {
@@ -89,7 +87,7 @@ SESSION.headers.update(
 )
 
 DEFAULT_K = 3.0
-DEFAULT_SCRIPT_VERSION = "v3.0.1-biblia-prep-yahoo-fallback-coveragefix"
+DEFAULT_SCRIPT_VERSION = "v3.0.2-biblia-prep-yahoo-fallback-coveragefix-mw-off"
 AH_PM_MODE = "spark"  # alapértelmezett: Yahoo quote/spark alapú AH/PM
 
 
@@ -97,7 +95,6 @@ WATCHLIST_DEFAULT_PATH = "reports/master.csv"
 ANALYST_EVENTS_PATH = "reports/analyst_1.json"
 CATALYST_EVENTS_PATH = "reports/catalysts_1.json"
 HIGHCONV_EVENTS_PATH = "reports/high_conv_1.json"
-
 
 
 def debug(msg: str) -> None:
@@ -201,7 +198,6 @@ def load_watchlist(path: Optional[str]) -> Dict[str, Dict]:
     return watch
 
 
-
 def fetch_yahoo_quote_batch(symbols: List[str]) -> Dict[str, Tuple[Optional[float], Optional[float], Optional[float]]]:
     """Batch-ben lehúzza a Yahoo quote (spark) feedet AH/PM-hez.
 
@@ -277,62 +273,6 @@ def fetch_chart(symbol: str) -> Tuple[dict, List[int], List[Optional[float]]]:
     quotes = indicators.get("quote") or [{}]
     closes = quotes[0].get("close") or []
     return meta, ts, closes
-
-
-
-def fetch_marketwatch_premarket_pct(symbol: str, rth_close: Optional[float]) -> Optional[float]:
-    """Best-effort MarketWatch premarket fallback.
-
-    Ha a Yahoo 2d/5m chart nem ad a bázis RTH UTÁN premarket gyertyát,
-    és még nincs következő napi RTH sem, utolsó esélyként megpróbáljuk
-    a MarketWatch "Premarket" árát beolvasni.
-
-    - URL: https://www.marketwatch.com/investing/stock/{symbol.lower()}
-    - User-agent headerrel kérjük le a HTML-t.
-    - Szövegben megkeressük a "Premarket" blokkot és az utána következő
-      "${ár}" mintát.
-
-    Hiba vagy hiányzó adat esetén None-t ad vissza, és nem dobja el a futást.
-    """
-    if not rth_close:
-        return None
-
-    url = f"https://www.marketwatch.com/investing/stock/{symbol.lower()}"
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/120.0 Safari/537.36"
-        )
-    }
-    try:
-        resp = requests.get(url, headers=headers, timeout=10)
-        resp.raise_for_status()
-        html = resp.text
-    except Exception as e:  # pragma: no cover - best-effort
-        debug(f"[MW] {symbol}: MarketWatch request error: {e}")
-        return None
-
-    try:
-        pre_idx = html.lower().find("premarket")
-        if pre_idx == -1:
-            return None
-        window = html[pre_idx : pre_idx + 2000]
-        m_price = re.search(r"\$\s*([0-9]+(?:\.[0-9]+)?)", window)
-        if not m_price:
-            return None
-        price_str = m_price.group(1).replace(",", "")
-        pm_price = float(price_str)
-    except Exception as e:  # pragma: no cover - best-effort
-        debug(f"[MW] {symbol}: parse error: {e}")
-        return None
-
-    try:
-        pm_pct = (pm_price - float(rth_close)) / float(rth_close) * 100.0
-        return pm_pct
-    except Exception as e:  # pragma: no cover - best-effort
-        debug(f"[MW] {symbol}: pct calc error: {e}")
-        return None
 
 
 def compute_ah_pm_move(
@@ -480,14 +420,11 @@ def generate_model_report(
                 if pm_pct is None:
                     pm_pct = pm_from_chart
 
-            # 3) Premarket fallback MarketWatch-ról – csak ha még mindig nincs PM, de van bázisár
             if pm_pct is None and rth_close is not None:
                 try:
-                    pm_from_mw = fetch_marketwatch_premarket_pct(sym, rth_close)
                     if pm_from_mw is not None:
                         pm_pct = pm_from_mw
                 except Exception as mw_e:  # pragma: no cover - best-effort
-                    debug(f"[MW] {sym}: fallback error: {mw_e}")
         except Exception as e:
             # Valódi forráshiba / HTTP hiba / stb. – ez lefedettség-hiba
             missing[sym] = str(e)
@@ -546,7 +483,6 @@ def generate_model_report(
         "",
         coverage_line,
     ]
-
 
 
     # Makró / FED / piaci hangulat blokk (#1)
@@ -672,8 +608,6 @@ def generate_model_report(
         json.dump(payload, f, indent=2, ensure_ascii=False)
 
     return md_text
-
-
 
 
 def generate_report2_macro_only(
