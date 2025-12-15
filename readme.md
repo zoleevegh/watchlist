@@ -133,3 +133,23 @@ A felhasználónak **NEM kell külön jeleznie**, hogy „hírekkel”.
 A #1 jelentésben szereplő hírek és indoklások **kizárólag** ebből az időkapuból származhatnak.
 Más idősávból származó információ nem kerülhet be.
 
+---
+
+## ✅ ÚJ: Futás-ellenőrzés (Validate guard)
+
+A workflow mostantól tartalmaz egy kötelező ellenőrző lépést, ami **PIROSRA** teszi a futást,
+ha a jelentés „látszólag” elkészült, de valójában **hibás / hiányos / összelapított**.
+
+### Fájl
+- `scripts/validate_run.py`
+
+### Mit ellenőriz?
+- Létezik és nem üres: `reports/summary_report_{1|2|3}.md`
+- #1-nél kötelező tokenek/blokkok megvannak (pl. Makró/FED, Bejelentések, Katalizátorok, High-conv)
+- Megvan a `Lefedettség:` sor
+- Megvan a `Job summary generated at run-time`
+- „Lapítás” detektálás: minimum sorszám (görbe egy-soros output kiszűrése)
+
+### Workflow sorrend
+`Postprocess` → **Validate** → `Update fixed Gist`
+
