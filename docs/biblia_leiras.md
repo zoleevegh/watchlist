@@ -384,3 +384,32 @@ A felhasználónak **NEM kell külön kérnie**, hogy a #1 jelentés „webes h�
 
 Ha egy blokkban nincs releváns hír, azt **explicit módon jelezni kell**.
 
+---
+
+## ✅ CI/Workflow Guard – kötelező végellenőrzés (validate_run.py)
+
+A pipeline akkor tekinthető sikeresnek, ha a végső Markdown kimenet **BIBLIA-követő**.
+
+### Új fájl
+- `scripts/validate_run.py`
+
+### Funkció
+A `validate_run.py` a workflow-ban **postprocess után, Gist frissítés előtt** fut, és **fail-fast** módon megállítja a futást, ha:
+
+- hiányzik vagy üres a `reports/summary_report_{N}.md`
+- #1 jelentésnél hiányzik bármely kötelező blokk/token:
+  - `Lefedettség:`
+  - `### Makró / Politika / FED`
+  - `### Bejelentések & fel/lemínősítések`
+  - `### Közeli katalizátorok`
+  - `### Listán kívüli, 3–12 hónapos high-conviction jelöltek`
+  - `Job summary generated at run-time`
+- a jelentés „összelapított” (túl kevés sor → gyanús)
+
+### Következmény
+- A workflow **nem lehet zöld**, ha a jelentés hibás.
+- Ez megszünteti a „kamu siker” állapotot.
+
+### Verziózás
+A `validate_run.py` és a workflow módosításai is a kötelező verziófolytatás hatálya alá esnek.
+
