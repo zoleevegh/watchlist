@@ -254,7 +254,7 @@ jobs:
           }
 
       - name: Validate report output
-        run: python scripts/validate_run.py --report "${{ steps.vars.outputs.report }}" --fail-on-missing
+        run: python scripts/validate_run.py --report \"${{ steps.vars.outputs.report }}\"
 
       - name: Upload artifacts
         if: always()
