@@ -117,6 +117,7 @@ repo/
     - macro_highconv_helpers_v2.py
     - export_biblia_md.py
     - biblia_helper.py
+    - validate_run.py
 
 ---
 
