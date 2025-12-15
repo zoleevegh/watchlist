@@ -153,3 +153,14 @@ ha a jelentés „látszólag” elkészült, de valójában **hibás / hiányos
 ### Workflow sorrend
 `Postprocess` → **Validate** → `Update fixed Gist`
 
+---
+
+## 📁 Könyvtárszerkezet – kiegészítés
+
+Új fájl a guard ellenőrzéshez:
+
+```
+scripts/
+  validate_run.py        # CI guard: a futás csak akkor zöld, ha a report szerkezetileg valid
+```
+
