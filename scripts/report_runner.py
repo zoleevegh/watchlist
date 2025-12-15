@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""report_runner.py – v3.0.2-biblia-prep-yahoo-fallback-coveragefix-mw-off
+"""report_runner.py – v3.0.3-biblia-prep-yahoo-fallback-coveragefix-mw-off
 
 Megjegyzés: Ez a verzió a korábbi teljes runner logikát megtartja.
 A bibliás formátum finomhangolása külön lépésekben történik.
@@ -87,7 +87,7 @@ SESSION.headers.update(
 )
 
 DEFAULT_K = 3.0
-DEFAULT_SCRIPT_VERSION = "v3.0.2-biblia-prep-yahoo-fallback-coveragefix-mw-off"
+DEFAULT_SCRIPT_VERSION = "v3.0.3-biblia-prep-yahoo-fallback-coveragefix-mw-off"
 AH_PM_MODE = "spark"  # alapértelmezett: Yahoo quote/spark alapú AH/PM
 
 
@@ -419,12 +419,6 @@ def generate_model_report(
                     ah_pct = ah_from_chart
                 if pm_pct is None:
                     pm_pct = pm_from_chart
-
-            if pm_pct is None and rth_close is not None:
-                try:
-                    if pm_from_mw is not None:
-                        pm_pct = pm_from_mw
-                except Exception as mw_e:  # pragma: no cover - best-effort
         except Exception as e:
             # Valódi forráshiba / HTTP hiba / stb. – ez lefedettség-hiba
             missing[sym] = str(e)
