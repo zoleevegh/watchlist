@@ -1,20 +1,18 @@
 #!/usr/bin/env python3
 """
-validate_run.py – v1.0.1-biblia-guard
+validate_run.py – v1.0.2-biblia-guard-utf8safe
 
-CI-ellenőrzés: bukjon a workflow, ha a kimenet hibás/hiányos szerkezetileg (blokkok, lapítás, üres fájl).
-FONTOS: "Lefedettség: HIÁNYOS" NEM build-breaker alapból (csak figyelmeztetés),
-mert ez adatforrás/market-data oldalról gyakran előfordul.
+Fix: Windows CP1252 konzol esetén is működjön (UnicodeEncodeError nélkül).
+- stdout/stderr UTF-8-ra állítása (ha támogatott)
+- safe_print: encode errors='replace'
 
-Ellenőrzések:
-- reports/summary_report_{N}.md létezik és nem üres
-- Kötelező blokkok megvannak (#1 esetén)
-- Lefedettség sor megvan (TELJES vagy HIÁNYOS)
-- Job summary blokk megvan (#1 esetén, nálatok kötelező)
-- Alap formátum: sok-soros (nem egyetlen összeolvasott sor)
-
-Opció:
---fail-on-coverage-missing : csak akkor bukjon HIÁNYOS lefedettségre (ha tényleg ezt akarod).
+Logika (változatlan):
+- summary_report_{N}.md létezik és nem üres
+- #1 kötelező blokkok/tokenek
+- Lefedettség sor megvan (TELJES/HIÁNYOS)
+- Job summary token megvan (#1)
+- Lapítás detektálás (min sor)
+- HIÁNYOS lefedettség: WARN (nem fail) alapból
 """
 
 from __future__ import annotations
@@ -22,6 +20,25 @@ import argparse
 import sys
 import re
 from pathlib import Path
+
+VERSION = "v1.0.2-biblia-guard-utf8safe"
+
+# Make stdout/stderr UTF-8 safe on Windows runners
+try:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
+def safe_print(msg: str) -> None:
+    try:
+        print(msg)
+    except UnicodeEncodeError:
+        enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+        sys.stdout.buffer.write((msg + "\n").encode(enc, errors="replace"))
+        sys.stdout.buffer.flush()
 
 REQUIRED_BLOCKS_1 = [
     "## After-hours & Premarket - #1 jelentés",
@@ -33,11 +50,11 @@ REQUIRED_BLOCKS_1 = [
 ]
 
 def die(msg: str, code: int = 1) -> None:
-    print(f"[validate_run] ERROR: {msg}")
+    safe_print(f"[validate_run] ERROR: {msg}")
     sys.exit(code)
 
 def warn(msg: str) -> None:
-    print(f"[validate_run] WARN: {msg}")
+    safe_print(f"[validate_run] WARN: {msg}")
 
 def main() -> None:
     ap = argparse.ArgumentParser()
@@ -79,7 +96,7 @@ def main() -> None:
         if "Job summary generated at run-time" not in txt:
             die("Hiányzik a Job summary blokk (Job summary generated at run-time).")
 
-    print(f"[validate_run] OK – report #{report} valid. ({md_path}, {line_count} lines, coverage={coverage})")
+    safe_print(f"[validate_run] OK – report #{report} valid. ({md_path}, {line_count} lines, coverage={coverage})")
     sys.exit(0)
 
 if __name__ == "__main__":
