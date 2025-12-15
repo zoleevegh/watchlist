@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 """
-validate_run.py – v1.0.2-biblia-guard-utf8safe
+validate_run.py – v1.0.3-biblia-guard-flexheader
 
-Fix: Windows CP1252 konzol esetén is működjön (UnicodeEncodeError nélkül).
-- stdout/stderr UTF-8-ra állítása (ha támogatott)
-- safe_print: encode errors='replace'
+Fix: a #1 fejléc/blokk tokenek ne legyenek túl törékenyek (különböző kötőjel: -, –, —, non‑breaking hyphen).
+- Normalizáljuk a szöveget (dash normalize + whitespace normalize)
+- Kötelező elemeket REGEX-szel ellenőrizzük
 
-Logika (változatlan):
-- summary_report_{N}.md létezik és nem üres
-- #1 kötelező blokkok/tokenek
-- Lefedettség sor megvan (TELJES/HIÁNYOS)
-- Job summary token megvan (#1)
-- Lapítás detektálás (min sor)
-- HIÁNYOS lefedettség: WARN (nem fail) alapból
+Továbbra is FAIL:
+- hiányzó/üres summary_report_{N}.md
+- "lapított" output (túl kevés sor)
+- hiányzó kötelező blokkok (#1)
+- hiányzó Job summary token (#1)
+
+Coverage: HIÁNYOS → WARN (nem fail) alapból.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ import sys
 import re
 from pathlib import Path
 
-VERSION = "v1.0.2-biblia-guard-utf8safe"
+VERSION = "v1.0.3-biblia-guard-flexheader"
 
 # Make stdout/stderr UTF-8 safe on Windows runners
 try:
@@ -40,21 +40,39 @@ def safe_print(msg: str) -> None:
         sys.stdout.buffer.write((msg + "\n").encode(enc, errors="replace"))
         sys.stdout.buffer.flush()
 
-REQUIRED_BLOCKS_1 = [
-    "## After-hours & Premarket - #1 jelentés",
-    "Lefedettség:",
-    "### Makró / Politika / FED",
-    "### Bejelentések & fel/lemínősítések",
-    "### Közeli katalizátorok",
-    "### Listán kívüli, 3–12 hónapos high-conviction jelöltek",
-]
-
 def die(msg: str, code: int = 1) -> None:
     safe_print(f"[validate_run] ERROR: {msg}")
     sys.exit(code)
 
 def warn(msg: str) -> None:
     safe_print(f"[validate_run] WARN: {msg}")
+
+DASH_CHARS = "\u2010\u2011\u2012\u2013\u2014\u2212"  # hyphen, nb-hyphen, figure dash, en dash, em dash, minus
+_dash_re = re.compile(f"[{DASH_CHARS}]")
+
+def normalize_text(s: str) -> str:
+    # normalize unicode dashes to "-"
+    s = _dash_re.sub("-", s)
+    # normalize non-breaking space
+    s = s.replace("\u00A0", " ")
+    # collapse whitespace
+    s = re.sub(r"[ \t]+", " ", s)
+    return s
+
+# Regex patterns that must be present in #1
+REQUIRED_PATTERNS_1 = [
+    r"##\s*After-hours\s*&\s*Premarket\s*-\s*#1\s*jelent[eé]s",
+    r"Lefedetts[eé]g:\s*(TELJES|HI[ÁA]NYOS)",
+    r"###\s*Makr[oó]\s*/\s*Politika\s*/\s*FED",
+    r"###\s*Bejelent[eé]sek\s*&\s*fel/lem[ií]n[oó]s[ií]t[eé]sek",
+    r"###\s*K[öo]zeli\s*kataliz[aá]torok",
+    r"###\s*List[aá]n\s*k[ií]v[uü]li,\s*3-12\s*h[oó]napos\s*high-conviction\s*jel[öo]ltek",
+    r"Job summary generated at run-time",
+]
+
+def must_match(pattern: str, txt: str) -> None:
+    if not re.search(pattern, txt, flags=re.IGNORECASE | re.MULTILINE):
+        die(f"Hiányzó kötelező blokk/token (regex): {pattern}")
 
 def main() -> None:
     ap = argparse.ArgumentParser()
@@ -71,32 +89,33 @@ def main() -> None:
     if not md_path.is_file():
         die(f"Hiányzik a kimeneti MD: {md_path}")
 
-    txt = md_path.read_text(encoding="utf-8", errors="replace")
-    if not txt.strip():
+    raw = md_path.read_text(encoding="utf-8", errors="replace")
+    if not raw.strip():
         die(f"Üres a kimeneti MD: {md_path}")
 
-    line_count = len(txt.splitlines())
+    # line count on raw (before normalization)
+    line_count = len(raw.splitlines())
     if line_count < args.min_lines:
         die(f"Gyanúsan kevés sor ({line_count}) – valószínű össze van lapítva a jelentés. Fájl: {md_path}")
 
-    m = re.search(r"Lefedettség:\s*(TELJES|HIÁNYOS)", txt)
+    txt = normalize_text(raw)
+
+    # coverage
+    m = re.search(r"Lefedetts[eé]g:\s*(TELJES|HI[ÁA]NYOS)", txt, flags=re.IGNORECASE)
     if not m:
         die("Hiányzik a 'Lefedettség:' sor.")
-
-    coverage = m.group(1)
-    if coverage != "TELJES":
+    coverage = m.group(1).upper()
+    if "HI" in coverage:  # HIÁNYOS
         warn("Lefedettség: HIÁNYOS – adatforrás/market-data oldali hiány lehet.")
         if args.fail_on_coverage_missing:
             die("Lefedettség: HIÁNYOS – fail-on-coverage-missing aktív.")
 
+    # required blocks for #1
     if report == "1":
-        for b in REQUIRED_BLOCKS_1:
-            if b not in txt:
-                die(f"Hiányzó kötelező blokk/token: {b}")
-        if "Job summary generated at run-time" not in txt:
-            die("Hiányzik a Job summary blokk (Job summary generated at run-time).")
+        for pat in REQUIRED_PATTERNS_1:
+            must_match(pat, txt)
 
-    safe_print(f"[validate_run] OK – report #{report} valid. ({md_path}, {line_count} lines, coverage={coverage})")
+    safe_print(f"[validate_run] OK – report #{report} valid. ({md_path}, {line_count} lines, coverage={coverage}, {VERSION})")
     sys.exit(0)
 
 if __name__ == "__main__":
