@@ -413,3 +413,14 @@ A `validate_run.py` a workflow-ban **postprocess után, Gist frissítés előtt*
 ### Verziózás
 A `validate_run.py` és a workflow módosításai is a kötelező verziófolytatás hatálya alá esnek.
 
+---
+
+## 📁 Könyvtárszerkezet – kiegészítés
+
+Új fájl a guard ellenőrzéshez:
+
+```
+scripts/
+  validate_run.py        # CI guard: a futás csak akkor zöld, ha a report szerkezetileg valid
+```
+
