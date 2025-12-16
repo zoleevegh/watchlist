@@ -1,381 +1,293 @@
 #!/usr/bin/env python3
-"""
-Részvények Projekt – analyst_catalyst_builder
-Verzió: v1.0.0 (2025-12-16)
+"""analyst_catalyst_builder.py
+Verzió: v1.0.0
 
 Cél:
-- Apps Script helyett (mert 401/403 bot-blokkolás) Pythonból állítsuk elő az analyst/catalyst feedet.
-- Kimenet kompatibilis maradjon a meglévő pipeline-nal:
-    reports/analyst_{report}.json
-    reports/catalysts_{report}.json
+- Analyst (fel/leminősítések, PT-változások, coverage/initiations) + "katalizátor" jellegű események
+  legyártása JSON-be a #1/#2/#3 riportokhoz.
+- Apps Script helyett készült, mert több forrás (MarketBeat/MarketWatch/247WallSt) gyakran 401/403-at ad
+  Google Apps Script környezetből.
 
-Források / stratégia (praktikus, anti-block):
-- MarketBeat oldalak lekérése 3 lépcsőben:
-    1) direct (requests)
-    2) r.jina.ai proxy (HTML text mirror)  -> gyakran átmegy ott, ahol a direct 403
-    3) r.jina.ai/http(s) váltogatás
-- MarketWatch / 247WallSt: jelenleg tipikusan 401/403 GitHub Actions alatt -> csak best-effort (proxyval).
-- Ha minden blokkolva: üres lista + részletes coverage/meta log a stdout-ra (a riportban így nem “némán” hal el).
+Megközelítés:
+- "r.jina.ai" proxy használata HTML letöltésre (sok helyen átviszi a botvédelmet).
+- Források: MarketBeat (3 oldal), + opcionális MarketWatch upgrades/downgrades (best effort).
+- MINDIG ír egy health JSON-t is: melyik source adott adatot, melyik nem, milyen hibával.
 
 Megjegyzés:
-- Ez a builder “nyers” eseménylistát gyárt. A meglévő analyst_block_builder / postprocess csinálja a végső riport logikát.
+- A parserek "best effort" jellegűek: ha a HTML változik, inkább legyen 0 találat + health-ben hiba,
+  mint rossz adat.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
-import sys
-from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
+__version__ = "1.0.0"
 
-# ------------------------- utilities -------------------------
+UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123 Safari/537.36"
 
-UA = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/125.0 Safari/537.36"
+SESSION = requests.Session()
+SESSION.headers.update(
+    {
+        "User-Agent": UA,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Connection": "keep-alive",
+    }
 )
 
-def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
-def debug(msg: str) -> None:
-    print(msg, file=sys.stderr)
+def jina(url: str) -> str:
+    url = url.strip()
+    if url.startswith("http://"):
+        return "https://r.jina.ai/http://" + url[len("http://") :]
+    if url.startswith("https://"):
+        return "https://r.jina.ai/https://" + url[len("https://") :]
+    return "https://r.jina.ai/https://" + url
 
-def safe_write_json(path: Path, data) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
-def _req_get(url: str, timeout: int = 20) -> Tuple[int, str]:
-    r = requests.get(
-        url,
-        headers={"User-Agent": UA, "Accept": "text/html,*/*", "Accept-Language": "en-US,en;q=0.9"},
-        timeout=timeout,
-    )
-    return r.status_code, r.text
-
-def fetch_with_fallback(url: str) -> Tuple[bool, int, str, str]:
-    """
-    Returns (ok, status, text, via)
-    via: direct | jina | jina_http | jina_https
-    """
-    # 1) direct
+def fetch_text(url: str, timeout: int = 25) -> Tuple[Optional[str], Dict[str, Any]]:
+    meta: Dict[str, Any] = {"url": url, "ok": False, "httpStatus": None, "error": "", "bytes": 0, "ms": 0}
+    t0 = datetime.now().timestamp()
     try:
-        st, txt = _req_get(url)
-        if 200 <= st < 300 and txt and len(txt) > 200:
-            return True, st, txt, "direct"
+        r = SESSION.get(url, timeout=timeout)
+        meta["httpStatus"] = r.status_code
+        meta["bytes"] = len(r.content or b"")
+        meta["ms"] = int((datetime.now().timestamp() - t0) * 1000)
+        if r.status_code >= 400:
+            meta["error"] = f"HTTP_{r.status_code}"
+            return None, meta
+        txt = r.text or ""
+        meta["ok"] = True
+        return txt, meta
     except Exception as e:
-        st, txt = 0, f"{e!r}"
-
-    # 2) jina.ai proxies (text mirror)
-    def jina(u: str) -> str:
-        # r.jina.ai/http(s)://...
-        return "https://r.jina.ai/" + u
-
-    # ensure scheme in url
-    u = url.strip()
-    if not u.startswith("http"):
-        u = "https://" + u.lstrip("/")
-
-    for via, jurl in [
-        ("jina", jina(u)),
-        ("jina_http", jina(u.replace("https://", "http://"))),
-        ("jina_https", jina(u.replace("http://", "https://"))),
-    ]:
-        try:
-            st2, txt2 = _req_get(jurl, timeout=25)
-            if 200 <= st2 < 300 and txt2 and len(txt2) > 200:
-                return True, st2, txt2, via
-        except Exception:
-            pass
-
-    # last return: what we have
-    return False, st if isinstance(st, int) else 0, (txt or ""), "failed"
+        meta["ms"] = int((datetime.now().timestamp() - t0) * 1000)
+        meta["error"] = f"{type(e).__name__}: {e}"
+        return None, meta
 
 
-# ------------------------- data model -------------------------
-
-@dataclass
-class SourceStat:
-    ok: bool
-    http_status: int
-    via: str
-    count: int
-    error: str = ""
-
-@dataclass
-class Event:
-    # normalized keys (lowercase) to match existing parser’s expectations
-    datetime: str
-    ticker: str
-    action: str
-    firm: str = ""
-    price_target: str = ""
-    notes: str = ""
-    url: str = ""
-    source: str = ""
-
-    def to_dict(self) -> Dict:
-        return {
-            "datetime": self.datetime,
-            "ticker": self.ticker,
-            "action": self.action,
-            "firm": self.firm,
-            "price_target": self.price_target,
-            "notes": self.notes,
-            "url": self.url,
-            "source": self.source,
-        }
+def _strip(s: str) -> str:
+    return re.sub(r"\s+", " ", (s or "").strip())
 
 
-# ------------------------- parsers -------------------------
+def _unescape_basic(html: str) -> str:
+    html = (
+        html.replace("&amp;", "&")
+        .replace("&quot;", '"')
+        .replace("&#39;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+    )
+    return html
 
-_MB_BASE = "https://www.marketbeat.com"
 
-def parse_marketbeat_ratings(html: str, source: str, page_url: str) -> List[Event]:
-    """
-    MarketBeat ratings/price-target/initiations pages:
-    - rows have data-ticker and data-date in <tr ...>
-    We parse conservatively with regex (works both on normal HTML and on jina mirror).
-    """
-    out: List[Event] = []
+def _parse_table_rows(html: str) -> List[str]:
+    return re.findall(r"(?is)<tr[^>]*>(.*?)</tr>", html)
 
-    # capture per-row blocks
-    rows = re.findall(r'(<tr[^>]+class="rating-[^"]*"[\s\S]*?</tr>)', html, flags=re.I)
-    if not rows:
-        # sometimes jina mirror strips tags; try alternative: data-ticker occurrences
-        # We'll create pseudo rows around data-ticker chunks
-        chunks = re.split(r'(data-ticker="[^"]+")', html)
-        # too messy -> bail
-        return out
 
-    for r in rows:
-        ticker = _m1(r, r'data-ticker="([^"]+)"').upper()
-        date_raw = _m1(r, r'data-date="([^"]+)"')
-        firm = _m1(r, r'class="firm"[^>]*>\s*([^<]+)\s*<').strip()
-        rating = _m1(r, r'class="rating"[^>]*>\s*([^<]+)\s*<').strip()
-        notes_cell = _m1(r, r'class="notes"[^>]*>([\s\S]*?)</td>').strip()
-        notes = clean_text(notes_cell)
-        href = _m1(r, r'href="([^"]+)"')
-
-        if not ticker or len(ticker) > 7:
-            continue
-
-        action = rating or "Rating"
-        price_target = ""
-        if source.lower().find("pt") >= 0 or "price target" in action.lower():
-            # try to extract "$X to $Y" from notes
-            pt_from = _m1(notes, r'from\s+\$([0-9.]+)', flags=re.I)
-            pt_to = _m1(notes, r'to\s+\$([0-9.]+)', flags=re.I)
-            if pt_from and pt_to:
-                price_target = f"{pt_from}->{pt_to}"
-                action = "Price Target"
-
-        dt = to_iso_guess(date_raw) or now_iso()
-        url = ""
-        if href:
-            url = href if href.startswith("http") else _MB_BASE + href
-
-        out.append(
-            Event(
-                datetime=dt,
-                ticker=ticker,
-                action=action,
-                firm=firm,
-                price_target=price_target,
-                notes=notes,
-                url=url or page_url,
-                source=source,
-            )
-        )
-
-    return out
-
-def clean_text(s: str) -> str:
-    s = re.sub(r"<[^>]+>", " ", s)
-    s = re.sub(r"\s+", " ", s).strip()
-    return s
-
-def _m1(text: str, pat: str, flags=0) -> str:
-    m = re.search(pat, text, flags)
-    return m.group(1) if m else ""
-
-def to_iso_guess(s: str) -> str:
-    # MarketBeat often uses YYYY-MM-DD
-    if not s:
+def _extract_href(row_html: str) -> str:
+    m = re.search(r'(?is)href="([^"]+)"', row_html)
+    if not m:
         return ""
-    s = s.strip()
-    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%Y/%m/%d", "%b %d, %Y"):
-        try:
-            d = datetime.strptime(s, fmt).replace(tzinfo=timezone.utc)
-            return d.isoformat().replace("+00:00", "Z")
-        except Exception:
-            pass
-    return ""
+    href = m.group(1).strip()
+    if href.startswith("/"):
+        return "https://www.marketbeat.com" + href
+    return href
 
 
-# ------------------------- builders -------------------------
-
-def build_marketbeat_analyst(pages: int = 2) -> Tuple[List[Event], SourceStat]:
-    url_tpl = "https://www.marketbeat.com/ratings/usa/?page={p}"
-    all_events: List[Event] = []
-    last_stat = SourceStat(ok=False, http_status=0, via="failed", count=0, error="")
-    for p in range(1, pages + 1):
-        url = url_tpl.format(p=p)
-        ok, st, html, via = fetch_with_fallback(url)
-        if not ok:
-            last_stat = SourceStat(False, st, via, 0, f"FETCH_FAIL {url}")
-            continue
-        ev = parse_marketbeat_ratings(html, "MarketBeat Analyst", url)
-        all_events.extend(ev)
-        last_stat = SourceStat(True, st, via, len(ev), "")
-    return all_events, last_stat
-
-def build_marketbeat_price_targets(pages: int = 2) -> Tuple[List[Event], SourceStat]:
-    url_tpl = "https://www.marketbeat.com/ratings/price-target/?page={p}"
-    all_events: List[Event] = []
-    last_stat = SourceStat(ok=False, http_status=0, via="failed", count=0, error="")
-    for p in range(1, pages + 1):
-        url = url_tpl.format(p=p)
-        ok, st, html, via = fetch_with_fallback(url)
-        if not ok:
-            last_stat = SourceStat(False, st, via, 0, f"FETCH_FAIL {url}")
-            continue
-        ev = parse_marketbeat_ratings(html, "MarketBeat PT", url)
-        all_events.extend(ev)
-        last_stat = SourceStat(True, st, via, len(ev), "")
-    return all_events, last_stat
-
-def build_marketbeat_initiations(pages: int = 2) -> Tuple[List[Event], SourceStat]:
-    url_tpl = "https://www.marketbeat.com/ratings/initiations/?page={p}"
-    all_events: List[Event] = []
-    last_stat = SourceStat(ok=False, http_status=0, via="failed", count=0, error="")
-    for p in range(1, pages + 1):
-        url = url_tpl.format(p=p)
-        ok, st, html, via = fetch_with_fallback(url)
-        if not ok:
-            last_stat = SourceStat(False, st, via, 0, f"FETCH_FAIL {url}")
-            continue
-        ev = parse_marketbeat_ratings(html, "MarketBeat Initiations", url)
-        all_events.extend(ev)
-        last_stat = SourceStat(True, st, via, len(ev), "")
-    return all_events, last_stat
-
-
-def filter_time_window(events: List[Event], report: str) -> List[Event]:
-    """
-    Minimal compatibility: keep existing report windows for analyst/catalyst.
-    (A report #1 macro window is handled elsewhere.)
-    """
-    # We only filter if event datetime is parseable; otherwise keep.
-    def parse_iso(x: str) -> Optional[datetime]:
-        try:
-            if x.endswith("Z"):
-                return datetime.fromisoformat(x.replace("Z", "+00:00"))
-            return datetime.fromisoformat(x)
-        except Exception:
-            return None
-
-    now = datetime.now(timezone.utc)
-
-    if report == "1":
-        # prev day 22:00 CET -> today 15:30 CET is business logic in your “biblia”,
-        # but we use UTC-only here; leave filtering minimal (avoid false negatives).
-        # Keep last 48h.
-        start = now.replace(hour=0, minute=0, second=0, microsecond=0)  # today 00:00 UTC
-        start = start.replace(day=start.day - 1)  # yesterday 00:00 UTC
-        end = now
-    elif report == "2":
-        start = now.replace(day=now.day - 2)  # rough
-        end = now.replace(day=now.day - 1)
-    elif report == "3":
-        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        end = now
-    else:
-        return [e for e in events]
-
-    out = []
-    for e in events:
-        d = parse_iso(e.datetime)
-        if not d:
-            out.append(e)
-            continue
-        if start <= d <= end:
-            out.append(e)
+def _extract_tds(row_html: str) -> List[str]:
+    tds = re.findall(r"(?is)<td[^>]*>(.*?)</td>", row_html)
+    out: List[str] = []
+    for td in tds:
+        td = re.sub(r"(?is)<.*?>", " ", td)
+        td = _unescape_basic(td)
+        out.append(_strip(td))
     return out
 
 
-def main() -> int:
+def parse_marketbeat_like(html: str, tag_note: str = "") -> List[Dict[str, Any]]:
+    events: List[Dict[str, Any]] = []
+    for row in _parse_table_rows(html):
+        tds = _extract_tds(row)
+        if len(tds) < 5:
+            continue
+
+        ticker = ""
+        for cell in tds[:6]:
+            if re.fullmatch(r"[A-Z]{1,6}(\.[A-Z]{1,3})?", cell or ""):
+                ticker = cell
+                break
+
+        date = tds[0] if tds else ""
+        firm = tds[3] if len(tds) > 3 else ""
+        action = tds[4] if len(tds) > 4 else ""
+        fr = tds[5] if len(tds) > 5 else ""
+        tr = tds[6] if len(tds) > 6 else ""
+        pt = tds[7] if len(tds) > 7 else ""
+        notes = tds[8] if len(tds) > 8 else ""
+
+        url = _extract_href(row)
+
+        if not (ticker or firm or action):
+            continue
+
+        if tag_note:
+            notes = _strip(f"{notes} ({tag_note})")
+
+        events.append(
+            {
+                "ticker": (ticker or "").upper(),
+                "date": date,
+                "firm": firm,
+                "action": action,
+                "from_rating": fr,
+                "to_rating": tr,
+                "price_target": pt,
+                "notes": notes,
+                "url": url,
+                "source": "MarketBeat",
+            }
+        )
+    return events
+
+
+def parse_marketwatch_updown(html: str) -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    text = re.sub(r"(?is)<script.*?</script>", " ", html)
+    text = re.sub(r"(?is)<style.*?</style>", " ", text)
+    text = re.sub(r"(?is)<.*?>", " ", text)
+    text = _strip(_unescape_basic(text))
+    for m in re.finditer(
+        r"([A-Z]{1,5}).{0,40}(upgraded|downgraded|initiated|maintained).{0,80}by\s+([A-Z][A-Za-z&\.\- ]{2,40})",
+        text,
+        flags=re.I,
+    ):
+        ticker = m.group(1).upper()
+        action = m.group(2).capitalize()
+        firm = _strip(m.group(3))
+        items.append(
+            {
+                "ticker": ticker,
+                "date": "",
+                "firm": firm,
+                "action": action,
+                "from_rating": "",
+                "to_rating": "",
+                "price_target": "",
+                "notes": "MarketWatch U/D (best-effort parse)",
+                "url": "https://www.marketwatch.com/tools/upgrades-downgrades",
+                "source": "MarketWatch",
+            }
+        )
+        if len(items) >= 50:
+            break
+    return items
+
+
+def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--report", default=os.environ.get("REPORT", "1"))
-    ap.add_argument("--pages", type=int, default=int(os.environ.get("ANALYST_PAGES", "2")))
-    ap.add_argument("--analyst-out", default=None)
-    ap.add_argument("--catalysts-out", default=None)
+    ap.add_argument("--report", default="1", help="1|2|3 (csak fájlnevekhez/health-hez)")
+    ap.add_argument("--analyst-out", default="reports/analyst_1.json")
+    ap.add_argument("--catalysts-out", default="reports/catalysts_1.json")
+    ap.add_argument("--health-out", default="reports/health_analyst_1.json")
+    ap.add_argument("--pages", type=int, default=2, help="MarketBeat lapozás (page=1..N)")
     args = ap.parse_args()
 
-    report = str(args.report).strip()
-    analyst_out = Path(args.analyst_out or f"reports/analyst_{report}.json")
-    catalysts_out = Path(args.catalysts_out or f"reports/catalysts_{report}.json")
+    report = str(args.report).strip() or "1"
+    pages = max(1, int(args.pages))
 
-    meta = {
-        "generatedAt": now_iso(),
-        "report": report,
-        "sources": {},
-    }
+    sources_health: Dict[str, Any] = {}
+    analyst_events: List[Dict[str, Any]] = []
+    catalysts: List[Dict[str, Any]] = []
 
-    # Analyst = ratings + PT
-    analyst_events: List[Event] = []
-    ev1, st1 = build_marketbeat_analyst(pages=args.pages)
-    meta["sources"]["MarketBeat Analyst"] = asdict(st1)
-    analyst_events.extend(ev1)
-
-    ev2, st2 = build_marketbeat_price_targets(pages=args.pages)
-    meta["sources"]["MarketBeat PT"] = asdict(st2)
-    analyst_events.extend(ev2)
-
-    # Catalyst = initiations
-    catalyst_events: List[Event] = []
-    ev3, st3 = build_marketbeat_initiations(pages=args.pages)
-    meta["sources"]["MarketBeat Initiations"] = asdict(st3)
-    catalyst_events.extend(ev3)
-
-    # Filter windows (lightweight)
-    analyst_events = filter_time_window(analyst_events, report)
-    catalyst_events = filter_time_window(catalyst_events, report)
-
-    # Dedup by (ticker, action, firm, date bucket)
-    def dedup(items: List[Event]) -> List[Event]:
-        seen = set()
-        out: List[Event] = []
-        for e in items:
-            key = (e.ticker, e.action.lower(), e.firm.lower(), e.datetime[:10])
-            if key in seen:
+    def pull_mb(name: str, base_url: str, tag_note: str):
+        nonlocal analyst_events
+        total = 0
+        errs: List[str] = []
+        meta_all: List[Dict[str, Any]] = []
+        for p in range(1, pages + 1):
+            url = jina(base_url + str(p))
+            html, meta = fetch_text(url)
+            meta_all.append(meta)
+            if not html:
+                if meta.get("error"):
+                    errs.append(meta["error"])
                 continue
-            seen.add(key)
-            out.append(e)
-        return out
+            try:
+                evs = parse_marketbeat_like(html, tag_note=tag_note)
+                total += len(evs)
+                analyst_events.extend(evs)
+            except Exception as e:
+                errs.append(f"{type(e).__name__}: {e}")
+        sources_health[name] = {"ok": total > 0, "count": total, "errors": errs, "fetch": meta_all[:5]}
 
-    analyst_events = dedup(analyst_events)
-    catalyst_events = dedup(catalyst_events)
+    pull_mb("MarketBeat Ratings", "https://www.marketbeat.com/ratings/usa/?page=", "ratings")
+    pull_mb("MarketBeat PriceTargets", "https://www.marketbeat.com/ratings/price-target/?page=", "price-target")
+    pull_mb("MarketBeat Initiations", "https://www.marketbeat.com/ratings/initiations/?page=", "initiation/coverage")
 
-    # Write outputs (keep old structure: plain list) + sidecar meta to stderr
-    safe_write_json(analyst_out, [e.to_dict() for e in analyst_events])
-    safe_write_json(catalysts_out, [e.to_dict() for e in catalyst_events])
+    mw_url = jina("https://www.marketwatch.com/tools/upgrades-downgrades")
+    mw_html, mw_meta = fetch_text(mw_url)
+    mw_count = 0
+    mw_errs: List[str] = []
+    if mw_html:
+        try:
+            mw_items = parse_marketwatch_updown(mw_html)
+            mw_count = len(mw_items)
+            analyst_events.extend(mw_items)
+        except Exception as e:
+            mw_errs.append(f"{type(e).__name__}: {e}")
+    else:
+        if mw_meta.get("error"):
+            mw_errs.append(mw_meta["error"])
 
-    debug("[analyst_catalyst_builder] coverage/meta: " + json.dumps(meta, ensure_ascii=False))
-    debug(f"[analyst_catalyst_builder] wrote: {analyst_out} ({len(analyst_events)})")
-    debug(f"[analyst_catalyst_builder] wrote: {catalysts_out} ({len(catalyst_events)})")
+    sources_health["MarketWatch Up/Dn"] = {"ok": mw_count > 0, "count": mw_count, "errors": mw_errs, "fetch": [mw_meta]}
 
-    return 0
+    def k(ev: Dict[str, Any]) -> Tuple[str, str, str, str, str]:
+        return (
+            (ev.get("ticker") or "").upper(),
+            _strip(ev.get("firm") or ""),
+            _strip(ev.get("action") or ""),
+            _strip(ev.get("date") or ""),
+            _strip(ev.get("price_target") or ""),
+        )
+
+    uniq: Dict[Tuple[str, str, str, str, str], Dict[str, Any]] = {}
+    for ev in analyst_events:
+        kk = k(ev)
+        if kk not in uniq:
+            uniq[kk] = ev
+    analyst_events = list(uniq.values())
+
+    def dump(path: str, obj: Any) -> None:
+        from pathlib import Path
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    dump(args.analyst_out, analyst_events)
+    dump(args.catalysts_out, catalysts)
+
+    health = {
+        "ok": True,
+        "type": "health",
+        "report": report,
+        "generatedAt": datetime.now(timezone.utc).isoformat(),
+        "analystCount": len(analyst_events),
+        "catalystCount": len(catalysts),
+        "sources": sources_health,
+    }
+    dump(args.health_out, health)
+
+    print(f"[analyst_catalyst_builder] report={report} analyst={len(analyst_events)} catalysts={len(catalysts)}")
+    for name, v in sources_health.items():
+        print(f"  - {name}: ok={v.get('ok')} count={v.get('count')}")
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()
