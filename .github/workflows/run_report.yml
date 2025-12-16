@@ -72,7 +72,7 @@ jobs:
       - name: Fetch macro news (Yahoo/CNBC/Bloomberg)
         shell: pwsh
         run: |
-          $report = "${{ steps.vars.outputs.report }}"
+          $report = "${{ inputs.report }}"
           if (-not $report) { $report = "1" }
 
           $macroMode = "${{ steps.vars.outputs.macro }}"
@@ -117,7 +117,7 @@ jobs:
       - name: Build raw analyst & catalyst events (#1/#2/#3)
         shell: pwsh
         run: |
-          $report = "${{ steps.vars.outputs.report }}"
+          $report = "${{ inputs.report }}"
           if (-not $report) { $report = "1" }
 
           if (-not (Test-Path "scripts\crawler_analyst_catalyst.py")) {
@@ -130,7 +130,7 @@ jobs:
       - name: Build analyst & catalyst JSON (events_fetcher) (#1/#2/#3)
         shell: pwsh
         run: |
-          $report = "${{ steps.vars.outputs.report }}"
+          $report = "${{ inputs.report }}"
           if (-not $report) { $report = "1" }
 
           if (-not (Test-Path "scripts\events_fetcher.py")) {
@@ -148,7 +148,7 @@ jobs:
           [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
           $env:PYTHONIOENCODING = "utf-8"
 
-          $report = "${{ steps.vars.outputs.report }}"
+          $report = "${{ inputs.report }}"
           if (-not $report) { $report = "1" }
 
           $csv    = "reports\master.csv"
@@ -177,27 +177,39 @@ jobs:
           [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
           $env:PYTHONIOENCODING = "utf-8"
 
-          $report = "${{ steps.vars.outputs.report }}"
+          $report = "${{ inputs.report }}"
           if (-not $report) { $report = "1" }
 
-          
-# Analyst/Catalyst (Python builder – Apps Script helyett, 401/403 blokkolás miatt)
-          $report = "${{ steps.vars.outputs.report }}"
-          if (-not $report) { $report = "1" }
+          # Analyst / catalyst feed URL-k report szerint
+          if ($report -eq "1") {
+            $analystUrl  = "${{ env.ANALYST_FEED_URL_1 }}"
+            $catalystUrl = "${{ env.CATALYST_FEED_URL_1 }}"
+          }
+          elseif ($report -eq "2") {
+            $analystUrl  = "${{ env.ANALYST_FEED_URL_2 }}"
+            $catalystUrl = "${{ env.CATALYST_FEED_URL_2 }}"
+          }
+          elseif ($report -eq "3") {
+            $analystUrl  = "${{ env.ANALYST_FEED_URL_3 }}"
+            $catalystUrl = "${{ env.CATALYST_FEED_URL_3 }}"
+          }
+          else {
+            Write-Host "Ismeretlen report szám: $report"
+            exit 1
+          }
 
           $analystOut   = "reports\analyst_${report}.json"
           $catalystsOut = "reports\catalysts_${report}.json"
-          $healthOut    = "reports\health_analyst_${report}.json"
 
-          if (Test-Path "scripts\analyst_catalyst_builder.py") {
-            python -X utf8 "scripts\analyst_catalyst_builder.py" `
-              --report "$report" `
+          if (Test-Path "scripts\analyst_feed_parser.py") {
+            python -X utf8 "scripts\analyst_feed_parser.py" `
+              --analyst-url "$analystUrl" `
+              --catalyst-url "$catalystUrl" `
               --analyst-out "$analystOut" `
-              --catalysts-out "$catalystsOut" `
-              --health-out "$healthOut"
+              --catalysts-out "$catalystsOut"
           }
           else {
-            Write-Host "analyst_catalyst_builder.py nem található – analyst/catalyst blokkok nélkül fut tovább."
+            Write-Host "analyst_feed_parser.py nem található – analyst/catalyst blokkok nélkül fut tovább."
           }
 
           # High-conv jelöltek buildelése (scripts\highconv_builder.py)
@@ -268,7 +280,7 @@ jobs:
 
       - name: Validate report output
         shell: pwsh
-        run: python scripts/validate_run.py --report "${{ steps.vars.outputs.report }}"
+        run: python scripts/validate_run.py --report "${{ inputs.report }}"
 
       - name: Upload artifacts
         if: always()
