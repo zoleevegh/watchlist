@@ -198,27 +198,20 @@ jobs:
             exit 1
           }
 
-          # Analyst/Catalyst (Python builder – Apps Script helyett, mert 401/403 blokkolás)
-$analystOut   = "reports\analyst_${report}.json"
-$catalystsOut = "reports\catalysts_${report}.json"
+          $analystOut   = "reports\analyst_${report}.json"
+          $catalystsOut = "reports\catalysts_${report}.json"
 
-if (Test-Path "scripts\analyst_catalyst_builder.py") {
-  python -X utf8 "scripts\analyst_catalyst_builder.py" `
-    --report $report `
-    --analyst-out "$analystOut" `
-    --catalysts-out "$catalystsOut"
-}
-elseif (Test-Path "scripts\analyst_feed_parser.py") {
-  # Legacy fallback (Apps Script feed) – ha valamiért mégis kell
-  python -X utf8 "scripts\analyst_feed_parser.py" `
-    --analyst-url "$analystUrl" `
-    --catalyst-url "$catalystUrl" `
-    --analyst-out "$analystOut" `
-    --catalysts-out "$catalystsOut"
-}
-else {
-  Write-Host "Analyst/catalyst builder nem található – blokkok nélkül fut tovább."
-}
+          if (Test-Path "scripts\analyst_feed_parser.py") {
+            python -X utf8 "scripts\analyst_feed_parser.py" `
+              --analyst-url "$analystUrl" `
+              --catalyst-url "$catalystUrl" `
+              --analyst-out "$analystOut" `
+              --catalysts-out "$catalystsOut"
+          }
+          else {
+            Write-Host "analyst_feed_parser.py nem található – analyst/catalyst blokkok nélkül fut tovább."
+          }
+
           # High-conv jelöltek buildelése (scripts\highconv_builder.py)
           if (Test-Path "scripts\highconv_builder.py") {
             python -X utf8 "scripts\highconv_builder.py"
@@ -259,6 +252,32 @@ else {
               Write-Host "postprocess_report.py nem található – nyers #1-es riport marad."
             }
           }
+      - name: Build analyst & catalyst feed (Python)
+        shell: pwsh
+        run: |
+          $report = "${{ inputs.report }}"
+          if ([string]::IsNullOrWhiteSpace($report)) { $report = "1" }
+
+          $analystOut   = "reports/analyst_${report}.json"
+          $catalystsOut = "reports/catalysts_${report}.json"
+
+          if (Test-Path "scripts/analyst_catalyst_builder.py") {
+            python -X utf8 "scripts/analyst_catalyst_builder.py" `
+              --report $report `
+              --analyst-out "$analystOut" `
+              --catalysts-out "$catalystsOut"
+          }
+          elseif (Test-Path "scripts/analyst_feed_parser.py") {
+            python -X utf8 "scripts/analyst_feed_parser.py" `
+              --analyst-url "$analystUrl" `
+              --catalyst-url "$catalystUrl" `
+              --analyst-out "$analystOut" `
+              --catalysts-out "$catalystsOut"
+          }
+          else {
+            Write-Host "Analyst/catalyst builder nem található – blokkok nélkül fut tovább."
+          }
+
       - name: Validate report output
         shell: pwsh
         run: python scripts/validate_run.py --report "${{ steps.vars.outputs.report }}"
