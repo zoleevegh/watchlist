@@ -1,5 +1,5 @@
 # Részvényjelentés Automata – BIBLIA leírás  
-**Verzió:** v3.6.0  
+**Verzió:** v3.6.1  
 
 Ez a dokumentum írja le a teljes #1 / #2 / #3 riport-pipeline architektúráját, a
 fájlszerkezetet, a fő scripteket és a BIBLIA szerinti logikát.
@@ -427,3 +427,6 @@ scripts/
 
 ---
 
+
+
+- scripts/analyst_catalyst_builder.py – MarketBeat/MarketWatch analyst+catalyst builder (jina-md parser)
