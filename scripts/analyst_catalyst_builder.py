@@ -1,22 +1,21 @@
 #!/usr/bin/env python3
 """
 analyst_catalyst_builder.py
-Verzió: v1.0.1-jina-md-parser
+Verzió: v1.0.2-jina-md-date-urlfix
 
-Miért ez a verzió:
-- A r.jina.ai proxy NEM nyers HTML-t ad vissza, hanem "Markdown Content" plain-textet.
-- A korábbi v1.0.0 HTML (<tr>/<td>) parser ezért 0 eseményt talált úgy is, hogy a fetch 200 OK volt.
+Fixek v1.0.1-hez képest:
+- Date parse: a MarketBeat r.jina.ai "Markdown Content" chunkból kinyeri a dátumot (pl. "December 16, 2025")
+  és ISO formára teszi: YYYY-MM-DD.
+- URL fix: nem duplázza a domain-t ("https://www.marketbeat.comhttps://...").
+- Stabilabb split: több entry-t nem mos össze; chunk-okon belül "Details" linket is normalizálja.
+- HEALTH JSON megmarad.
 
-Mit tud ez:
-- MarketBeat Ratings / PriceTargets / Initiations oldalak feldolgozása r.jina.ai plain-textből.
-- Firm név kinyerése a markdown image alt textből (pl. "Barclays PLC logo").
-- Action kinyerése ("Upgraded", "Downgraded", "Initiated", "Target Raised/Lowered/Set", "Reiterated", "Maintained").
-- Rating change kinyerése, ha van (pl. "Equal Weight ➝ Overweight").
-- PT kinyerése, ha van ($XX.XX vagy "$XX.XX ➝ $YY.YY" jelleg).
-- HEALTH JSON: minden forrás ok/count/hibák.
+Források:
+- MarketBeat: Ratings / PriceTargets / Initiations (r.jina.ai proxy, plain-text)
+- MarketWatch: upgrades/downgrades (best-effort, ha átmegy)
 
 Megjegyzés:
-- Best-effort parser. Ha MarketBeat módosítja a layoutot, a health megmutatja, miért 0.
+- Best-effort parser. Ha 0 találat, a health megmutatja miért.
 """
 
 from __future__ import annotations
@@ -29,7 +28,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
-__version__ = "1.0.1-jina-md-parser"
+__version__ = "1.0.2-jina-md-date-urlfix"
 
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123 Safari/537.36"
 
@@ -93,39 +92,73 @@ ACTION_WORDS = [
 ]
 ACTION_RE = re.compile(r"(?i)\b(" + "|".join(re.escape(a) for a in ACTION_WORDS) + r")\b")
 
-# Firm is often in the alt text: "Image N: Barclays PLC logo"
 FIRM_RE = re.compile(r"Image\s+\d+:\s+(.+?)\s+logo", re.IGNORECASE)
 
-# Extract a ticker+company segment: ") A Agilent Technologies](https://www.marketbeat.com/stocks/..."
 TICKER_COMPANY_RE = re.compile(
     r"\)\s*([A-Z]{1,6}(?:\.[A-Z]{1,3})?)\s+([A-Za-z0-9][^\]]{1,80}?)\]\(https://www\.marketbeat\.com/stocks/",
     re.IGNORECASE,
 )
 
-# Rating change "X ➝ Y"
 RATING_ARROW_RE = re.compile(r"([A-Za-z][A-Za-z \-/]{1,40})\s+➝\s+([A-Za-z][A-Za-z \-/]{1,40})")
-
-# PT arrow "$XX.XX ➝ $YY.YY"
 PT_ARROW_RE = re.compile(r"(\$[0-9][0-9,]*\.?[0-9]{0,2})\s+➝\s+(\$[0-9][0-9,]*\.?[0-9]{0,2})")
-
-# Any $ price token
 USD_RE = re.compile(r"\$[0-9][0-9,]*\.?[0-9]{0,2}")
+
+DATE_RE = re.compile(
+    r"\b(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2}),\s+(\d{4})\b",
+    re.IGNORECASE,
+)
+
+DETAILS_RE = re.compile(r"https://www\.marketbeat\.com/all-access/ratings-screener/details/\d+/")
+
+
+def to_iso_date(m: re.Match) -> str:
+    month_name = m.group(1).lower()
+    day = int(m.group(2))
+    year = int(m.group(3))
+    months = {
+        "january": 1,
+        "february": 2,
+        "march": 3,
+        "april": 4,
+        "may": 5,
+        "june": 6,
+        "july": 7,
+        "august": 8,
+        "september": 9,
+        "october": 10,
+        "november": 11,
+        "december": 12,
+    }
+    month = months.get(month_name, 1)
+    return f"{year:04d}-{month:02d}-{day:02d}"
+
+
+def normalize_url(u: str) -> str:
+    u = (u or "").strip()
+    if not u:
+        return ""
+    # kill accidental double prefix
+    u = u.replace("https://www.marketbeat.comhttps://www.marketbeat.com", "https://www.marketbeat.com")
+    if u.startswith("(") and u.endswith(")"):
+        u = u[1:-1]
+    return u
 
 
 def split_entries(md: str) -> List[str]:
     """
-    r.jina.ai output lumps many entries into long lines.
-    We split on stock-logo thumbnails, which appear at each entry start.
+    Split on each stock entry. In jina markdown, each entry reliably contains:
+    - "stock logo](" thumbnail
+    - ticker/company link to /stocks/
     """
     if not md:
         return []
-    # keep only "Markdown Content" area (but jina already returns it)
-    # Split by occurrences of "stock logo](" which reliably appears per entry.
-    parts = re.split(r"\bstock logo\]\(", md, flags=re.IGNORECASE)
+    # Normalize to reduce weird line breaks
+    md = md.replace("\r\n", "\n")
+    # Split on "stock logo](" occurrences (entry marker)
+    parts = re.split(r"(?i)\bstock logo\]\(", md)
     if len(parts) <= 1:
         return [md]
-    # Re-attach the delimiter text to each chunk except first
-    entries = []
+    entries: List[str] = []
     for i, p in enumerate(parts):
         if i == 0:
             continue
@@ -136,8 +169,8 @@ def split_entries(md: str) -> List[str]:
 def parse_marketbeat_md(md: str, source_tag: str) -> List[Dict[str, Any]]:
     events: List[Dict[str, Any]] = []
     for chunk in split_entries(md):
-        # Limit chunk size to keep regex fast
-        chunk = chunk[:4000]
+        chunk = chunk[:6000]
+
         m_tc = TICKER_COMPANY_RE.search(chunk)
         if not m_tc:
             continue
@@ -149,6 +182,12 @@ def parse_marketbeat_md(md: str, source_tag: str) -> List[Dict[str, Any]]:
 
         m_firm = FIRM_RE.search(chunk)
         firm = _strip(m_firm.group(1)) if m_firm else ""
+
+        # Date (best-effort)
+        iso_date = ""
+        m_date = DATE_RE.search(chunk)
+        if m_date:
+            iso_date = to_iso_date(m_date)
 
         fr = ""
         tr = ""
@@ -162,22 +201,16 @@ def parse_marketbeat_md(md: str, source_tag: str) -> List[Dict[str, Any]]:
         if m_pt:
             pt = _strip(f"{m_pt.group(1)} -> {m_pt.group(2)}")
         else:
-            # If action is target related, pick last $ token as "target"
             if "Target" in action:
                 usd = USD_RE.findall(chunk)
                 if usd:
-                    # often: current price then target; take last
                     pt = usd[-1]
 
-        # Details link (optional)
         url = ""
-        m_url = re.search(r'\(https://www\.marketbeat\.com/all-access/ratings-screener/details/\d+/', chunk)
-        if m_url:
-            url = "https://www.marketbeat.com" + m_url.group(0).strip("(")
+        m_det = DETAILS_RE.search(chunk)
+        if m_det:
+            url = normalize_url(m_det.group(0))
 
-        # Minimal sanity: must have ticker + some action/firm/ratings/pt
-        if not ticker:
-            continue
         if not (action or firm or fr or tr or pt):
             continue
 
@@ -185,7 +218,7 @@ def parse_marketbeat_md(md: str, source_tag: str) -> List[Dict[str, Any]]:
             {
                 "ticker": ticker,
                 "company": company,
-                "date": "",
+                "date": iso_date,  # YYYY-MM-DD (üres, ha nem volt benne)
                 "firm": firm,
                 "action": action.replace(" by", "").strip(),
                 "from_rating": fr,
@@ -200,7 +233,6 @@ def parse_marketbeat_md(md: str, source_tag: str) -> List[Dict[str, Any]]:
 
 
 def parse_marketwatch_md(md: str) -> List[Dict[str, Any]]:
-    # MarketWatch via jina gyakran 451, de ha átmegy, best-effort parse
     if not md:
         return []
     text = _strip(md)
@@ -283,7 +315,6 @@ def main() -> None:
     pull_mb("MarketBeat PriceTargets", "https://www.marketbeat.com/ratings/price-target/?page=", "price-target")
     pull_mb("MarketBeat Initiations", "https://www.marketbeat.com/ratings/initiations/?page=", "initiations")
 
-    # MarketWatch (optional)
     mw_url = jina("https://www.marketwatch.com/tools/upgrades-downgrades")
     mw_md, mw_meta = fetch_text(mw_url)
     mw_count = 0
