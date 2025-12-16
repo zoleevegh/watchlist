@@ -165,3 +165,22 @@ scripts/
   validate_run.py        # CI guard: a futás csak akkor zöld, ha a report szerkezetileg valid
 ```
 
+
+
+⚠️ #1 JELENTÉS – IDŐABLAK PONTOSÍTÁS (KANONIKUS)
+
+- AH/PM idősáv (22:00–02:00, 10:00–15:30) kizárólag az ÁRFOLYAMMOZGÁSOKRA vonatkozik.
+- Hírek, elemzői lépések, makró, katalizátorok időablaka:
+  → előző napi piaczárás (22:00 CEST)
+  → a lekérdezés pillanatáig
+  → de legkésőbb az aktuális napi nyitásig.
+
+Ez biztosítja, hogy a nyitás előtti releváns információk ne essenek ki.
+
+
+scripts/
+├── analyst_feed_parser.py
+├── analyst_block_builder.py
+├── analyst_catalyst_builder.py   # NEW – MarketBeat / MarketWatch analyst & catalyst parser (jina-md)
+├── highconv_block_builder.py
+├── highconv_builder.py
