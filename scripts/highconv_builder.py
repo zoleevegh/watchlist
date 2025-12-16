@@ -51,7 +51,7 @@ import random
 
 import requests
 
-VERSION = "v1.0.2-rate-limit-safe-indentfix"
+VERSION = "v1.0.3-rate-limit-safe-yahoochart-fallback"
 
 # Yahoo rate-limit / retry config
 YAHOO_BATCH_SIZE = 50
@@ -345,6 +345,58 @@ def _sleep_backoff(attempt: int) -> None:
     time.sleep(min(30.0, base + jitter))
 
 
+def fetch_yahoo_chart_snapshot(ticker: str) -> Dict[str, Any]:
+    """
+    Yahoo Finance chart fallback – akkor használjuk, ha a quote endpoint (v7/finance/quote) 401/403/429 miatt
+    nem ad adatot. A cél minimálisan ez:
+      - regularMarketPrice (vagy utolsó close)
+      - fiftyTwoWeekHigh (1y napi close max)
+    """
+    t = (ticker or "").upper().strip()
+    if not t:
+        return {}
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{t}?range=1y&interval=1d&includePrePost=false"
+    try:
+        resp = requests.get(url, headers=YAHOO_HEADERS, timeout=YAHOO_TIMEOUT)
+        
+                # Ha a quote endpoint blokkol (401/403) vagy rate-limit (429), próbáljuk chart fallback-kal tickerenként.
+                if resp.status_code in (401, 403, 429):
+                    for t in batch:
+                        if t not in result:
+                            q = fetch_yahoo_chart_snapshot(t)
+                            if q:
+                                result[t] = q
+                    last_err = f"HTTP {resp.status_code}"
+                    break
+# Ha ez is blokkolt, hagyjuk üresen
+        if resp.status_code >= 400:
+            return {}
+        data = resp.json()
+        res = (((data.get("chart") or {}).get("result") or [])[:1] or [None])[0] or {}
+        meta = res.get("meta") or {}
+        price = meta.get("regularMarketPrice") or meta.get("previousClose")
+        closes = (((res.get("indicators") or {}).get("quote") or [])[:1] or [None])[0] or {}
+        close_list = closes.get("close") or []
+        try:
+            max_close = max([c for c in close_list if isinstance(c, (int, float))])
+        except Exception:
+            max_close = None
+        # Biztonság: ha nincs meta-price, vegyük az utolsó valid close-t
+        if price is None:
+            try:
+                price = [c for c in close_list if isinstance(c, (int, float))][-1]
+            except Exception:
+                price = None
+        out = {"symbol": t}
+        if price is not None:
+            out["regularMarketPrice"] = price
+        if max_close is not None:
+            out["fiftyTwoWeekHigh"] = max_close
+        return out
+    except Exception:
+        return {}
+
+
 def fetch_yahoo_snapshot(tickers: Iterable[str]) -> Dict[str, Dict[str, Any]]:
     """
     Yahoo Finance quote snapshot – több tickerre egyszerre.
@@ -395,6 +447,14 @@ def fetch_yahoo_snapshot(tickers: Iterable[str]) -> Dict[str, Dict[str, Any]]:
                     symbol = str(q.get("symbol") or "").upper()
                     if symbol:
                         result[symbol] = q
+
+                # Ha a batch-ből hiányzik ticker, próbáljuk chart fallback-kal pótolni
+                for t in batch:
+                    if t not in result:
+                        q2 = fetch_yahoo_chart_snapshot(t)
+                        if q2:
+                            result[t] = q2
+
                 last_err = None
                 break
             except Exception as e:
@@ -573,5 +633,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
     main()
