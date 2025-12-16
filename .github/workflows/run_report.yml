@@ -32,9 +32,9 @@ jobs:
       CATALYST_FEED_URL_3: "https://script.google.com/macros/s/AKfycbzFY0L5KPCJaPc8QugZWaibJwQUOTs_fs1gR1gTHBSlzsyhr2THMIm0dzeslwzCm3AzJw/exec?type=catalyst&report=3"
 
       # Makró / FED / piaci hangulat feed (Apps Script webapp – külön MACRO projekt)
-      MACRO_FEED_URL_1: "https://script.google.com/macros/s/AKfycbwNP9FOflY4nAYt1o4U5C0ozg3IrlyJM8KGXpFLzCGOdBAOAh6zeAOum5iQswZufxrB/exec?type=macro&report=1"
-      MACRO_FEED_URL_2: "https://script.google.com/macros/s/AKfycbwNP9FOflY4nAYt1o4U5C0ozg3IrlyJM8KGXpFLzCGOdBAOAh6zeAOum5iQswZufxrB/exec?type=macro&report=2"
-      MACRO_FEED_URL_3: "https://script.google.com/macros/s/AKfycbwNP9FOflY4nAYt1o4U5C0ozg3IrlyJM8KGXpFLzCGOdBAOAh6zeAOum5iQswZufxrB/exec?type=macro&report=3"
+      MACRO_FEED_URL_1: "https://script.google.com/macros/s/AKfycbwfUmWTywq1joSUzTuc584QD_CHHLpolKDCf7Cgbjrz1rCWwwxyzdf2BcQ1_RRBZ-OvyA/exec?type=macro&report=1"
+      MACRO_FEED_URL_2: "https://script.google.com/macros/s/AKfycbwfUmWTywq1joSUzTuc584QD_CHHLpolKDCf7Cgbjrz1rCWwwxyzdf2BcQ1_RRBZ-OvyA/exec?type=macro&report=2"
+      MACRO_FEED_URL_3: "https://script.google.com/macros/s/AKfycbwfUmWTywq1joSUzTuc584QD_CHHLpolKDCf7Cgbjrz1rCWwwxyzdf2BcQ1_RRBZ-OvyA/exec?type=macro&report=3"
 
     steps:
       - name: Checkout
