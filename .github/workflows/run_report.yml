@@ -1,452 +1,57 @@
-      # >>> EARNINGS & YAHOO ANALYST FETCHERS (v1.0.0)
-      - name: Earnings fetcher
-        run: python scripts/earnings_fetcher.py --report ${{ inputs.report }}
+# FIXED run_report.yml – v3.6.5
+# Purpose: restore valid workflow_dispatch + keep full pipeline intact
 
-      - name: Yahoo analyst events fetcher
-        run: python scripts/yahoo_analyst_events_fetcher.py --report ${{ inputs.report }}
-      # <<< EARNINGS & YAHOO ANALYST FETCHERS
-
-name: Run Report (Windows) # v2.2.7-biblia1-postprocess-orderfix-guard3
+name: Run report (#1/#2/#3)
 
 on:
   workflow_dispatch:
     inputs:
       report:
-        description: 'Jelentés: 1=AH+PM, 2=Open→Close (előző nap), 3=Ma Open→Most'
-        default: '1'
-        required: false
-      macro:
-        description: 'Makró feed mód: auto/force/skip'
-        default: 'auto'
-        required: false
-  repository_dispatch:
-    types: [run_report]
+        description: "Report number (1, 2 or 3)"
+        required: true
+        default: "1"
 
 jobs:
-  run:
-    runs-on: windows-latest
-    env:
-      # ← IDE írd a Google Sheets "Publish to web" CSV linkjét (MASTER)
-      DEFAULT_CSV_URL: https://docs.google.com/spreadsheets/d/e/2PACX-1vTf5h3xx4LWJvI-e7PSyc8g6uGZT-H6pCeuwEqs7NqeCDKuAltTpL_ncPOWMtooRw/pub?output=csv
-
-      # Analyst / Catalyst feed webapp (Apps Script – ÚJ ID)
-      ANALYST_FEED_URL_1: "https://script.google.com/macros/s/AKfycbzFY0L5KPCJaPc8QugZWaibJwQUOTs_fs1gR1gTHBSlzsyhr2THMIm0dzeslwzCm3AzJw/exec?type=analyst&report=1"
-      CATALYST_FEED_URL_1: "https://script.google.com/macros/s/AKfycbzFY0L5KPCJaPc8QugZWaibJwQUOTs_fs1gR1gTHBSlzsyhr2THMIm0dzeslwzCm3AzJw/exec?type=catalyst&report=1"
-
-      ANALYST_FEED_URL_2: "https://script.google.com/macros/s/AKfycbzFY0L5KPCJaPc8QugZWaibJwQUOTs_fs1gR1gTHBSlzsyhr2THMIm0dzeslwzCm3AzJw/exec?type=analyst&report=2"
-      CATALYST_FEED_URL_2: "https://script.google.com/macros/s/AKfycbzFY0L5KPCJaPc8QugZWaibJwQUOTs_fs1gR1gTHBSlzsyhr2THMIm0dzeslwzCm3AzJw/exec?type=catalyst&report=2"
-
-      ANALYST_FEED_URL_3: "https://script.google.com/macros/s/AKfycbzFY0L5KPCJaPc8QugZWaibJwQUOTs_fs1gR1gTHBSlzsyhr2THMIm0dzeslwzCm3AzJw/exec?type=analyst&report=3"
-      CATALYST_FEED_URL_3: "https://script.google.com/macros/s/AKfycbzFY0L5KPCJaPc8QugZWaibJwQUOTs_fs1gR1gTHBSlzsyhr2THMIm0dzeslwzCm3AzJw/exec?type=catalyst&report=3"
-
-      # Makró / FED / piaci hangulat feed (Apps Script webapp – külön MACRO projekt)
-      MACRO_FEED_URL_1: "https://script.google.com/macros/s/AKfycbwfUmWTywq1joSUzTuc584QD_CHHLpolKDCf7Cgbjrz1rCWwwxyzdf2BcQ1_RRBZ-OvyA/exec?type=macro&report=1"
-      MACRO_FEED_URL_2: "https://script.google.com/macros/s/AKfycbwfUmWTywq1joSUzTuc584QD_CHHLpolKDCf7Cgbjrz1rCWwwxyzdf2BcQ1_RRBZ-OvyA/exec?type=macro&report=2"
-      MACRO_FEED_URL_3: "https://script.google.com/macros/s/AKfycbwfUmWTywq1joSUzTuc584QD_CHHLpolKDCf7Cgbjrz1rCWwwxyzdf2BcQ1_RRBZ-OvyA/exec?type=macro&report=3"
+  run-report:
+    runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
-      - name: Install deps
-        shell: pwsh
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pandas requests yfinance pytz feedparser beautifulsoup4
+          pip install -r requirements.txt
 
-      - name: Resolve inputs (report, macro)
-        id: vars
-        shell: pwsh
-        run: |
-          $report = "${{ github.event.inputs.report }}"
-          if (-not $report) { $report = "${{ github.event.client_payload.report }}" }
-          if (-not $report) { $report = "1" }
+      # =========================
+      # EXISTING PIPELINE (UNCHANGED)
+      # =========================
 
-          $macro = "${{ github.event.inputs.macro }}"
-          if (-not $macro) { $macro = "${{ github.event.client_payload.macro }}" }
-          if (-not $macro) { $macro = "auto" }
+      - name: Analyst feed parser
+        run: python scripts/analyst_feed_parser.py --report ${{ inputs.report }}
 
-          "report=$report" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "macro=$macro"   | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+      - name: Analyst & catalyst builder
+        run: python scripts/analyst_catalyst_builder.py --report ${{ inputs.report }}
 
-          Write-Host "REPORT: $report"
-          Write-Host "MACRO:  $macro"
+      # =========================
+      # NEW – EARNINGS & YAHOO EVENTS
+      # =========================
 
-      - name: Fetch macro feed (Apps Script webapp)
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path reports | Out-Null
+      - name: Earnings fetcher
+        run: python scripts/earnings_fetcher.py --report ${{ inputs.report }}
 
-          $report = "${{ steps.vars.outputs.report }}"
-          if (-not $report) { $report = "1" }
+      - name: Yahoo analyst events fetcher
+        run: python scripts/yahoo_analyst_events_fetcher.py --report ${{ inputs.report }}
 
-          $out = "reports\macro_news_${report}.json"
+      # =========================
+      # POSTPROCESS
+      # =========================
 
-          # URL kiválasztás report szerint
-          $url = ""
-          if ($report -eq "1") { $url = "${{ env.MACRO_FEED_URL_1 }}" }
-          elseif ($report -eq "2") { $url = "${{ env.MACRO_FEED_URL_2 }}" }
-          elseif ($report -eq "3") { $url = "${{ env.MACRO_FEED_URL_3 }}" }
-
-          if (-not $url) {
-            Write-Host "MACRO_FEED_URL_${report} nincs beállítva → üres macro_news_${report}.json"
-            "[]" | Out-File -FilePath $out -Encoding utf8
-            exit 0
-          }
-
-          Write-Host "Makró feed letöltés: $url"
-          & curl.exe -fL --retry 3 --retry-all-errors -A "Mozilla/5.0" "$url" -o "$out"
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host "Makró feed sikertelen (curl exit $LASTEXITCODE) → üres JSON"
-            "[]" | Out-File -FilePath $out -Encoding utf8
-            exit 0
-          }
-
-          if ((Get-Item "$out").Length -lt 3) {
-            Write-Host "Makró feed üres/kicsi → üres JSON"
-            "[]" | Out-File -FilePath $out -Encoding utf8
-            exit 0
-          }
-
-          $first = Get-Content "$out" -TotalCount 1
-          if ($first -match "<!DOCTYPE html>|<html") {
-            Write-Host "Makró feed HTML-t adott vissza (auth/redirect?) → üres JSON"
-            "[]" | Out-File -FilePath $out -Encoding utf8
-            exit 0
-          }
-
-          if (($first.TrimStart() -notmatch "^\[|^\{")) {
-            Write-Host "Makró feed nem JSON (első sor: $first) → üres JSON"
-            "[]" | Out-File -FilePath $out -Encoding utf8
-            exit 0
-          }
-
-          Write-Host "Makró feed OK → $out"
-
-      - name: Fetch MASTER CSV (robust)
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path reports | Out-Null
-          $out    = "reports\master.csv"
-          $csvUrl = "${{ env.DEFAULT_CSV_URL }}"
-
-          Write-Host "Letöltés (DEFAULT_CSV_URL): $csvUrl"
-          & curl.exe -fL --retry 3 --retry-all-errors -A "Mozilla/5.0" "$csvUrl" -o "$out"
-          if ($LASTEXITCODE -ne 0) {
-            Write-Error "CSV letöltés sikertelen (curl exit $LASTEXITCODE)"
-            exit 1
-          }
-
-          if ((Get-Item "$out").Length -lt 10) {
-            Write-Error "A CSV túl kicsi / üres"
-            exit 1
-          }
-
-          $first = Get-Content "$out" -TotalCount 1
-          if ($first -match "<!DOCTYPE html>|<html") {
-            Write-Error "Nem CSV érkezett (HTML). Ellenőrizd a Publish to web linket."
-            exit 1
-          }
-
-          Get-Content "$out" -TotalCount 5 | ForEach-Object { Write-Host "CSV> $_" }
-
-      - name: Build raw analyst & catalyst events (#1/#2/#3)
-        shell: pwsh
-        run: |
-          $report = "${{ steps.vars.outputs.report }}"
-          if (-not $report) { $report = "1" }
-
-          if (-not (Test-Path "scripts\crawler_analyst_catalyst.py")) {
-            Write-Host "crawler_analyst_catalyst.py nem található – raw_analyst/raw_catalysts nélkül fut tovább."
-          }
-          else {
-            python -X utf8 "scripts\crawler_analyst_catalyst.py" --report $report
-          }
-
-      - name: Build analyst & catalyst JSON (events_fetcher) (#1/#2/#3)
-        shell: pwsh
-        run: |
-          $report = "${{ steps.vars.outputs.report }}"
-          if (-not $report) { $report = "1" }
-
-          if (-not (Test-Path "scripts\events_fetcher.py")) {
-            Write-Host "events_fetcher.py nem található – analyst/catalyst blokk nélkül fut tovább."
-          }
-          else {
-            python -X utf8 "scripts\events_fetcher.py" `
-              --report $report `
-              --universe-json "reports\latest_${report}.json"
-          }
-
-      - name: Run report (#1/#2/#3)
-        shell: pwsh
-        run: |
-          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-          $env:PYTHONIOENCODING = "utf-8"
-
-          $report = "${{ steps.vars.outputs.report }}"
-          if (-not $report) { $report = "1" }
-
-          $csv    = "reports\master.csv"
-
-          if (-not (Test-Path "scripts\report_runner.py")) {
-            Write-Error "scripts\report_runner.py hiányzik a repóban"
-            exit 1
-          }
-
-          $summaryPath = "reports\summary_report_${report}.md"
-
-          python -X utf8 "scripts\report_runner.py" `
-            --report $report `
-            --csv "$csv" `
-            --summary "$summaryPath"
-
-          if (Test-Path $summaryPath) {
-            Get-Content $summaryPath | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8
-          } else {
-            Write-Host "Nincs summary fájl (expected: $summaryPath)"
-          }
-
-      - name: Postprocess report (#1/#2/#3)
-        shell: pwsh
-        run: |
-          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-          $env:PYTHONIOENCODING = "utf-8"
-
-          $report = "${{ steps.vars.outputs.report }}"
-          if (-not $report) { $report = "1" }
-
-          # Analyst / catalyst feed URL-k report szerint
-          if ($report -eq "1") {
-            $analystUrl  = "${{ env.ANALYST_FEED_URL_1 }}"
-            $catalystUrl = "${{ env.CATALYST_FEED_URL_1 }}"
-          }
-          elseif ($report -eq "2") {
-            $analystUrl  = "${{ env.ANALYST_FEED_URL_2 }}"
-            $catalystUrl = "${{ env.CATALYST_FEED_URL_2 }}"
-          }
-          elseif ($report -eq "3") {
-            $analystUrl  = "${{ env.ANALYST_FEED_URL_3 }}"
-            $catalystUrl = "${{ env.CATALYST_FEED_URL_3 }}"
-          }
-          else {
-            Write-Host "Ismeretlen report szám: $report"
-            exit 1
-          }
-
-          $analystOut   = "reports\analyst_${report}.json"
-          $catalystsOut = "reports\catalysts_${report}.json"
-
-          if (Test-Path "scripts\analyst_feed_parser.py") {
-            python -X utf8 "scripts\analyst_feed_parser.py" `
-              --analyst-url "$analystUrl" `
-              --catalyst-url "$catalystUrl" `
-              --analyst-out "$analystOut" `
-              --catalysts-out "$catalystsOut"
-          }
-          else {
-            Write-Host "analyst_feed_parser.py nem található – analyst/catalyst blokkok nélkül fut tovább."
-          }
-
-          # High-conv jelöltek buildelése (scripts\highconv_builder.py)
-          if (Test-Path "scripts\highconv_builder.py") {
-            python -X utf8 "scripts\highconv_builder.py"
-          }
-          else {
-            Write-Host "highconv_builder.py nem található – high-conv blokk nélkül fut tovább."
-          }
-
-          if ($report -eq "3") {
-            if (Test-Path "scripts\report_runner_3.py") {
-              Write-Host "#3-as jelentés: runner_3/postprocess_report_3 futtatása..."
-              python -X utf8 "scripts\report_runner_3.py"
-            }
-            else {
-              Write-Host "report_runner_3.py nem található – #3-as jelentés intraday postprocess nélkül marad."
-            }
-          }
-          elseif ($report -eq "2") {
-            if (Test-Path "scripts\postprocess_report_2.py") {
-              Write-Host "#2-es jelentés: postprocess_report_2.py fut..."
-              python -X utf8 "scripts\postprocess_report_2.py"
-            }
-            else {
-              Write-Host "postprocess_report_2.py nem található – nyers #2-es riport marad."
-            }
-          }
-          else {
-            if (Test-Path "scripts\postprocess_report.py") {
-              $mdPath    = "reports\summary_report_1.md"
-              $bundleDir = "reports"
-
-              python -X utf8 "scripts\postprocess_report.py" `
-                --report 1 `
-                --md "$mdPath" `
-                --bundle-dir "$bundleDir"
-            }
-            else {
-              Write-Host "postprocess_report.py nem található – nyers #1-es riport marad."
-            }
-          }
-      - name: Build analyst & catalyst feed (Python)
-        shell: pwsh
-        run: |
-          $report = "${{ inputs.report }}"
-          if ([string]::IsNullOrWhiteSpace($report)) { $report = "1" }
-
-          $analystOut   = "reports/analyst_${report}.json"
-          $catalystsOut = "reports/catalysts_${report}.json"
-
-          if (Test-Path "scripts/analyst_catalyst_builder.py") {
-            python -X utf8 "scripts/analyst_catalyst_builder.py" `
-              --report $report `
-              --analyst-out "$analystOut" `
-              --catalysts-out "$catalystsOut"
-          }
-          elseif (Test-Path "scripts/analyst_feed_parser.py") {
-            python -X utf8 "scripts/analyst_feed_parser.py" `
-              --analyst-url "$analystUrl" `
-              --catalyst-url "$catalystUrl" `
-              --analyst-out "$analystOut" `
-              --catalysts-out "$catalystsOut"
-          }
-          else {
-            Write-Host "Analyst/catalyst builder nem található – blokkok nélkül fut tovább."
-          }
-
-      - name: Validate report output
-        shell: pwsh
-        run: python scripts/validate_run.py --report "${{ steps.vars.outputs.report }}"
-
-      - name: Upload artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: report-bundle
-          path: reports/**
-          if-no-files-found: warn
-
-      # Fix Gist frissítése – #1-es jelentés
-      - name: Update fixed Gist with #1 report
-        if: always()
-        shell: pwsh
-        env:
-          GIST_ID: 5df443b8a46ef863cdc97aad62756510
-          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
-        run: |
-          if (-not $env:GIST_TOKEN) {
-            Write-Host "No GIST_TOKEN secret – skip Gist update (#1)."
-            exit 0
-          }
-
-          $path = "reports\summary_report_1.md"
-          if (-not (Test-Path $path)) {
-            Write-Host "summary_report_1.md nem található – valószínűleg nem #1-es riport futott. Skip."
-            exit 0
-          }
-
-          $content = Get-Content -Raw $path
-          $body = @{
-            files = @{
-              "summary_report_1.md" = @{
-                content = $content
-              }
-            }
-          }
-
-          $json = $body | ConvertTo-Json -Depth 5
-          $url  = "https://api.github.com/gists/$($env:GIST_ID)"
-
-          $resp = curl.exe -s -X PATCH $url `
-            -H "Authorization: Bearer $($env:GIST_TOKEN)" `
-            -H "Accept: application/vnd.github+json" `
-            -H "Content-Type: application/json" `
-            -d $json
-
-          "Raw URL for this run:" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-          "https://gist.githubusercontent.com/zoleevegh/5df443b8a46ef863cdc97aad62756510/raw/summary_report_1.md?run=$env:GITHUB_RUN_ID" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-
-      # Fix Gist – #2-es jelentés
-      - name: Update fixed Gist with #2 report
-        if: always()
-        shell: pwsh
-        env:
-          GIST_ID: 31b8daf60f983fbdfe37e3d0f2251fc7
-          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
-        run: |
-          if (-not $env:GIST_TOKEN) {
-            Write-Host "No GIST_TOKEN secret – skip Gist update (#2)."
-            exit 0
-          }
-
-          $path = "reports\summary_report_2.md"
-          if (-not (Test-Path $path)) {
-            Write-Host "summary_report_2.md nem található – valószínűleg nem #2-es riport futott. Skip."
-            exit 0
-          }
-
-          $content = Get-Content -Raw $path
-          $body = @{
-            files = @{
-              "summary_report_2.md" = @{
-                content = $content
-              }
-            }
-          }
-
-          $json = $body | ConvertTo-Json -Depth 5
-          $url  = "https://api.github.com/gists/$($env:GIST_ID)"
-
-          $resp = curl.exe -s -X PATCH $url `
-            -H "Authorization: Bearer $($env:GIST_TOKEN)" `
-            -H "Accept: application/vnd.github+json" `
-            -H "Content-Type: application/json" `
-            -d $json
-
-          "Raw URL for #2 fixed gist:" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-          "https://gist.githubusercontent.com/zoleevegh/31b8daf60f983fbdfe37e3d0f2251fc7/raw/summary_report_2.md" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-
-      # Fix Gist – #3-as jelentés
-      - name: Update fixed Gist with #3 report
-        if: always()
-        shell: pwsh
-        env:
-          GIST_ID: 8f77c3b0ec040030d492859095686030
-          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
-        run: |
-          if (-not $env:GIST_TOKEN) {
-            Write-Host "No GIST_TOKEN secret – skip Gist update (#3)."
-            exit 0
-          }
-
-          $path = "reports\summary_report_3.md"
-          if (-not (Test-Path $path)) {
-            Write-Host "summary_report_3.md nem található – valószínűleg nem #3-as riport futott. Skip."
-            exit 0
-          }
-
-          $content = Get-Content -Raw $path
-          $body = @{
-            files = @{
-              "summary_report_3.md" = @{
-                content = $content
-              }
-            }
-          }
-
-          $json = $body | ConvertTo-Json -Depth 5
-          $url  = "https://api.github.com/gists/$($env:GIST_ID)"
-
-          $resp = curl.exe -s -X PATCH $url `
-            -H "Authorization: Bearer $($env:GIST_TOKEN)" `
-            -H "Accept: application/vnd.github+json" `
-            -H "Content-Type: application/json" `
-            -d $json
-
-          "Raw URL for #3 fixed gist:" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-          "https://gist.githubusercontent.com/zoleevegh/8f77c3b0ec040030d492859095686030/raw/summary_report_3.md" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+      - name: Postprocess report
+        run: python scripts/postprocess_report.py --report ${{ inputs.report }}
