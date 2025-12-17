@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""report_runner.py – v3.0.3-biblia-prep-yahoo-fallback-coveragefix-mw-off
+"""report_runner.py – v3.0.4-biblia-prep-yahoo-fallback-coveragefix-mw-off
 
 Megjegyzés: Ez a verzió a korábbi teljes runner logikát megtartja.
 A bibliás formátum finomhangolása külön lépésekben történik.
@@ -97,6 +97,8 @@ CATALYST_EVENTS_PATH = "reports/catalysts_1.json"
 HIGHCONV_EVENTS_PATH = "reports/high_conv_1.json"
 
 
+EARNINGS_EVENTS_PATH = "reports/earnings_1.json"
+YAHOO_ANALYST_EVENTS_PATH = "reports/yahoo_analyst_1.json"
 def debug(msg: str) -> None:
     """Simple stderr logger so the MD remains clean."""
     sys.stderr.write(msg + "\n")
@@ -815,6 +817,30 @@ def main() -> None:
     if mode == 1:
         summary_path = args.summary or "reports/summary_report_1.md"
         json_path = "reports/latest_1.json"
+
+        # >>> EARNINGS + YAHOO ANALYST EVENTS (v1.0.0)
+        # Ezek NEM AH/PM %-hoz kötöttek: zárástól -> futás pillanatáig (max nyitásig) jelzendők.
+        try:
+            import subprocess, shutil
+            this_dir = os.path.dirname(os.path.abspath(__file__))
+            # 1) Earnings JSON
+            subprocess.run([sys.executable, os.path.join(this_dir, "earnings_fetcher.py"), "--report", "1"], check=False)
+            # 2) Yahoo analyst events JSON
+            subprocess.run([sys.executable, os.path.join(this_dir, "yahoo_analyst_events_fetcher.py"), "--report", "1"], check=False)
+
+            # Kompatibilitás: ha a fetcher reports/1/... alá ír, másoljuk root reports/ alá.
+            nested_earn = os.path.join("reports", "1", "earnings_1.json")
+            nested_yah = os.path.join("reports", "1", "yahoo_analyst_1.json")
+            root_earn = os.path.join("reports", "earnings_1.json")
+            root_yah = os.path.join("reports", "yahoo_analyst_1.json")
+
+            if os.path.exists(nested_earn) and not os.path.exists(root_earn):
+                shutil.copyfile(nested_earn, root_earn)
+            if os.path.exists(nested_yah) and not os.path.exists(root_yah):
+                shutil.copyfile(nested_yah, root_yah)
+        except Exception as e:  # pragma: no cover
+            debug(f"Earnings/Yahoo fetch hiba: {e!r}")
+        # <<< EARNINGS + YAHOO ANALYST EVENTS
         text = generate_model_report(
             watchlist_path=watchlist_path,
             script_version=script_version,
