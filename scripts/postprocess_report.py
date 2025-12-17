@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""postprocess_report.py – v3.3.4-biblia1-force-reflow
+"""postprocess_report.py – v3.3.5-biblia1-force-reflow
 
 #1: kényszerített tördelés akkor is, ha a runner 1 sorba lapította a teljes jelentést.
 
@@ -167,6 +167,126 @@ def _insert_macro_after_coverage(lines: List[str], macro_block: str) -> List[str
         return macro_lines + [""] + lines
     return lines[:idx+1] + [""] + macro_lines + [""] + lines[idx+1:]
 
+
+def _insert_after_coverage(lines: List[str], block: str) -> List[str]:
+    """Beszúr egy blokkot közvetlenül a 'Lefedettség:' sor után."""
+    idx = _find_first(lines, lambda s: s.strip().startswith("Lefedettség:"))
+    b_lines = (block or "").rstrip().splitlines()
+    if not b_lines:
+        return lines
+    if idx == -1:
+        return b_lines + [""] + lines
+    return lines[:idx+1] + [""] + b_lines + [""] + lines[idx+1:]
+
+
+def _as_list_payload(data: Any) -> List[Any]:
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        for k in ("items", "headlines", "news", "macro", "earnings", "events"):
+            v = data.get(k)
+            if isinstance(v, list):
+                return v
+    return []
+
+
+def _build_feed_health_block(bundle_dir: Path, report: str) -> str:
+    """Röviden jelzi, hogy melyik feed adott használható adatot."""
+    checks = [
+        ("Makró", bundle_dir / f"macro_news_{report}.json"),
+        ("Analyst", bundle_dir / f"analyst_{report}.json"),
+        ("Catalysts", bundle_dir / f"catalysts_{report}.json"),
+        ("High-conv", bundle_dir / f"high_conv_{report}.json"),
+        ("Earnings", bundle_dir / f"earnings_{report}.json"),
+        ("Yahoo analyst", bundle_dir / f"yahoo_analyst_{report}.json"),
+    ]
+
+    ok = []
+    miss = []
+
+    for name, p in checks:
+        data = _load_json(p)
+        items = _as_list_payload(data)
+        if items:
+            ok.append(name)
+        else:
+            # akkor is 'miss', ha fájl nincs vagy üres lista / parse error
+            miss.append(name)
+
+    lines = ["### Forrás-ellenőrzés", ""]
+    lines.append(f"- OK: {', '.join(ok) if ok else '—'}")
+    lines.append(f"- Nincs adat / üres: {', '.join(miss) if miss else '—'}")
+    return "\n".join(lines)
+
+
+def _build_earnings_block(earnings_json_path: Path) -> str:
+    data = _load_json(earnings_json_path)
+    items = _as_list_payload(data)
+
+    lines = ["### Közelgő jelentések", ""]
+    if not items:
+        lines.append("- Nem találtam közelgő jelentést (feed üres / nem elérhető).")
+        return "\n".join(lines)
+
+    # Várható mezők: ticker/symbol, date, time/session
+    def _get(d: Any, *keys: str) -> str:
+        if not isinstance(d, dict):
+            return ""
+        for k in keys:
+            v = d.get(k)
+            if v is None:
+                continue
+            s = str(v).strip()
+            if s:
+                return s
+        return ""
+
+    for it in items[:20]:
+        t = _get(it, "ticker", "symbol")
+        dt = _get(it, "date", "reportDate", "earningsDate")
+        when = _get(it, "time", "session", "when")
+        extra = _get(it, "source", "provider")
+        parts = [p for p in [t, dt, when] if p]
+        tail = f" ({extra})" if extra else ""
+        if parts:
+            lines.append(f"- {' — '.join(parts)}{tail}")
+    return "\n".join(lines)
+
+
+def _build_yahoo_analyst_block(path: Path) -> str:
+    data = _load_json(path)
+    items = _as_list_payload(data)
+
+    lines = ["### Yahoo – elemzői események", ""]
+    if not items:
+        lines.append("- Nem találtam friss Yahoo analyst eseményt (feed üres / nem elérhető).")
+        return "\n".join(lines)
+
+    def _get(d: Any, *keys: str) -> str:
+        if not isinstance(d, dict):
+            return ""
+        for k in keys:
+            v = d.get(k)
+            if v is None:
+                continue
+            s = str(v).strip()
+            if s:
+                return s
+        return ""
+
+    for it in items[:30]:
+        t = _get(it, "ticker", "symbol")
+        action = _get(it, "action", "type", "event")
+        firm = _get(it, "firm", "broker", "analyst")
+        pt = _get(it, "pt", "priceTarget", "target")
+        dt = _get(it, "date", "time", "timestamp")
+        bit = " | ".join([x for x in [action, firm, pt, dt] if x])
+        if t and bit:
+            lines.append(f"- {t}: {bit}")
+        elif t:
+            lines.append(f"- {t}")
+    return "\n".join(lines)
+
 def _append_blocks(lines: List[str], blocks: List[str]) -> List[str]:
     out = lines[:]
     while out and out[-1].strip() == "":
@@ -192,10 +312,12 @@ def main() -> None:
     md_path = Path(args.md)
     bundle_dir = Path(args.bundle_dir)
 
-    macro_json = bundle_dir / "macro_news_1.json"
-    analyst_json = bundle_dir / "analyst_1.json"
-    catalysts_json = bundle_dir / "catalysts_1.json"
-    highconv_json = bundle_dir / "high_conv_1.json"
+    report = str(args.report or "1")
+
+    macro_json = bundle_dir / f"macro_news_{report}.json"
+    analyst_json = bundle_dir / f"analyst_{report}.json"
+    catalysts_json = bundle_dir / f"catalysts_{report}.json"
+    highconv_json = bundle_dir / f"high_conv_{report}.json"
 
     raw = _read_md(md_path)
     raw = _force_reflow(raw)
@@ -203,13 +325,22 @@ def main() -> None:
 
     body_lines, job_lines = _extract_job_summary(lines)
 
+    body_lines = _remove_section_by_heading(body_lines, ["### Forrás-ellenőrzés"])
     body_lines = _remove_section_by_heading(body_lines, ["### Makró / Politika / FED", "### Politika / FED / Makró"])
+    body_lines = _remove_section_by_heading(body_lines, ["### Közelgő jelentések"])
+    body_lines = _remove_section_by_heading(body_lines, ["### Yahoo – elemzői események"])
     body_lines = _remove_section_by_heading(body_lines, ["### Bejelentések & fel/lemínősítések", "### 🧩 Bejelentések & fel/lemínősítések"])
     body_lines = _remove_section_by_heading(body_lines, ["### Közeli katalizátorok", "### ⏳ Közelgő katalizátorok", "### Közelgő katalizátorok"])
     body_lines = _remove_section_by_heading(body_lines, ["### Listán kívüli, 3–12 hónapos high-conviction jelöltek", "### 🚀 Listán kívüli, 3–12 hónapos high-conviction jelöltek"])
 
+    health_block = _build_feed_health_block(bundle_dir, report)
+    body_lines = _insert_after_coverage(body_lines, health_block)
+
     macro_block = _build_macro_block(macro_json)
-    body_lines = _insert_macro_after_coverage(body_lines, macro_block)
+    body_lines = _insert_after_coverage(body_lines, macro_block)
+
+    earnings_block = _build_earnings_block(bundle_dir / f"earnings_{report}.json")
+    yahoo_block = _build_yahoo_analyst_block(bundle_dir / f"yahoo_analyst_{report}.json")
 
     analyst_block = _ensure_block(
         build_analyst_block(analyst_json),
@@ -227,7 +358,7 @@ def main() -> None:
         "Nem volt a #1 jelentés kritériumait teljesítő, listán kívüli ismételt erős jelzés az AH/PM sávban.",
     )
 
-    body_lines = _append_blocks(body_lines, [analyst_block, catalysts_block, highconv_block])
+    body_lines = _append_blocks(body_lines, [earnings_block, yahoo_block, analyst_block, catalysts_block, highconv_block])
 
     final_lines = body_lines[:]
     if job_lines:
