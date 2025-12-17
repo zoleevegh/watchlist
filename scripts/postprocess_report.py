@@ -115,7 +115,7 @@ def _build_macro_block(macro_json_path: Path) -> str:
 
 
 def _build_earnings_block(earnings_json_path: Path) -> str:
-    \"\"\"Build upcoming earnings markdown from JSON (reports/earnings_{N}.json).\"\"\"
+    """Build upcoming earnings markdown from JSON (reports/earnings_{N}.json)."""
     if not earnings_json_path.exists():
         return ""
     try:
@@ -140,7 +140,7 @@ def _build_earnings_block(earnings_json_path: Path) -> str:
 
 
 def _build_yahoo_analyst_block(yahoo_json_path: Path) -> str:
-    \"\"\"Build Yahoo analyst events markdown from JSON (reports/yahoo_analyst_{N}.json).\"\"\"
+    """Build Yahoo analyst events markdown from JSON (reports/yahoo_analyst_{N}.json)."""
     if not yahoo_json_path.exists():
         return ""
     try:
