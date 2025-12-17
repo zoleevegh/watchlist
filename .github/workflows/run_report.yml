@@ -1,4 +1,4 @@
-name: Run Report (Windows) # v2.2.6-biblia1-postprocess-orderfix-guard3
+name: Run Report (Windows) # v2.2.7-biblia1-postprocess-orderfix-guard3
 
 on:
   workflow_dispatch:
@@ -69,23 +69,56 @@ jobs:
           Write-Host "REPORT: $report"
           Write-Host "MACRO:  $macro"
 
-      - name: Fetch macro news (Yahoo/CNBC/Bloomberg)
+      - name: Fetch macro feed (Apps Script webapp)
         shell: pwsh
         run: |
-          $report = "${{ inputs.report }}"
+          New-Item -ItemType Directory -Force -Path reports | Out-Null
+
+          $report = "${{ steps.vars.outputs.report }}"
           if (-not $report) { $report = "1" }
 
-          $macroMode = "${{ steps.vars.outputs.macro }}"
-          if (-not $macroMode) { $macroMode = "auto" }
+          $out = "reports\macro_news_${report}.json"
 
-          if (-not (Test-Path "scripts\macro_fetcher.py")) {
-            Write-Host "macro_fetcher.py nem található – makróhírek nélkül fut tovább."
+          # URL kiválasztás report szerint
+          $url = ""
+          if ($report -eq "1") { $url = "${{ env.MACRO_FEED_URL_1 }}" }
+          elseif ($report -eq "2") { $url = "${{ env.MACRO_FEED_URL_2 }}" }
+          elseif ($report -eq "3") { $url = "${{ env.MACRO_FEED_URL_3 }}" }
+
+          if (-not $url) {
+            Write-Host "MACRO_FEED_URL_${report} nincs beállítva → üres macro_news_${report}.json"
+            "[]" | Out-File -FilePath $out -Encoding utf8
+            exit 0
           }
-          else {
-            python -X utf8 "scripts\macro_fetcher.py" `
-              --report $report `
-              --mode $macroMode
+
+          Write-Host "Makró feed letöltés: $url"
+          & curl.exe -fL --retry 3 --retry-all-errors -A "Mozilla/5.0" "$url" -o "$out"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "Makró feed sikertelen (curl exit $LASTEXITCODE) → üres JSON"
+            "[]" | Out-File -FilePath $out -Encoding utf8
+            exit 0
           }
+
+          if ((Get-Item "$out").Length -lt 3) {
+            Write-Host "Makró feed üres/kicsi → üres JSON"
+            "[]" | Out-File -FilePath $out -Encoding utf8
+            exit 0
+          }
+
+          $first = Get-Content "$out" -TotalCount 1
+          if ($first -match "<!DOCTYPE html>|<html") {
+            Write-Host "Makró feed HTML-t adott vissza (auth/redirect?) → üres JSON"
+            "[]" | Out-File -FilePath $out -Encoding utf8
+            exit 0
+          }
+
+          if (($first.TrimStart() -notmatch "^\[|^\{")) {
+            Write-Host "Makró feed nem JSON (első sor: $first) → üres JSON"
+            "[]" | Out-File -FilePath $out -Encoding utf8
+            exit 0
+          }
+
+          Write-Host "Makró feed OK → $out"
 
       - name: Fetch MASTER CSV (robust)
         shell: pwsh
@@ -117,7 +150,7 @@ jobs:
       - name: Build raw analyst & catalyst events (#1/#2/#3)
         shell: pwsh
         run: |
-          $report = "${{ inputs.report }}"
+          $report = "${{ steps.vars.outputs.report }}"
           if (-not $report) { $report = "1" }
 
           if (-not (Test-Path "scripts\crawler_analyst_catalyst.py")) {
@@ -130,7 +163,7 @@ jobs:
       - name: Build analyst & catalyst JSON (events_fetcher) (#1/#2/#3)
         shell: pwsh
         run: |
-          $report = "${{ inputs.report }}"
+          $report = "${{ steps.vars.outputs.report }}"
           if (-not $report) { $report = "1" }
 
           if (-not (Test-Path "scripts\events_fetcher.py")) {
@@ -148,7 +181,7 @@ jobs:
           [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
           $env:PYTHONIOENCODING = "utf-8"
 
-          $report = "${{ inputs.report }}"
+          $report = "${{ steps.vars.outputs.report }}"
           if (-not $report) { $report = "1" }
 
           $csv    = "reports\master.csv"
@@ -177,7 +210,7 @@ jobs:
           [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
           $env:PYTHONIOENCODING = "utf-8"
 
-          $report = "${{ inputs.report }}"
+          $report = "${{ steps.vars.outputs.report }}"
           if (-not $report) { $report = "1" }
 
           # Analyst / catalyst feed URL-k report szerint
@@ -280,7 +313,7 @@ jobs:
 
       - name: Validate report output
         shell: pwsh
-        run: python scripts/validate_run.py --report "${{ inputs.report }}"
+        run: python scripts/validate_run.py --report "${{ steps.vars.outputs.report }}"
 
       - name: Upload artifacts
         if: always()
