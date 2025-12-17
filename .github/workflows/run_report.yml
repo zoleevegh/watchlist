@@ -1,3 +1,11 @@
+      # >>> EARNINGS & YAHOO ANALYST FETCHERS (v1.0.0)
+      - name: Earnings fetcher
+        run: python scripts/earnings_fetcher.py --report ${{ inputs.report }}
+
+      - name: Yahoo analyst events fetcher
+        run: python scripts/yahoo_analyst_events_fetcher.py --report ${{ inputs.report }}
+      # <<< EARNINGS & YAHOO ANALYST FETCHERS
+
 name: Run Report (Windows) # v2.2.7-biblia1-postprocess-orderfix-guard3
 
 on:
