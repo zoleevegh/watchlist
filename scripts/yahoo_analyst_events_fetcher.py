@@ -1,19 +1,15 @@
 #!/usr/bin/env python3
 """
-yahoo_analyst_events_fetcher.py – v2.0.0
+yahoo_analyst_events_fetcher.py – v3.0.0 (Yahoo HTML scrape)
 
-Build reports/yahoo_analyst_{report}.json with *recent* analyst actions from Yahoo Finance.
-
-Source:
-  - Yahoo quoteSummary: upgradeDowngradeHistory (events)
-  - Yahoo quoteSummary: financialData (target snapshot context; not events)
-
-Important:
-  Yahoo chart 'price target change' tooltips are not reliably exposed via a public endpoint.
-  This module focuses on *rating action events* + target snapshot.
+B-option implementation:
+  - Scrape https://finance.yahoo.com/quote/{TICKER}/analysis?p={TICKER}
+    and extract target snapshot + (if present) vendor analyst action items from embedded JSON.
+  - Also scrape quote page for QuoteSummaryStore.financialData as backup (targets snapshot).
 
 Output:
   reports/yahoo_analyst_{report}.json
+No external deps.
 """
 from __future__ import annotations
 
@@ -23,8 +19,7 @@ import os
 import time
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple
-
+from typing import Any, Dict, List, Optional, Tuple
 import urllib.request
 import urllib.error
 
@@ -36,12 +31,15 @@ UA = (
 
 DEFAULT_LOOKBACK_DAYS = 14
 
+
 def _utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
 
 def _ensure_dir(path: str) -> None:
     if path:
         os.makedirs(path, exist_ok=True)
+
 
 def _read_json_file(path: str) -> Optional[dict]:
     try:
@@ -50,8 +48,9 @@ def _read_json_file(path: str) -> Optional[dict]:
     except Exception:
         return None
 
-def _http_get(url: str, timeout: int = 20) -> Tuple[Optional[bytes], Optional[int], Optional[str]]:
-    req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "application/json,*/*"})
+
+def _http_get(url: str, timeout: int = 25) -> Tuple[Optional[bytes], Optional[int], Optional[str]]:
+    req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "text/html,application/json,*/*"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.read(), resp.getcode(), None
@@ -64,26 +63,51 @@ def _http_get(url: str, timeout: int = 20) -> Tuple[Optional[bytes], Optional[in
     except Exception as e:
         return None, None, f"{type(e).__name__}: {e}"
 
-def _qs_modules(ticker: str) -> Tuple[Optional[dict], Optional[str]]:
-    url = (
-        f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{ticker}"
-        f"?modules=upgradeDowngradeHistory,financialData&corsDomain=finance.yahoo.com"
-    )
-    body, status, err = _http_get(url, timeout=20)
-    if body is None:
-        return None, err or f"no-body (status={status})"
-    try:
-        return json.loads(body.decode("utf-8", errors="replace")), None
-    except Exception as e:
-        return None, f"json-parse: {e}"
+
+def _extract_root_app_main(html: str) -> Tuple[Optional[dict], Optional[str]]:
+    idx = html.find("root.App.main")
+    if idx < 0:
+        return None, "root.App.main not found"
+    eq = html.find("=", idx)
+    if eq < 0:
+        return None, "root.App.main '=' not found"
+    brace = html.find("{", eq)
+    if brace < 0:
+        return None, "root.App.main '{' not found"
+    depth = 0
+    in_str = False
+    esc = False
+    for i in range(brace, len(html)):
+        ch = html[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+        else:
+            if ch == '"':
+                in_str = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    blob = html[brace:i+1]
+                    try:
+                        return json.loads(blob), None
+                    except Exception as e:
+                        return None, f"root.App.main json parse error: {e}"
+    return None, "root.App.main JSON not closed"
+
 
 def _load_tickers(report: str) -> List[str]:
     env = os.getenv("TICKERS", "").strip()
     if env:
         return [t.strip().upper() for t in env.split(",") if t.strip()]
 
-    candidates = [f"reports/{report}/latest_{report}.json", f"reports/latest_{report}.json"]
-    for p in candidates:
+    for p in (f"reports/{report}/latest_{report}.json", f"reports/latest_{report}.json"):
         j = _read_json_file(p)
         if not j:
             continue
@@ -105,14 +129,105 @@ def _load_tickers(report: str) -> List[str]:
                 return sorted(set(out))
     return []
 
+
 @dataclass
 class SourceStatus:
     ok: bool
     count: int
     errors: List[str]
 
+
 def _epoch_to_iso(epoch: int) -> str:
     return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat()
+
+
+def _dig(obj: Any, *keys: str) -> Any:
+    cur = obj
+    for k in keys:
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(k)
+    return cur
+
+
+def _raw(x: Any) -> Any:
+    if isinstance(x, dict) and "raw" in x:
+        return x.get("raw")
+    return x
+
+
+def _extract_targets_from_app(app: dict) -> Optional[dict]:
+    stores = _dig(app, "context", "dispatcher", "stores") or {}
+    qss = stores.get("QuoteSummaryStore") or {}
+    fd = qss.get("financialData") or {}
+    snap = {
+        "targetMeanPrice": _raw(fd.get("targetMeanPrice")),
+        "targetHighPrice": _raw(fd.get("targetHighPrice")),
+        "targetLowPrice": _raw(fd.get("targetLowPrice")),
+        "recommendationKey": fd.get("recommendationKey"),
+        "recommendationMean": _raw(fd.get("recommendationMean")),
+        "numberOfAnalystOpinions": _raw(fd.get("numberOfAnalystOpinions")),
+    }
+    if any(v is not None for v in snap.values()):
+        return snap
+    return None
+
+
+def _extract_vendor_events(app: dict, ticker: str, since_epoch: int) -> List[dict]:
+    stores = _dig(app, "context", "dispatcher", "stores") or {}
+    events: List[dict] = []
+
+    def walk(x: Any):
+        if isinstance(x, dict):
+            keys = set(x.keys())
+            # heuristic: benzinga-like payload
+            if {"action_company", "action_pt"} <= keys or {"adjusted_pt_current", "adjusted_pt_prior"} <= keys:
+                epoch = None
+                for k in ("epoch", "date", "published", "timestamp"):
+                    v = x.get(k)
+                    if isinstance(v, (int, float)):
+                        epoch = int(v)
+                        break
+                    if isinstance(v, dict) and isinstance(v.get("raw"), (int, float)):
+                        epoch = int(v["raw"])
+                        break
+                if epoch is None:
+                    # keep but mark unknown time; use now so it appears (better than dropping)
+                    epoch = int(time.time())
+                if epoch >= since_epoch:
+                    events.append({
+                        "ticker": ticker,
+                        "source": "YahooFinance.HTML.vendor_feed",
+                        "epoch": epoch,
+                        "dateUtc": _epoch_to_iso(epoch),
+                        "firm": x.get("firm") or x.get("action_firm") or x.get("analyst"),
+                        "actionCompany": x.get("action_company") or x.get("actionCompany"),
+                        "actionPt": x.get("action_pt") or x.get("actionPt"),
+                        "ptPrior": x.get("adjusted_pt_prior") or x.get("pt_prior") or x.get("ptPrior"),
+                        "ptCurrent": x.get("adjusted_pt_current") or x.get("pt_current") or x.get("ptCurrent"),
+                        "ratingPrior": x.get("rating_prior") or x.get("ratingPrior"),
+                        "ratingCurrent": x.get("rating_current") or x.get("ratingCurrent"),
+                        "headline": x.get("headline") or x.get("title"),
+                        "url": x.get("url") or x.get("link"),
+                    })
+            for v in x.values():
+                walk(v)
+        elif isinstance(x, list):
+            for v in x:
+                walk(v)
+
+    walk(stores)
+
+    uniq: List[dict] = []
+    seen = set()
+    for e in events:
+        key = (e.get("ticker"), e.get("firm"), e.get("actionCompany"), e.get("actionPt"), e.get("ptPrior"), e.get("ptCurrent"), e.get("epoch"))
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(e)
+    return uniq
+
 
 def main() -> int:
     ap = argparse.ArgumentParser()
@@ -129,7 +244,9 @@ def main() -> int:
     tickers = _load_tickers(report)
     since_epoch = int(time.time()) - lookback_days * 86400
 
-    src = SourceStatus(ok=True, count=0, errors=[])
+    src_analysis = SourceStatus(ok=True, count=0, errors=[])
+    src_quote = SourceStatus(ok=True, count=0, errors=[])
+
     items: List[dict] = []
     targets_snapshot: Dict[str, dict] = {}
 
@@ -143,72 +260,59 @@ def main() -> int:
             "count": 0,
             "items": [],
             "targetsSnapshot": {},
-            "sources": {"yahoo_quoteSummary_upgradeDowngradeHistory": asdict(src)},
-            "warning": "No tickers found (set env TICKERS or provide reports/latest_*.json)."
+            "sources": {"yahoo_analysis_html": asdict(src_analysis), "yahoo_quote_html": asdict(src_quote)},
+            "warning": "No tickers found (set env TICKERS or provide reports/latest_*.json).",
         }
         with open(out_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
         return 0
 
     for t in tickers:
-        data, err = _qs_modules(t)
-        if not data:
-            src.ok = False
-            src.errors.append(f"{t}: {err or 'no data'}")
-            continue
+        # 1) /analysis page
+        url = f"https://finance.yahoo.com/quote/{t}/analysis?p={t}"
+        body, status, err = _http_get(url, timeout=25)
+        if body is not None:
+            html = body.decode("utf-8", errors="replace")
+            app, eapp = _extract_root_app_main(html)
+            if app:
+                snap = _extract_targets_from_app(app)
+                if snap:
+                    targets_snapshot[t] = snap
+                ev = _extract_vendor_events(app, t, since_epoch)
+                if ev:
+                    items.extend(ev)
+                    src_analysis.count += len(ev)
+            else:
+                src_analysis.ok = False
+                src_analysis.errors.append(f"{t}: {eapp or 'root.App.main parse failed'}")
+        else:
+            src_analysis.ok = False
+            src_analysis.errors.append(f"{t}: {err or f'no-body (status={status})'}")
 
-        try:
-            res = data.get("quoteSummary", {}).get("result")
-            if not (isinstance(res, list) and res):
-                raise ValueError("missing quoteSummary.result")
-            r0 = res[0]
+        # 2) quote page fallback for targets snapshot
+        if t not in targets_snapshot:
+            qurl = f"https://finance.yahoo.com/quote/{t}"
+            body2, status2, err2 = _http_get(qurl, timeout=25)
+            if body2 is not None:
+                html2 = body2.decode("utf-8", errors="replace")
+                app2, eapp2 = _extract_root_app_main(html2)
+                if app2:
+                    snap2 = _extract_targets_from_app(app2)
+                    if snap2:
+                        targets_snapshot[t] = snap2
+                        src_quote.count += 1
+                else:
+                    src_quote.ok = False
+                    src_quote.errors.append(f"{t}: {eapp2 or 'root.App.main parse failed'}")
+            else:
+                src_quote.ok = False
+                src_quote.errors.append(f"{t}: {err2 or f'no-body (status={status2})'}")
 
-            # Events
-            udh = r0.get("upgradeDowngradeHistory", {}) or {}
-            history = udh.get("history", [])
-            if isinstance(history, list):
-                for h in history:
-                    if not isinstance(h, dict):
-                        continue
-                    epoch = h.get("epochGradeDate")
-                    if not isinstance(epoch, (int, float)):
-                        continue
-                    epoch = int(epoch)
-                    if epoch < since_epoch:
-                        continue
-                    items.append({
-                        "ticker": t,
-                        "source": "YahooFinance.quoteSummary.upgradeDowngradeHistory",
-                        "dateUtc": _epoch_to_iso(epoch),
-                        "epoch": epoch,
-                        "firm": h.get("firm"),
-                        "action": h.get("action"),
-                        "fromGrade": h.get("fromGrade"),
-                        "toGrade": h.get("toGrade"),
-                    })
-                    src.count += 1
-
-            # Target snapshot context (not events)
-            fd = r0.get("financialData", {}) or {}
-            def _raw(x):
-                return x.get("raw") if isinstance(x, dict) else None
-            snap = {
-                "targetMeanPrice": _raw(fd.get("targetMeanPrice")),
-                "targetHighPrice": _raw(fd.get("targetHighPrice")),
-                "targetLowPrice": _raw(fd.get("targetLowPrice")),
-                "recommendationKey": fd.get("recommendationKey"),
-                "recommendationMean": _raw(fd.get("recommendationMean")),
-                "numberOfAnalystOpinions": _raw(fd.get("numberOfAnalystOpinions")),
-            }
-            if any(v is not None for v in snap.values()):
-                targets_snapshot[t] = snap
-
-        except Exception as e:
-            src.ok = False
-            src.errors.append(f"{t}: parse-error: {e}")
-
-    items = [it for it in items if it.get("firm") or it.get("action") or it.get("toGrade")]
-    items = sorted(items, key=lambda x: (x["epoch"], x["ticker"], str(x.get("firm") or "")), reverse=True)
+    cleaned = []
+    for it in items:
+        if it.get("firm") or it.get("headline") or it.get("ptCurrent") or it.get("ptPrior") or it.get("actionCompany"):
+            cleaned.append(it)
+    cleaned = sorted(cleaned, key=lambda x: (x.get("epoch", 0), x.get("ticker", "")), reverse=True)
 
     payload = {
         "ok": True,
@@ -216,14 +320,15 @@ def main() -> int:
         "report": report,
         "generatedAt": _utc_iso(),
         "window": {"lookbackDays": lookback_days},
-        "count": len(items),
-        "items": items,
+        "count": len(cleaned),
+        "items": cleaned,
         "targetsSnapshot": targets_snapshot,
-        "sources": {"yahoo_quoteSummary_upgradeDowngradeHistory": asdict(src)},
+        "sources": {"yahoo_analysis_html": asdict(src_analysis), "yahoo_quote_html": asdict(src_quote)},
     }
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
     return 0
+
 
 if __name__ == "__main__":
     raise SystemExit(main())
