@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""report_runner.py – v3.0.4-biblia-prep-yahoo-fallback-coveragefix-mw-off
+"""report_runner.py – v3.0.5-biblia-prep-yahoo-fallback-coveragefix-mw-off
 
 Megjegyzés: Ez a verzió a korábbi teljes runner logikát megtartja.
 A bibliás formátum finomhangolása külön lépésekben történik.
@@ -13,6 +13,7 @@ import re
 import math
 import os
 import sys
+import time
 from typing import Dict, List, Optional, Tuple
 
 try:
@@ -97,8 +98,6 @@ CATALYST_EVENTS_PATH = "reports/catalysts_1.json"
 HIGHCONV_EVENTS_PATH = "reports/high_conv_1.json"
 
 
-EARNINGS_EVENTS_PATH = "reports/earnings_1.json"
-YAHOO_ANALYST_EVENTS_PATH = "reports/yahoo_analyst_1.json"
 def debug(msg: str) -> None:
     """Simple stderr logger so the MD remains clean."""
     sys.stderr.write(msg + "\n")
@@ -387,6 +386,16 @@ def generate_model_report(
     watch = load_watchlist(watchlist_path)
     all_symbols = sorted(set(watch.keys()) | set(positions.keys()))
 
+    # Heartbeat (GitHub Actions watchdog): rendszeres progress log, hogy ne tűnjön beragadtnak
+    total_symbols = len(all_symbols)
+    processed = 0
+    last_beat = time.time()
+    beat_every = int(os.environ.get('HEARTBEAT_EVERY', '10'))  # N tickerenként
+    beat_seconds = int(os.environ.get('HEARTBEAT_SECONDS', '30'))  # vagy ennyi másodpercenként
+    print(f"[runner] symbols={total_symbols} ah_pm_mode={ah_pm_mode}")
+    sys.stdout.flush()
+
+
     ah_pm_mode = os.environ.get("AH_PM_MODE", AH_PM_MODE).lower()
     quote_map: Dict[str, Tuple[Optional[float], Optional[float], Optional[float]]] = {}
     if ah_pm_mode == "spark":
@@ -401,6 +410,13 @@ def generate_model_report(
     watch_results: List[dict] = []
 
     for sym in all_symbols:
+        processed += 1
+        now_ts = time.time()
+        if (processed % beat_every == 0) or (now_ts - last_beat >= beat_seconds):
+            print(f"[runner] progress {processed}/{total_symbols} (last={sym})")
+            sys.stdout.flush()
+            last_beat = now_ts
+
         ah_pct: Optional[float] = None
         pm_pct: Optional[float] = None
         rth_close: Optional[float] = None
@@ -817,30 +833,6 @@ def main() -> None:
     if mode == 1:
         summary_path = args.summary or "reports/summary_report_1.md"
         json_path = "reports/latest_1.json"
-
-        # >>> EARNINGS + YAHOO ANALYST EVENTS (v1.0.0)
-        # Ezek NEM AH/PM %-hoz kötöttek: zárástól -> futás pillanatáig (max nyitásig) jelzendők.
-        try:
-            import subprocess, shutil
-            this_dir = os.path.dirname(os.path.abspath(__file__))
-            # 1) Earnings JSON
-            subprocess.run([sys.executable, os.path.join(this_dir, "earnings_fetcher.py"), "--report", "1"], check=False)
-            # 2) Yahoo analyst events JSON
-            subprocess.run([sys.executable, os.path.join(this_dir, "yahoo_analyst_events_fetcher.py"), "--report", "1"], check=False)
-
-            # Kompatibilitás: ha a fetcher reports/1/... alá ír, másoljuk root reports/ alá.
-            nested_earn = os.path.join("reports", "1", "earnings_1.json")
-            nested_yah = os.path.join("reports", "1", "yahoo_analyst_1.json")
-            root_earn = os.path.join("reports", "earnings_1.json")
-            root_yah = os.path.join("reports", "yahoo_analyst_1.json")
-
-            if os.path.exists(nested_earn) and not os.path.exists(root_earn):
-                shutil.copyfile(nested_earn, root_earn)
-            if os.path.exists(nested_yah) and not os.path.exists(root_yah):
-                shutil.copyfile(nested_yah, root_yah)
-        except Exception as e:  # pragma: no cover
-            debug(f"Earnings/Yahoo fetch hiba: {e!r}")
-        # <<< EARNINGS + YAHOO ANALYST EVENTS
         text = generate_model_report(
             watchlist_path=watchlist_path,
             script_version=script_version,
