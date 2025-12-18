@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""report_runner.py – v3.0.5-biblia-prep-yahoo-fallback-coveragefix-mw-off
+"""report_runner.py – v3.0.3-biblia-prep-yahoo-fallback-coveragefix-mw-off
 
 Megjegyzés: Ez a verzió a korábbi teljes runner logikát megtartja.
 A bibliás formátum finomhangolása külön lépésekben történik.
@@ -13,8 +13,9 @@ import re
 import math
 import os
 import sys
-import time
 from typing import Dict, List, Optional, Tuple
+
+__version__ = "v3.0.6"
 
 try:
     from zoneinfo import ZoneInfo
@@ -386,19 +387,13 @@ def generate_model_report(
     watch = load_watchlist(watchlist_path)
     all_symbols = sorted(set(watch.keys()) | set(positions.keys()))
 
-    # Heartbeat (GitHub Actions watchdog): rendszeres progress log, hogy ne tűnjön beragadtnak
-    total_symbols = len(all_symbols)
-    processed = 0
-    last_beat = time.time()
-    beat_every = int(os.environ.get('HEARTBEAT_EVERY', '10'))  # N tickerenként
-    beat_seconds = int(os.environ.get('HEARTBEAT_SECONDS', '30'))  # vagy ennyi másodpercenként
-    print(f"[runner] symbols={total_symbols} ah_pm_mode={ah_pm_mode}")
-    sys.stdout.flush()
-
-
-    ah_pm_mode = os.environ.get("AH_PM_MODE", AH_PM_MODE).lower()
+    ah_pm_mode = "chart"
     quote_map: Dict[str, Tuple[Optional[float], Optional[float], Optional[float]]] = {}
-    if ah_pm_mode == "spark":
+
+    # AH/PM mód csak #1 riportnál értelmezett
+    if report == 1:
+        ah_pm_mode = os.environ.get("AH_PM_MODE", AH_PM_MODE).lower()
+        if ah_pm_mode == "spark":
         quote_map = fetch_yahoo_quote_batch(all_symbols)
         if all_symbols and not quote_map:
             debug("[WARN] Yahoo quote batch üres/blocked – chart fallback kényszerítve minden tickerre.")
@@ -410,13 +405,6 @@ def generate_model_report(
     watch_results: List[dict] = []
 
     for sym in all_symbols:
-        processed += 1
-        now_ts = time.time()
-        if (processed % beat_every == 0) or (now_ts - last_beat >= beat_seconds):
-            print(f"[runner] progress {processed}/{total_symbols} (last={sym})")
-            sys.stdout.flush()
-            last_beat = now_ts
-
         ah_pct: Optional[float] = None
         pm_pct: Optional[float] = None
         rth_close: Optional[float] = None
