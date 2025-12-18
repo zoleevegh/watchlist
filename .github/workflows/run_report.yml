@@ -1,4 +1,4 @@
-name: Run Report (Windows) # v2.2.7-biblia1-postprocess-orderfix-guard3
+name: Run Report (Windows) # v2.2.8-biblia1-watchdogs-no-macro-input
 
 on:
   workflow_dispatch:
@@ -6,9 +6,6 @@ on:
       report:
         description: 'Jelentés: 1=AH+PM, 2=Open→Close (előző nap), 3=Ma Open→Most'
         default: '1'
-        required: false
-      macro:
-        default: 'auto'
         required: false
   repository_dispatch:
     types: [run_report]
@@ -50,23 +47,16 @@ jobs:
           python -m pip install --upgrade pip
           pip install pandas requests yfinance pytz feedparser beautifulsoup4
 
-      - name: Resolve inputs (report, macro)
+      - name: Resolve inputs (report)
         id: vars
         shell: pwsh
         run: |
           $report = "${{ github.event.inputs.report }}"
           if (-not $report) { $report = "${{ github.event.client_payload.report }}" }
           if (-not $report) { $report = "1" }
-
-          $macro = "${{ github.event.inputs.macro }}"
-          if (-not $macro) { $macro = "${{ github.event.client_payload.macro }}" }
-          if (-not $macro) { $macro = "auto" }
-
           "report=$report" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "macro=$macro"   | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
           Write-Host "REPORT: $report"
-          Write-Host "MACRO:  $macro"
 
       - name: Fetch macro feed (Apps Script webapp)
         shell: pwsh
@@ -177,13 +167,10 @@ jobs:
       - name: Run report (#1/#2/#3)
         shell: pwsh
         run: |
-          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-          $env:PYTHONIOENCODING = "utf-8"
-
           $report = "${{ steps.vars.outputs.report }}"
           if (-not $report) { $report = "1" }
 
-          $csv    = "reports\master.csv"
+          $csv = "reports\master.csv"
 
           if (-not (Test-Path "scripts\report_runner.py")) {
             Write-Error "scripts\report_runner.py hiányzik a repóban"
@@ -192,16 +179,45 @@ jobs:
 
           $summaryPath = "reports\summary_report_${report}.md"
 
-          python -X utf8 "scripts\report_runner.py" `
-            --report $report `
-            --csv "$csv" `
-            --summary "$summaryPath"
+          # Watchdog: streamelt kimenet + 15 perces timeout (hang elkerülése)
+          $args = @(
+            "-u", "-X", "utf8",
+            "scripts\report_runner.py",
+            "--report", $report,
+            "--csv", $csv,
+            "--summary", $summaryPath
+          )
+
+          $psi = New-Object System.Diagnostics.ProcessStartInfo
+          $psi.FileName = "python"
+          $psi.Arguments = ($args | ForEach-Object { if ($_ -match "\s") { '"{0}"' -f $_ } else { $_ } }) -join " "
+          $psi.UseShellExecute = $false
+          $psi.RedirectStandardOutput = $true
+          $psi.RedirectStandardError  = $true
+
+          $p = New-Object System.Diagnostics.Process
+          $p.StartInfo = $psi
+          $p.add_OutputDataReceived({ if ($_.Data) { Write-Host $_.Data } })
+          $p.add_ErrorDataReceived({ if ($_.Data) { Write-Host $_.Data } })
+
+          Write-Host "RUN report_runner.py (timeout: 15m) – report=$report"
+          [void]$p.Start()
+          $p.BeginOutputReadLine()
+          $p.BeginErrorReadLine()
+
+          if (-not $p.WaitForExit(15 * 60 * 1000)) {
+            Write-Error "TIMEOUT: report_runner.py nem fejeződött be 15 percen belül – kill."
+            try { $p.Kill() } catch {}
+            exit 1
+          }
+          if ($p.ExitCode -ne 0) { exit $p.ExitCode }
 
           if (Test-Path $summaryPath) {
             Get-Content $summaryPath | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8
           } else {
             Write-Host "Nincs summary fájl (expected: $summaryPath)"
           }
+
 
       - name: Earnings fetcher
         run: python scripts/earnings_fetcher.py --report ${{ inputs.report }}
@@ -212,84 +228,49 @@ jobs:
       - name: Postprocess report (#1/#2/#3)
         shell: pwsh
         run: |
-          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-          $env:PYTHONIOENCODING = "utf-8"
-
           $report = "${{ steps.vars.outputs.report }}"
           if (-not $report) { $report = "1" }
 
-          # Analyst / catalyst feed URL-k report szerint
-          if ($report -eq "1") {
-            $analystUrl  = "${{ env.ANALYST_FEED_URL_1 }}"
-            $catalystUrl = "${{ env.CATALYST_FEED_URL_1 }}"
-          }
-          elseif ($report -eq "2") {
-            $analystUrl  = "${{ env.ANALYST_FEED_URL_2 }}"
-            $catalystUrl = "${{ env.CATALYST_FEED_URL_2 }}"
-          }
-          elseif ($report -eq "3") {
-            $analystUrl  = "${{ env.ANALYST_FEED_URL_3 }}"
-            $catalystUrl = "${{ env.CATALYST_FEED_URL_3 }}"
-          }
-          else {
-            Write-Host "Ismeretlen report szám: $report"
+          if (-not (Test-Path "scripts\postprocess_report.py")) {
+            Write-Error "scripts\postprocess_report.py hiányzik a repóban"
             exit 1
           }
 
-          $analystOut   = "reports\analyst_${report}.json"
-          $catalystsOut = "reports\catalysts_${report}.json"
+          $summaryIn  = "reports\summary_report_${report}.md"
+          $summaryOut = $summaryIn
 
-          if (Test-Path "scripts\analyst_feed_parser.py") {
-            python -X utf8 "scripts\analyst_feed_parser.py" `
-              --analyst-url "$analystUrl" `
-              --catalyst-url "$catalystUrl" `
-              --analyst-out "$analystOut" `
-              --catalysts-out "$catalystsOut"
-          }
-          else {
-            Write-Host "analyst_feed_parser.py nem található – analyst/catalyst blokkok nélkül fut tovább."
-          }
+          $ppArgs = @(
+            "-u","-X","utf8",
+            "scripts\postprocess_report.py",
+            "--report", $report,
+            "--summary", $summaryIn,
+            "--out", $summaryOut
+          )
 
-          # High-conv jelöltek buildelése (scripts\highconv_builder.py)
-          if (Test-Path "scripts\highconv_builder.py") {
-            python -X utf8 "scripts\highconv_builder.py"
-          }
-          else {
-            Write-Host "highconv_builder.py nem található – high-conv blokk nélkül fut tovább."
-          }
+          $psi = New-Object System.Diagnostics.ProcessStartInfo
+          $psi.FileName = "python"
+          $psi.Arguments = ($ppArgs | ForEach-Object { if ($_ -match "\s") { '"{0}"' -f $_ } else { $_ } }) -join " "
+          $psi.UseShellExecute = $false
+          $psi.RedirectStandardOutput = $true
+          $psi.RedirectStandardError  = $true
 
-          if ($report -eq "3") {
-            if (Test-Path "scripts\report_runner_3.py") {
-              Write-Host "#3-as jelentés: runner_3/postprocess_report_3 futtatása..."
-              python -X utf8 "scripts\report_runner_3.py"
-            }
-            else {
-              Write-Host "report_runner_3.py nem található – #3-as jelentés intraday postprocess nélkül marad."
-            }
-          }
-          elseif ($report -eq "2") {
-            if (Test-Path "scripts\postprocess_report_2.py") {
-              Write-Host "#2-es jelentés: postprocess_report_2.py fut..."
-              python -X utf8 "scripts\postprocess_report_2.py"
-            }
-            else {
-              Write-Host "postprocess_report_2.py nem található – nyers #2-es riport marad."
-            }
-          }
-          else {
-            if (Test-Path "scripts\postprocess_report.py") {
-              $mdPath    = "reports\summary_report_1.md"
-              $bundleDir = "reports"
+          $p = New-Object System.Diagnostics.Process
+          $p.StartInfo = $psi
+          $p.add_OutputDataReceived({ if ($_.Data) { Write-Host $_.Data } })
+          $p.add_ErrorDataReceived({ if ($_.Data) { Write-Host $_.Data } })
 
-              python -X utf8 "scripts\postprocess_report.py" `
-                --report 1 `
-                --md "$mdPath" `
-                --bundle-dir "$bundleDir"
-            }
-            else {
-              Write-Host "postprocess_report.py nem található – nyers #1-es riport marad."
-            }
+          Write-Host "RUN postprocess_report.py (timeout: 10m) – report=$report"
+          [void]$p.Start()
+          $p.BeginOutputReadLine()
+          $p.BeginErrorReadLine()
+
+          if (-not $p.WaitForExit(10 * 60 * 1000)) {
+            Write-Error "TIMEOUT: postprocess_report.py nem fejeződött be 10 percen belül – kill."
+            try { $p.Kill() } catch {}
+            exit 1
           }
+          if ($p.ExitCode -ne 0) { exit $p.ExitCode }
+
       - name: Build analyst & catalyst feed (Python)
         shell: pwsh
         run: |
