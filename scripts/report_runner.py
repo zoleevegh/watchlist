@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-"""report_runner.py – v3.0.3-biblia-prep-yahoo-fallback-coveragefix-mw-off
+"""report_runner.py – v3.0.7-biblia-prep-yahoo-fallback-coveragefix-mw-off
 
 Megjegyzés: Ez a verzió a korábbi teljes runner logikát megtartja.
 A bibliás formátum finomhangolása külön lépésekben történik.
 """
+# IMÁDSÁG (hibajavítás után)
+# Bocsáss meg uram, mert balfék voltam, és elcsúszott az indent.
+# Add uram, hogy ez a módosítás most hibátlanul fusson.
+
 
 import argparse
 import csv
@@ -15,7 +19,7 @@ import os
 import sys
 from typing import Dict, List, Optional, Tuple
 
-__version__ = "v3.0.6"
+__version__ = "v3.0.7"
 
 try:
     from zoneinfo import ZoneInfo
@@ -89,7 +93,7 @@ SESSION.headers.update(
 )
 
 DEFAULT_K = 3.0
-DEFAULT_SCRIPT_VERSION = "v3.0.3-biblia-prep-yahoo-fallback-coveragefix-mw-off"
+DEFAULT_SCRIPT_VERSION = "v3.0.7-biblia-prep-yahoo-fallback-coveragefix-mw-off"
 AH_PM_MODE = "spark"  # alapértelmezett: Yahoo quote/spark alapú AH/PM
 
 
@@ -381,6 +385,7 @@ def generate_model_report(
     output_md: str,
     output_json: str,
     macro_text: Optional[str] = None,
+    report: int = 1,
 ) -> str:
     # Pozíciók: a master/watchlist alapján inferálva (nincs külön positions.csv)
     positions = infer_positions_from_watchlist(watchlist_path)
@@ -394,11 +399,10 @@ def generate_model_report(
     if report == 1:
         ah_pm_mode = os.environ.get("AH_PM_MODE", AH_PM_MODE).lower()
         if ah_pm_mode == "spark":
-        quote_map = fetch_yahoo_quote_batch(all_symbols)
-        if all_symbols and not quote_map:
-            debug("[WARN] Yahoo quote batch üres/blocked – chart fallback kényszerítve minden tickerre.")
-            ah_pm_mode = "chart"
-
+            quote_map = fetch_yahoo_quote_batch(all_symbols)
+            if all_symbols and not quote_map:
+                debug("[WARN] Yahoo quote batch üres/blocked – chart fallback kényszerítve minden tickerre.")
+                ah_pm_mode = "chart"
 
     missing: Dict[str, str] = {}
     darab_results: List[dict] = []
@@ -828,6 +832,7 @@ def main() -> None:
             output_md=summary_path,
             output_json=json_path,
             macro_text=args.macro,
+            report=mode,
         )
         print(text)
 
