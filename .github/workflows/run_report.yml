@@ -8,7 +8,6 @@ on:
         default: '1'
         required: false
       macro:
-        description: 'Makró feed mód: auto/force/skip'
         default: 'auto'
         required: false
   repository_dispatch:
