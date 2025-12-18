@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""postprocess_report.py – v3.3.5-biblia1-force-reflow
+"""postprocess_report.py – v3.3.6-earnings-yahoo-dedupe
 
 #1: kényszerített tördelés akkor is, ha a runner 1 sorba lapította a teljes jelentést.
 
@@ -113,67 +113,6 @@ def _build_macro_block(macro_json_path: Path) -> str:
     lines.append("")
     return "\n".join(lines)
 
-
-def _build_earnings_block(earnings_json_path: Path) -> str:
-    """Build upcoming earnings markdown from JSON (reports/earnings_{N}.json)."""
-    if not earnings_json_path.exists():
-        return ""
-    try:
-        data = _load_json(earnings_json_path) or {}
-        items = data.get("items") or []
-        if not items:
-            return ""
-        out = ["### Közelgő jelentések (1–3 kereskedési nap)", ""]
-        for it in items:
-            t = it.get("ticker") or "?"
-            d = it.get("earningsDateLocal") or it.get("date") or "?"
-            tm = it.get("earningsTimeLocal") or ""
-            timing = it.get("timing") or ""
-            extra = " ".join(x for x in [tm, timing] if x).strip()
-            if extra:
-                out.append(f"- {t} – {d} ({extra})")
-            else:
-                out.append(f"- {t} – {d}")
-        return "\n".join(out)
-    except Exception:
-        return ""
-
-
-def _build_yahoo_analyst_block(yahoo_json_path: Path) -> str:
-    """Build Yahoo analyst events markdown from JSON (reports/yahoo_analyst_{N}.json)."""
-    if not yahoo_json_path.exists():
-        return ""
-    try:
-        data = _load_json(yahoo_json_path) or {}
-        items = data.get("items") or []
-        if not items:
-            return ""
-        out = ["### Yahoo – elemzői események", ""]
-        for it in items:
-            t = it.get("ticker") or "?"
-            firm = it.get("firm") or "Analyst"
-            et = it.get("eventType") or ""
-            pt_from = it.get("ptFrom")
-            pt_to = it.get("ptTo")
-            rating = it.get("rating") or ""
-            date = it.get("date") or ""
-            if pt_from is not None and pt_to is not None:
-                line = f"- {t} – {firm}: célár {pt_from} → {pt_to}"
-                if rating:
-                    line += f" ({rating})"
-                if date:
-                    line += f" – {date}"
-            else:
-                line = f"- {t} – {firm}"
-                if rating:
-                    line += f" ({rating})"
-                if date:
-                    line += f" – {date}"
-            out.append(line)
-        return "\n".join(out)
-    except Exception:
-        return ""
-
 def _ensure_block(block: str, title: str, empty_line: str) -> str:
     b = (block or "").strip()
     if not b:
@@ -253,14 +192,12 @@ def main() -> None:
     md_path = Path(args.md)
     bundle_dir = Path(args.bundle_dir)
 
-    report = str(args.report)
-
-    macro_json = bundle_dir / f"macro_news_{report}.json"
-    analyst_json = bundle_dir / f"analyst_{report}.json"
-    catalysts_json = bundle_dir / f"catalysts_{report}.json"
-    highconv_json = bundle_dir / f"high_conv_{report}.json"
-    earnings_json = bundle_dir / f"earnings_{report}.json"
-    yahoo_analyst_json = bundle_dir / f"yahoo_analyst_{report}.json"
+    macro_json = bundle_dir / "macro_news_1.json"
+    analyst_json = bundle_dir / "analyst_1.json"
+    catalysts_json = bundle_dir / "catalysts_1.json"
+    highconv_json = bundle_dir / "high_conv_1.json"
+    earnings_json = bundle_dir / "earnings_1.json"
+    yahoo_analyst_json = bundle_dir / "yahoo_analyst_1.json"
 
     raw = _read_md(md_path)
     raw = _force_reflow(raw)
@@ -292,19 +229,7 @@ def main() -> None:
         "Nem volt a #1 jelentés kritériumait teljesítő, listán kívüli ismételt erős jelzés az AH/PM sávban.",
     )
 
-    earnings_block = _ensure_block(
-        _build_earnings_block(earnings_json),
-        "Közelgő jelentések (1–3 kereskedési nap)",
-        "Nem volt a #1 jelentés kritériumait teljesítő, közelgő (1–3 napos) earnings esemény a zárás→most időablakban.",
-    )
-
-    yahoo_analyst_block = _ensure_block(
-        _build_yahoo_analyst_block(yahoo_analyst_json),
-        "Yahoo – elemzői események",
-        "Nem volt a #1 jelentés kritériumait teljesítő, friss Yahoo elemzői esemény (célár/rating) a zárás→most időablakban.",
-    )
-
-    body_lines = _append_blocks(body_lines, [analyst_block, catalysts_block, highconv_block, earnings_block, yahoo_analyst_block])
+    body_lines = _append_blocks(body_lines, [analyst_block, catalysts_block, highconv_block])
 
     final_lines = body_lines[:]
     if job_lines:
@@ -316,3 +241,72 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+def _safe_json_load(path: Path):
+    try:
+        if not path.exists():
+            return None
+        txt = path.read_text(encoding="utf-8").strip()
+        if not txt:
+            return None
+        return json.loads(txt)
+    except Exception:
+        return None
+
+def build_earnings_block_from_file(path: Path) -> str:
+    data = _safe_json_load(path)
+    items = None
+    if isinstance(data, dict):
+        items = data.get("items") or data.get("earnings") or data.get("data")
+    elif isinstance(data, list):
+        items = data
+    if not items:
+        return ""
+    lines = ["### 📅 Közelgő jelentések (1–7 nap)"]
+    for it in items[:30]:
+        t = (it.get("ticker") or it.get("symbol") or "").upper()
+        dt = it.get("datetime_local") or it.get("datetime") or it.get("date") or ""
+        when = it.get("when") or it.get("time") or it.get("session") or ""
+        title = it.get("title") or it.get("name") or ""
+        if not t:
+            continue
+        parts = [f"**{t}**"]
+        if title:
+            parts.append(f"– {title}")
+        if dt:
+            parts.append(f"– {dt}")
+        if when:
+            parts.append(f"({when})")
+        lines.append("- " + " ".join(parts))
+    return "\n".join(lines) + "\n"
+
+def build_yahoo_analyst_block_from_file(path: Path) -> str:
+    data = _safe_json_load(path)
+    items = None
+    if isinstance(data, dict):
+        items = data.get("items") or data.get("events") or data.get("data")
+    elif isinstance(data, list):
+        items = data
+    if not items:
+        return ""
+    lines = ["### 🧠 Yahoo – elemzői események (max 30 nap)"]
+    for it in items[:50]:
+        t = (it.get("ticker") or it.get("symbol") or "").upper()
+        firm = it.get("firm") or it.get("analyst") or it.get("source") or ""
+        action = it.get("action") or it.get("rating") or it.get("event") or ""
+        pt = it.get("pt") or it.get("price_target") or it.get("target") or ""
+        dt = it.get("date_local") or it.get("date") or it.get("datetime") or ""
+        if not t:
+            continue
+        bits = [f"**{t}**"]
+        if action:
+            bits.append(action)
+        if firm:
+            bits.append(f"({firm})")
+        if pt:
+            bits.append(f"PT: {pt}")
+        if dt:
+            bits.append(f"– {dt}")
+        lines.append("- " + " ".join(bits))
+    return "\n".join(lines) + "\n"
+
+
