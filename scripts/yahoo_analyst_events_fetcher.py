@@ -1,334 +1,328 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
-yahoo_analyst_events_fetcher.py – v3.0.0 (Yahoo HTML scrape)
+yahoo_analyst_events_fetcher.py – v4.0.0 (A: MarketBeat analyst ratings tracker)
 
-B-option implementation:
-  - Scrape https://finance.yahoo.com/quote/{TICKER}/analysis?p={TICKER}
-    and extract target snapshot + (if present) vendor analyst action items from embedded JSON.
-  - Also scrape quote page for QuoteSummaryStore.financialData as backup (targets snapshot).
+Kimenet:
+  - reports/yahoo_analyst_{report}.json
 
-Output:
-  reports/yahoo_analyst_{report}.json
-No external deps.
+Mit csinál:
+  - MarketBeat \"ratings\" tracker oldaláról kiolvassa a friss broker-akciókat
+    (upgrade/downgrade/initiations/price target változások), és csak a report univerzum tickereire szűr.
+  - Targets snapshot: MarketBeat forecast oldalról (consensus / hi / low) best-effort.
+
+Miért:
+  - A Yahoo root.App.main / QuoteSummaryStore szerkezet folyamatosan változik,
+    ezért az eddigi Yahoo-s parserek gyakran 0 itemet adtak és tele voltak hibával.
+
+Időablak:
+  - lookbackDays (default 14) – ez illeszkedik a high-conv logikához is.
 """
+
 from __future__ import annotations
 
 import argparse
+import csv
 import json
-import os
+import re
+import sys
 import time
-from dataclasses import dataclass, asdict
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
-import urllib.request
-import urllib.error
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+from urllib.parse import quote
+from urllib.request import Request, urlopen
+
+VERSION = "4.0.0"
 
 UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/123.0 Safari/537.36"
+    "Chrome/120.0 Safari/537.36"
 )
 
-DEFAULT_LOOKBACK_DAYS = 14
+EXCHANGES = ["NASDAQ", "NYSE", "AMEX", "OTCMKTS", "TSX", "TSXV"]
 
+MB_RATINGS_URL = "https://www.marketbeat.com/ratings/us/"
 
-def _utc_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def _ensure_dir(path: str) -> None:
-    if path:
-        os.makedirs(path, exist_ok=True)
-
-
-def _read_json_file(path: str) -> Optional[dict]:
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return None
-
-
-def _http_get(url: str, timeout: int = 25) -> Tuple[Optional[bytes], Optional[int], Optional[str]]:
-    req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "text/html,application/json,*/*"})
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.read(), resp.getcode(), None
-    except urllib.error.HTTPError as e:
+def _http_get(url: str, timeout: int = 25) -> str:
+    req = Request(url, headers={"User-Agent": UA, "Accept": "text/html,*/*"})
+    with urlopen(req, timeout=timeout) as r:
+        raw = r.read()
+    for enc in ("utf-8", "latin-1"):
         try:
-            body = e.read()
+            return raw.decode(enc)
         except Exception:
-            body = None
-        return body, e.code, f"HTTPError {e.code}"
-    except Exception as e:
-        return None, None, f"{type(e).__name__}: {e}"
-
-
-def _extract_root_app_main(html: str) -> Tuple[Optional[dict], Optional[str]]:
-    idx = html.find("root.App.main")
-    if idx < 0:
-        return None, "root.App.main not found"
-    eq = html.find("=", idx)
-    if eq < 0:
-        return None, "root.App.main '=' not found"
-    brace = html.find("{", eq)
-    if brace < 0:
-        return None, "root.App.main '{' not found"
-    depth = 0
-    in_str = False
-    esc = False
-    for i in range(brace, len(html)):
-        ch = html[i]
-        if in_str:
-            if esc:
-                esc = False
-            elif ch == "\\":
-                esc = True
-            elif ch == '"':
-                in_str = False
-        else:
-            if ch == '"':
-                in_str = True
-            elif ch == "{":
-                depth += 1
-            elif ch == "}":
-                depth -= 1
-                if depth == 0:
-                    blob = html[brace:i+1]
-                    try:
-                        return json.loads(blob), None
-                    except Exception as e:
-                        return None, f"root.App.main json parse error: {e}"
-    return None, "root.App.main JSON not closed"
-
-
-def _load_tickers(report: str) -> List[str]:
-    env = os.getenv("TICKERS", "").strip()
-    if env:
-        return [t.strip().upper() for t in env.split(",") if t.strip()]
-
-    for p in (f"reports/{report}/latest_{report}.json", f"reports/latest_{report}.json"):
-        j = _read_json_file(p)
-        if not j:
             continue
-        if isinstance(j, list):
-            return [str(x).upper() for x in j if str(x).strip()]
-        if isinstance(j, dict):
-            if isinstance(j.get("tickers"), list):
-                return [str(x).upper() for x in j["tickers"] if str(x).strip()]
-            out: List[str] = []
-            for key in ("positions", "watchlist", "symbols"):
-                arr = j.get(key)
-                if isinstance(arr, list):
-                    for it in arr:
-                        if isinstance(it, str):
-                            out.append(it.upper())
-                        elif isinstance(it, dict) and it.get("ticker"):
-                            out.append(str(it["ticker"]).upper())
-            if out:
-                return sorted(set(out))
+    return raw.decode("utf-8", errors="replace")
+
+
+def _load_universe(report: str) -> List[str]:
+    latest = Path("reports") / f"latest_{report}.json"
+    if latest.exists():
+        try:
+            data = json.loads(latest.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and isinstance(data.get("tickers"), list):
+                return [str(x).strip().upper() for x in data["tickers"] if str(x).strip()]
+            if isinstance(data, list):
+                out = []
+                for row in data:
+                    if isinstance(row, dict):
+                        t = row.get("ticker") or row.get("Ticker") or row.get("symbol")
+                        if t:
+                            out.append(str(t).strip().upper())
+                    elif isinstance(row, str):
+                        out.append(row.strip().upper())
+                return [t for t in out if t]
+        except Exception:
+            pass
+
+    master = Path("reports") / "master.csv"
+    if master.exists():
+        out = []
+        with master.open("r", encoding="utf-8-sig", newline="") as f:
+            reader = csv.reader(f)
+            rows = list(reader)
+        if not rows:
+            return []
+        header = [h.strip().lower() for h in rows[0]]
+        ticker_idx = 0
+        for i, h in enumerate(header):
+            if h in ("ticker", "symbol"):
+                ticker_idx = i
+                break
+        for r in rows[1:]:
+            if len(r) > ticker_idx:
+                t = r[ticker_idx].strip().upper()
+                if t:
+                    out.append(t)
+        return out
+
     return []
 
 
-@dataclass
-class SourceStatus:
-    ok: bool
-    count: int
-    errors: List[str]
-
-
-def _epoch_to_iso(epoch: int) -> str:
-    return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat()
-
-
-def _dig(obj: Any, *keys: str) -> Any:
-    cur = obj
-    for k in keys:
-        if not isinstance(cur, dict):
-            return None
-        cur = cur.get(k)
-    return cur
-
-
-def _raw(x: Any) -> Any:
-    if isinstance(x, dict) and "raw" in x:
-        return x.get("raw")
-    return x
-
-
-def _extract_targets_from_app(app: dict) -> Optional[dict]:
-    stores = _dig(app, "context", "dispatcher", "stores") or {}
-    qss = stores.get("QuoteSummaryStore") or {}
-    fd = qss.get("financialData") or {}
-    snap = {
-        "targetMeanPrice": _raw(fd.get("targetMeanPrice")),
-        "targetHighPrice": _raw(fd.get("targetHighPrice")),
-        "targetLowPrice": _raw(fd.get("targetLowPrice")),
-        "recommendationKey": fd.get("recommendationKey"),
-        "recommendationMean": _raw(fd.get("recommendationMean")),
-        "numberOfAnalystOpinions": _raw(fd.get("numberOfAnalystOpinions")),
-    }
-    if any(v is not None for v in snap.values()):
-        return snap
+def _parse_mb_date(s: str, now_utc: datetime) -> Optional[datetime]:
+    """
+    MarketBeat ratings tracker tipikusan 'Dec 18, 2025' vagy '12/18/2025' formátumokkal jön.
+    """
+    s = (s or "").strip()
+    if not s:
+        return None
+    for fmt in ("%b %d, %Y", "%B %d, %Y", "%m/%d/%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(s, fmt).replace(tzinfo=timezone.utc)
+        except Exception:
+            pass
+    # sometimes 'Dec. 18, 2025'
+    s2 = s.replace(".", "")
+    for fmt in ("%b %d, %Y",):
+        try:
+            return datetime.strptime(s2, fmt).replace(tzinfo=timezone.utc)
+        except Exception:
+            pass
     return None
 
 
-def _extract_vendor_events(app: dict, ticker: str, since_epoch: int) -> List[dict]:
-    stores = _dig(app, "context", "dispatcher", "stores") or {}
-    events: List[dict] = []
+def _strip_tags(html: str) -> str:
+    html = re.sub(r"<script[\\s\\S]*?</script>", " ", html, flags=re.I)
+    html = re.sub(r"<style[\\s\\S]*?</style>", " ", html, flags=re.I)
+    html = re.sub(r"<[^>]+>", " ", html)
+    html = re.sub(r"\\s+", " ", html).strip()
+    return html
 
-    def walk(x: Any):
-        if isinstance(x, dict):
-            keys = set(x.keys())
-            # heuristic: benzinga-like payload
-            if {"action_company", "action_pt"} <= keys or {"adjusted_pt_current", "adjusted_pt_prior"} <= keys:
-                epoch = None
-                for k in ("epoch", "date", "published", "timestamp"):
-                    v = x.get(k)
-                    if isinstance(v, (int, float)):
-                        epoch = int(v)
-                        break
-                    if isinstance(v, dict) and isinstance(v.get("raw"), (int, float)):
-                        epoch = int(v["raw"])
-                        break
-                if epoch is None:
-                    # keep but mark unknown time; use now so it appears (better than dropping)
-                    epoch = int(time.time())
-                if epoch >= since_epoch:
-                    events.append({
-                        "ticker": ticker,
-                        "source": "YahooFinance.HTML.vendor_feed",
-                        "epoch": epoch,
-                        "dateUtc": _epoch_to_iso(epoch),
-                        "firm": x.get("firm") or x.get("action_firm") or x.get("analyst"),
-                        "actionCompany": x.get("action_company") or x.get("actionCompany"),
-                        "actionPt": x.get("action_pt") or x.get("actionPt"),
-                        "ptPrior": x.get("adjusted_pt_prior") or x.get("pt_prior") or x.get("ptPrior"),
-                        "ptCurrent": x.get("adjusted_pt_current") or x.get("pt_current") or x.get("ptCurrent"),
-                        "ratingPrior": x.get("rating_prior") or x.get("ratingPrior"),
-                        "ratingCurrent": x.get("rating_current") or x.get("ratingCurrent"),
-                        "headline": x.get("headline") or x.get("title"),
-                        "url": x.get("url") or x.get("link"),
-                    })
-            for v in x.values():
-                walk(v)
-        elif isinstance(x, list):
-            for v in x:
-                walk(v)
 
-    walk(stores)
+def _extract_ticker_from_cell(cell_html: str) -> Optional[str]:
+    """
+    ratings trackerben a ticker sokszor zárójelben szerepel: 'Apple (AAPL)'
+    """
+    txt = _strip_tags(cell_html)
+    m = re.search(r"\\((?P<t>[A-Z0-9\\.\\-]{1,10})\\)", txt)
+    if m:
+        return m.group("t").upper()
+    # fallback: data-ticker attr
+    m2 = re.search(r'data-ticker\\s*=\\s*\"([^\"]+)\"', cell_html, flags=re.I)
+    if m2:
+        return m2.group(1).upper()
+    return None
 
-    uniq: List[dict] = []
-    seen = set()
-    for e in events:
-        key = (e.get("ticker"), e.get("firm"), e.get("actionCompany"), e.get("actionPt"), e.get("ptPrior"), e.get("ptCurrent"), e.get("epoch"))
-        if key in seen:
+
+def _parse_ratings_table(html: str) -> List[Dict]:
+    """
+    Best-effort HTML table parser: a ratings/us oldalon a fő táblázat sorait kivesszük.
+    """
+    rows = []
+    # find table rows
+    for m in re.finditer(r"<tr[^>]*>(?P<tr>[\\s\\S]*?)</tr>", html, flags=re.I):
+        tr = m.group("tr")
+        cells = re.findall(r"<t[dh][^>]*>([\\s\\S]*?)</t[dh]>", tr, flags=re.I)
+        if len(cells) < 4:
             continue
-        seen.add(key)
-        uniq.append(e)
-    return uniq
+        # Heurisztika a tipikus oszlopokra: Date | Company | Action | Firm | Rating | PT (nem mindig ugyanaz)
+        date_txt = _strip_tags(cells[0])
+        ticker = _extract_ticker_from_cell(cells[1]) or _extract_ticker_from_cell(tr)
+        action_txt = _strip_tags(cells[2])
+        firm_txt = _strip_tags(cells[3]) if len(cells) > 3 else ""
+        rating_txt = _strip_tags(cells[4]) if len(cells) > 4 else ""
+        pt_txt = _strip_tags(cells[5]) if len(cells) > 5 else ""
+
+        if not date_txt or not ticker:
+            continue
+
+        rows.append(
+            {
+                "date": date_txt,
+                "ticker": ticker,
+                "action": action_txt,
+                "firm": firm_txt,
+                "rating": rating_txt,
+                "priceTargetRaw": pt_txt,
+            }
+        )
+    return rows
 
 
-def main() -> int:
+def _mb_forecast_url(ticker: str, exch: str) -> str:
+    return f"https://www.marketbeat.com/stocks/{exch}/{quote(ticker)}/forecast/"
+
+
+def _extract_targets_snapshot(html: str) -> Dict:
+    """
+    A forecast oldalon tipikusan szerepel:
+      - Consensus Price Target
+      - highest / lowest price target
+    """
+    txt = _strip_tags(html)
+    snap = {}
+
+    # consensus price target: often like '$283.92'
+    m = re.search(r"Consensus Price Target\\s+\\$?([0-9]+(?:\\.[0-9]+)?)", txt, flags=re.I)
+    if m:
+        snap["consensus"] = float(m.group(1))
+
+    m = re.search(r"highest price target\\s+is\\s+\\$?([0-9]+(?:\\.[0-9]+)?)", txt, flags=re.I)
+    if m:
+        snap["high"] = float(m.group(1))
+
+    m = re.search(r"lowest price target\\s+is\\s+\\$?([0-9]+(?:\\.[0-9]+)?)", txt, flags=re.I)
+    if m:
+        snap["low"] = float(m.group(1))
+
+    # consensus rating label (Moderate Buy etc.)
+    m = re.search(r"Consensus Rating\\s+([A-Za-z ]{3,25})", txt, flags=re.I)
+    if m:
+        snap["consensusRating"] = m.group(1).strip()
+
+    return snap
+
+
+def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--report", required=True, help="1|2|3")
-    ap.add_argument("--lookback-days", type=int, default=DEFAULT_LOOKBACK_DAYS)
-    ap.add_argument("--out", default=None)
+    ap.add_argument("--report", default="1")
+    ap.add_argument("--lookback-days", type=int, default=14)
+    ap.add_argument("--sleep", type=float, default=0.6)
     args = ap.parse_args()
 
-    report = str(args.report).strip()
-    lookback_days = max(1, int(args.lookback_days))
-    out_path = args.out or f"reports/yahoo_analyst_{report}.json"
-    _ensure_dir(os.path.dirname(out_path) or ".")
+    report = str(args.report)
+    now_utc = datetime.now(timezone.utc)
+    start_utc = now_utc - timedelta(days=int(args.lookback_days))
 
-    tickers = _load_tickers(report)
-    since_epoch = int(time.time()) - lookback_days * 86400
+    universe = set([t for t in _load_universe(report) if t and "." not in t and "/" not in t])
 
-    src_analysis = SourceStatus(ok=True, count=0, errors=[])
-    src_quote = SourceStatus(ok=True, count=0, errors=[])
+    items: List[Dict] = []
+    errors_ratings: List[str] = []
+    errors_targets: List[str] = []
+    targets_snapshot: Dict[str, Dict] = {}
 
-    items: List[dict] = []
-    targets_snapshot: Dict[str, dict] = {}
+    # --- 1) Ratings tracker ---
+    try:
+        html = _http_get(MB_RATINGS_URL)
+        rows = _parse_ratings_table(html)
+        for r in rows:
+            t = r["ticker"]
+            if t not in universe:
+                continue
+            dt = _parse_mb_date(r["date"], now_utc)
+            if not dt:
+                continue
+            if not (start_utc <= dt <= now_utc):
+                continue
 
-    if not tickers:
-        payload = {
-            "ok": True,
-            "type": "yahoo_analyst_events",
-            "report": report,
-            "generatedAt": _utc_iso(),
-            "window": {"lookbackDays": lookback_days},
-            "count": 0,
-            "items": [],
-            "targetsSnapshot": {},
-            "sources": {"yahoo_analysis_html": asdict(src_analysis), "yahoo_quote_html": asdict(src_quote)},
-            "warning": "No tickers found (set env TICKERS or provide reports/latest_*.json).",
-        }
-        with open(out_path, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
-        return 0
+            # try parse PT number if present
+            pt = None
+            if r.get("priceTargetRaw"):
+                m = re.search(r"\\$?([0-9]+(?:\\.[0-9]+)?)", r["priceTargetRaw"])
+                if m:
+                    try:
+                        pt = float(m.group(1))
+                    except Exception:
+                        pt = None
 
-    for t in tickers:
-        # 1) /analysis page
-        url = f"https://finance.yahoo.com/quote/{t}/analysis?p={t}"
-        body, status, err = _http_get(url, timeout=25)
-        if body is not None:
-            html = body.decode("utf-8", errors="replace")
-            app, eapp = _extract_root_app_main(html)
-            if app:
-                snap = _extract_targets_from_app(app)
+            items.append(
+                {
+                    "ticker": t,
+                    "dateUtc": dt.isoformat(),
+                    "source": "marketbeat_ratings_tracker",
+                    "action": r.get("action") or "",
+                    "firm": r.get("firm") or "",
+                    "rating": r.get("rating") or "",
+                    "priceTarget": pt,
+                    "priceTargetRaw": r.get("priceTargetRaw") or "",
+                }
+            )
+    except Exception as e:
+        errors_ratings.append(f"ratings-tracker: {type(e).__name__}: {e}")
+
+    # --- 2) Targets snapshot (per ticker, best-effort) ---
+    for t in sorted(universe):
+        got = False
+        last_err = None
+        for exch in EXCHANGES:
+            url = _mb_forecast_url(t, exch)
+            try:
+                html = _http_get(url)
+                snap = _extract_targets_snapshot(html)
                 if snap:
-                    targets_snapshot[t] = snap
-                ev = _extract_vendor_events(app, t, since_epoch)
-                if ev:
-                    items.extend(ev)
-                    src_analysis.count += len(ev)
-            else:
-                src_analysis.ok = False
-                src_analysis.errors.append(f"{t}: {eapp or 'root.App.main parse failed'}")
-        else:
-            src_analysis.ok = False
-            src_analysis.errors.append(f"{t}: {err or f'no-body (status={status})'}")
-
-        # 2) quote page fallback for targets snapshot
-        if t not in targets_snapshot:
-            qurl = f"https://finance.yahoo.com/quote/{t}"
-            body2, status2, err2 = _http_get(qurl, timeout=25)
-            if body2 is not None:
-                html2 = body2.decode("utf-8", errors="replace")
-                app2, eapp2 = _extract_root_app_main(html2)
-                if app2:
-                    snap2 = _extract_targets_from_app(app2)
-                    if snap2:
-                        targets_snapshot[t] = snap2
-                        src_quote.count += 1
-                else:
-                    src_quote.ok = False
-                    src_quote.errors.append(f"{t}: {eapp2 or 'root.App.main parse failed'}")
-            else:
-                src_quote.ok = False
-                src_quote.errors.append(f"{t}: {err2 or f'no-body (status={status2})'}")
-
-    cleaned = []
-    for it in items:
-        if it.get("firm") or it.get("headline") or it.get("ptCurrent") or it.get("ptPrior") or it.get("actionCompany"):
-            cleaned.append(it)
-    cleaned = sorted(cleaned, key=lambda x: (x.get("epoch", 0), x.get("ticker", "")), reverse=True)
+                    targets_snapshot[t] = {"source": "marketbeat_forecast", "exchange": exch, **snap}
+                    got = True
+                    break
+                last_err = f"{t}: snapshot-empty ({exch})"
+            except Exception as e:
+                last_err = f"{t}: fetch-error ({exch}): {type(e).__name__}: {e}"
+            finally:
+                if args.sleep:
+                    time.sleep(float(args.sleep))
+        if not got and last_err:
+            errors_targets.append(last_err)
 
     payload = {
         "ok": True,
         "type": "yahoo_analyst_events",
+        "version": VERSION,
         "report": report,
-        "generatedAt": _utc_iso(),
-        "window": {"lookbackDays": lookback_days},
-        "count": len(cleaned),
-        "items": cleaned,
+        "generatedAt": now_utc.isoformat(),
+        "window": {"lookbackDays": int(args.lookback_days)},
+        "count": len(items),
+        "items": sorted(items, key=lambda x: (x.get("dateUtc", ""), x.get("ticker", ""))),
         "targetsSnapshot": targets_snapshot,
-        "sources": {"yahoo_analysis_html": asdict(src_analysis), "yahoo_quote_html": asdict(src_quote)},
+        "sources": {
+            "marketbeat_ratings_tracker": {
+                "ok": len(errors_ratings) == 0,
+                "count": len([i for i in items if i.get("source") == "marketbeat_ratings_tracker"]),
+                "errors": errors_ratings[:50],
+                "url": MB_RATINGS_URL,
+            },
+            "marketbeat_forecast_targets_snapshot": {
+                "ok": len(targets_snapshot) > 0,
+                "count": len(targets_snapshot),
+                "errors": errors_targets[:200],
+            },
+        },
     }
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
-    return 0
+
+    out_path = Path("reports") / f"yahoo_analyst_{report}.json"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()
