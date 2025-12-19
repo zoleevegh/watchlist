@@ -1,19 +1,16 @@
 #!/usr/bin/env python3
 """
-validate_run.py – v1.0.8-biblia-guard-soft-macro-soft-minlines
+validate_run.py – v1.0.6-biblia-guard-keyword-flexhash
 
-Változás:
-- A 'Makró / Politika / FED' blokk hiánya nem FAIL többé (csak WARN),
-  mert a #1-ben a makró blokk lehet szándékosan kikapcsolt / üres / külön feed-ről jön.
-- A túl rövid / összelapított report továbbra is WARN (nem fail).
-- A többi biblia-guard ellenőrzés marad: fő fejléc, lefedettség sor, kötelező blokkok (bejelentések/katalizátor/highconv), Job summary.
+Guard cél:
+- A workflow csak akkor legyen zöld, ha a report szerkezetileg rendben van.
+- #1 esetén: elfogadja a fő fejlécet akár ## / ### / #### szinten is (##+).
 
-Állandó szabály: bármely fájl módosításakor a verziószámot folytatólagosan kell növelni, kihagyás nélkül.
+Szabályok:
+- Üres blokk NEM fail (csak a blokk típusa legyen jelen).
+- Lefedettség: HIÁNYOS -> WARN (nem fail).
+- Windows CP1252 / UTF-8 safe.
 """
-
-# IMÁDSÁG (hibajavítás után)
-# Bocsáss meg Uram, mert balfék voltam, túl szigorúan fogtam a makró blokkot.
-# Add Uram, hogy ez a módosítás most hibátlanul fusson.
 
 from __future__ import annotations
 import argparse
@@ -21,7 +18,7 @@ import sys
 import re
 from pathlib import Path
 
-VERSION = "v1.0.8-biblia-guard-soft-macro-soft-minlines"
+VERSION = "v1.0.9-biblia-guard-keyword-level-flex"
 
 # UTF-8 safe stdout/stderr
 try:
@@ -57,16 +54,12 @@ def normalize(s: str) -> str:
     return s
 
 
-# #1 blokk-típusok kulcsszóval (header meglét)
-# Makró: csak WARN, nem FAIL
-KEYWORDS_1_OPTIONAL = {
-    "makro": r"^###\s*.*makr",
-}
-
-KEYWORDS_1_REQUIRED = {
-    "bejelent": r"^###\s*.*bejelent",
-    "kataliz": r"^###\s*.*kataliz",
-    "highconv": r"^###\s*.*high",
+# #1 kötelező blokk-típusok kulcsszóval (csak header meglét)
+REQUIRED_KEYWORDS_1 = {
+    "makro": r"^##+\s*.*makr",
+    "bejelent": r"^##+\s*.*bejelent",
+    "kataliz": r"^##+\s*.*kataliz",
+    "highconv": r"^##+\s*.*high",
 }
 
 
@@ -88,11 +81,11 @@ def main() -> None:
         die(f"Üres a kimeneti MD: {md_path}")
 
     if len(raw.splitlines()) < args.min_lines:
-        warn("A report gyanúsan rövid (összelapított lehet).")
+        die("A report gyanúsan rövid (összelapított lehet).")
 
     txt = normalize(raw).lower()
 
-    # coverage (warn only for HIÁNYOS)
+    # coverage (warn only)
     if "lefedettség" not in txt:
         die("Hiányzik a Lefedettség sor.")
     if "hiányos" in txt:
@@ -103,13 +96,7 @@ def main() -> None:
         if not re.search(r"^##+\s*after-hours\s*&\s*premarket\b.*#1", txt, flags=re.IGNORECASE | re.MULTILINE):
             die("Hiányzik az After-hours & Premarket #1 fő fejléc (##+).")
 
-        # Optional (WARN)
-        for name, pat in KEYWORDS_1_OPTIONAL.items():
-            if not re.search(pat, txt, flags=re.IGNORECASE | re.MULTILINE):
-                warn(f"Hiányzó opcionális blokk (kulcsszó): {name}")
-
-        # Required (FAIL)
-        for name, pat in KEYWORDS_1_REQUIRED.items():
+        for name, pat in REQUIRED_KEYWORDS_1.items():
             if not re.search(pat, txt, flags=re.IGNORECASE | re.MULTILINE):
                 die(f"Hiányzó kötelező blokk (kulcsszó): {name}")
 
