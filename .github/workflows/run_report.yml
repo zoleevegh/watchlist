@@ -1,4 +1,4 @@
-name: Run Report (Windows) # v2.2.10-biblia1-earnings-cli-fix-validate-softminlines
+name: Run Report (Windows) # v2.2.9-biblia1-postprocess-orderfix-guard3
 
 on:
   workflow_dispatch:
@@ -273,11 +273,11 @@ jobs:
           }
           else {
             if (Test-Path "scripts\postprocess_report.py") {
-              $mdPath    = "reports\summary_report_1.md"
+              $mdPath    = "reports\summary_report_${report}.md"
               $bundleDir = "reports"
 
               python -u -X utf8 "scripts\postprocess_report.py" `
-                --report 1 `
+                --report $report `
                 --md "$mdPath" `
                 --bundle-dir "$bundleDir"
             }
