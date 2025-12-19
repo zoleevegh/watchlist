@@ -27,7 +27,7 @@ import re
 import subprocess
 from pathlib import Path
 
-VERSION = "v1.1.1-biblia-guard-autofill-required-blocks"
+VERSION = "v1.1.2-biblia-guard-macro-required"
 
 # UTF-8 safe stdout/stderr
 try:
@@ -163,7 +163,7 @@ def main() -> None:
             die("Hiányzik az After-hours & Premarket #1 fő fejléc (##+).")
 
         if not re.search(PAT_MACRO, txt, flags=re.IGNORECASE):
-            warn("Hiányzó opcionális blokk (kulcsszó): makro")
+            die("Hiányzó kötelező blokk (kulcsszó): makro")
 
         missing = _check_required_blocks(txt)
         if missing:
