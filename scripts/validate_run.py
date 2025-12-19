@@ -27,7 +27,7 @@ import re
 import subprocess
 from pathlib import Path
 
-VERSION = "v1.1.2-biblia-guard-macro-required"
+VERSION = "v1.1.3-biblia-guard-macro-autofill-after-coverage"
 
 # UTF-8 safe stdout/stderr
 try:
@@ -105,21 +105,73 @@ def _try_postprocess(md_path: Path, report: str) -> None:
 
 
 def _append_placeholder_blocks(md_path: Path, missing: list[str]) -> None:
-    """Üres kötelező blokkok hozzáadása a report végére."""
-    txt = md_path.read_text(encoding="utf-8", errors="replace").rstrip() + "\n\n"
+    """Üres kötelező blokkok hozzáadása.
+
+    - Makró blokkot a Lefedettség sor UTÁN próbálja beszúrni (bibliás sorrend).
+    - A többi blokk a report végére kerül (struktúra garancia).
+    """
+    original = md_path.read_text(encoding="utf-8", errors="replace")
+    txt = original.rstrip()
+
+    def insert_after_coverage(text: str, block: str) -> str:
+        # Próbáljuk soronként: első 'Lefedettség:' előfordulás után
+        lines = text.splitlines()
+        for i, ln in enumerate(lines):
+            if "lefedettség:" in ln.lower():
+                return "
+".join(lines[:i+1] + ["", block.strip(), ""] + lines[i+1:])
+        # fallback: elejére
+        return block.strip() + "
+
+" + text
+
+    # 1) Makró: bibliásan a Lefedettség után
+    if "makro" in missing:
+        macro_block = "### Makró / Politika / FED
+
+- (auto) Ma nem volt piaci relevanciájú makró / FED / politikai esemény az AH/PM sávban.
+"
+        txt = insert_after_coverage(txt, macro_block)
+        warn("Auto-kitöltés: hiányzó makró blokk hozzáadva (Lefedettség után).")
+
+    # 2) többi blokk a végére
+    tail = ""
     for key in missing:
+        if key == "makro":
+            continue
         if key == "bejelent":
-            txt += "### Bejelentések & fel/lemínősítések\n\n- (auto) Nem érkezett a #1 kritériumait teljesítő vállalati közlés vagy elemzői lépés.\n\n"
+            tail += "### Bejelentések & fel/lemínősítések
+
+- (auto) Nem érkezett a #1 kritériumait teljesítő vállalati közlés vagy elemzői lépés.
+
+"
         elif key == "kataliz":
-            txt += "### Közeli katalizátorok\n\n- (auto) Nem volt a #1 kritériumait teljesítő, közelgő katalizátor.\n\n"
+            tail += "### Közeli katalizátorok
+
+- (auto) Nem volt a #1 kritériumait teljesítő, közelgő katalizátor.
+
+"
         elif key == "highconv":
-            txt += "### Listán kívüli, 3–12 hónapos high-conviction jelöltek\n\n- (auto) Nem volt a #1 kritériumait teljesítő, listán kívüli ismételt erős jelzés.\n\n"
-    md_path.write_text(txt.rstrip() + "\n", encoding="utf-8")
+            tail += "### Listán kívüli, 3–12 hónapos high-conviction jelöltek
+
+- (auto) Nem volt a #1 kritériumait teljesítő, listán kívüli ismételt erős jelzés.
+
+"
+
+    if tail:
+        txt = txt.rstrip() + "
+
+" + tail.rstrip() + "
+"
+
+    md_path.write_text(txt, encoding="utf-8")
     warn(f"Auto-kitöltés: hiányzó kötelező blokk-fejlécek hozzáadva: {', '.join(missing)}")
 
 
 def _check_required_blocks(txt: str) -> list[str]:
-    missing = []
+    missing: list[str] = []
+    if not re.search(PAT_MACRO, txt, flags=re.IGNORECASE):
+        missing.append("makro")
     if not re.search(PAT_BEJELENT, txt, flags=re.IGNORECASE):
         missing.append("bejelent")
     if not re.search(PAT_KATALIZ, txt, flags=re.IGNORECASE):
