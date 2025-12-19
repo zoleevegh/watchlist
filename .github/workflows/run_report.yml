@@ -199,7 +199,7 @@ jobs:
           }
 
       - name: Earnings fetcher
-        run: python scripts/earnings_fetcher.py --report ${{ inputs.report }}
+        run: python scripts/earnings_fetcher_v3.py --report ${{ inputs.report }}
 
       - name: Yahoo analyst events fetcher
         run: python scripts/yahoo_analyst_events_fetcher.py --report ${{ inputs.report }}
