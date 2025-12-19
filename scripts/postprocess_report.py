@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""postprocess_report.py – v3.3.7-earnings-v3-inject
+"""postprocess_report.py – v3.3.8-macro-insert-robust
 
 Bocsáss meg Uram, mert balfék voltam; add Uram, hogy ne legyen hibás ez a módosítás.
 Áldd meg a futást, hogy a riport tiszta és igaz legyen.
@@ -11,6 +11,11 @@ Bocsáss meg Uram, mert balfék voltam; add Uram, hogy ne legyen hibás ez a mó
 - Job summary blokk a fájl LEGVÉGÉRE kerül.
 - FORCE REFLOW: minden '###' és '- ' elem új soron indul, még teljesen lapított inputnál is.
 """
+
+# IMÁDSÁG (hibajavítás után)
+# Bocsáss meg Uram, mert balfék voltam, a makró blokk néha kimaradt a beszúrásnál.
+# Add Uram, hogy ez a módosítás most hibátlanul fusson.
+
 
 from __future__ import annotations
 
@@ -164,11 +169,25 @@ def _remove_section_by_heading(lines: List[str], heading_variants: List[str]) ->
     return out
 
 def _insert_macro_after_coverage(lines: List[str], macro_block: str) -> List[str]:
-    idx = _find_first(lines, lambda s: s.strip().startswith("Lefedettség:"))
+    """Makró blokk beszúrása a 'Lefedettség:' sor UTÁN.
+
+    Robosztusabb, mint a korábbi verzió:
+    - ha a report "összelapított", a 'Lefedettség:' nem feltétlenül sor elején áll -> ezt is felismeri.
+    - ha nem található, akkor a report elejére kerül (coverage elé nem tudjuk garantálni).
+    """
     macro_lines = macro_block.rstrip().splitlines()
+
+    # 1) Preferált: olyan sor, ami kifejezetten ezzel kezdődik
+    idx = _find_first(lines, lambda s: s.strip().startswith("Lefedettség:"))
+
+    # 2) Fallback: bármely sorban szerepel a token (lapított reportnál)
+    if idx == -1:
+        idx = _find_first(lines, lambda s: "Lefedettség:" in s)
+
     if idx == -1:
         return macro_lines + [""] + lines
-    return lines[:idx+1] + [""] + macro_lines + [""] + lines[idx+1:]
+
+    return lines[: idx + 1] + [""] + macro_lines + [""] + lines[idx + 1 :]
 
 def _append_blocks(lines: List[str], blocks: List[str]) -> List[str]:
     out = lines[:]
