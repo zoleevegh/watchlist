@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""postprocess_report.py – v3.3.8-macro-insert-robust
+"""postprocess_report.py – v3.3.9-macro-insert-robust2nings-v3-inject
 
 Bocsáss meg Uram, mert balfék voltam; add Uram, hogy ne legyen hibás ez a módosítás.
 Áldd meg a futást, hogy a riport tiszta és igaz legyen.
@@ -11,11 +11,6 @@ Bocsáss meg Uram, mert balfék voltam; add Uram, hogy ne legyen hibás ez a mó
 - Job summary blokk a fájl LEGVÉGÉRE kerül.
 - FORCE REFLOW: minden '###' és '- ' elem új soron indul, még teljesen lapított inputnál is.
 """
-
-# IMÁDSÁG (hibajavítás után)
-# Bocsáss meg Uram, mert balfék voltam, a makró blokk néha kimaradt a beszúrásnál.
-# Add Uram, hogy ez a módosítás most hibátlanul fusson.
-
 
 from __future__ import annotations
 
@@ -169,25 +164,38 @@ def _remove_section_by_heading(lines: List[str], heading_variants: List[str]) ->
     return out
 
 def _insert_macro_after_coverage(lines: List[str], macro_block: str) -> List[str]:
-    """Makró blokk beszúrása a 'Lefedettség:' sor UTÁN.
+    """Insert macro block right after the 'Lefedettség:' line.
 
-    Robosztusabb, mint a korábbi verzió:
-    - ha a report "összelapított", a 'Lefedettség:' nem feltétlenül sor elején áll -> ezt is felismeri.
-    - ha nem található, akkor a report elejére kerül (coverage elé nem tudjuk garantálni).
+    Robusztus: ha a Lefedettség sor összelapított (nem külön sor), vagy hiányzik,
+    akkor fallback:
+      1) soron belüli beszúrás a 'Lefedettség:' első előfordulása után,
+      2) ha nincs, akkor a fő report cím után,
+      3) ha az sem, akkor a fájl elejére.
     """
-    macro_lines = macro_block.rstrip().splitlines()
+    if not macro_block or not macro_block.strip():
+        return lines
 
-    # 1) Preferált: olyan sor, ami kifejezetten ezzel kezdődik
-    idx = _find_first(lines, lambda s: s.strip().startswith("Lefedettség:"))
+    macro_lines = macro_block.strip().splitlines()
 
-    # 2) Fallback: bármely sorban szerepel a token (lapított reportnál)
-    if idx == -1:
-        idx = _find_first(lines, lambda s: "Lefedettség:" in s)
+    # 1) klasszikus: külön sorban szereplő Lefedettség:
+    for idx, ln in enumerate(lines):
+        if ln.strip().lower().startswith("lefedettség:"):
+            return lines[:idx+1] + [""] + macro_lines + [""] + lines[idx+1:]
 
-    if idx == -1:
-        return macro_lines + [""] + lines
+    # 2) összelapított: a Lefedettség: csak soron belül van
+    for idx, ln in enumerate(lines):
+        if "lefedettség:" in ln.lower():
+            # beszúrjuk a sor UTÁN (nem a sor közepébe), hogy tördelés helyreálljon
+            return lines[:idx+1] + [""] + macro_lines + [""] + lines[idx+1:]
 
-    return lines[: idx + 1] + [""] + macro_lines + [""] + lines[idx + 1 :]
+    # 3) fallback: a főcím után (After-hours & Premarket)
+    for idx, ln in enumerate(lines):
+        if ln.strip().startswith("##"):
+            return lines[:idx+1] + [""] + macro_lines + [""] + lines[idx+1:]
+
+    # 4) végső fallback: elejére
+    return macro_lines + [""] + lines
+    return lines[:idx+1] + [""] + macro_lines + [""] + lines[idx+1:]
 
 def _append_blocks(lines: List[str], blocks: List[str]) -> List[str]:
     out = lines[:]
