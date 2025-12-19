@@ -184,3 +184,17 @@ scripts/
 ├── analyst_catalyst_builder.py   # NEW – MarketBeat / MarketWatch analyst & catalyst parser (jina-md)
 ├── highconv_block_builder.py
 ├── highconv_builder.py
+
+## Validate guard – pontosítás
+
+A validate guard célja nem az, hogy „üres napokon” megállítsa a futást,
+hanem hogy **szerkezetileg hibás riport ne kerülhessen publikálásra**.
+
+A makró, analyst, katalizátor és high‑conv blokkok
+**strukturálisan kötelezőek**, de üres adat esetén
+a postprocess lépés placeholder blokkokat szúr be.
+
+A workflow csak akkor áll PIROSRA, ha:
+- a riport szerkezetileg sérült,
+- kötelező blokk‑header hiányzik,
+- vagy a jelentés nem felel meg a BIBLIA blokk‑sorrendjének.
