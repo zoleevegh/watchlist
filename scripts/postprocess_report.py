@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""postprocess_report.py – v3.3.6-earnings-yahoo-dedupe
+"""postprocess_report.py – v3.3.7-earnings-v3-inject
+
+Bocsáss meg Uram, mert balfék voltam; add Uram, hogy ne legyen hibás ez a módosítás.
+Áldd meg a futást, hogy a riport tiszta és igaz legyen.
 
 #1: kényszerített tördelés akkor is, ha a runner 1 sorba lapította a teljes jelentést.
 
@@ -182,65 +185,8 @@ def _append_blocks(lines: List[str], blocks: List[str]) -> List[str]:
         out.pop()
     return out
 
-def main() -> None:
-    p = argparse.ArgumentParser()
-    p.add_argument("--md", required=True)
-    p.add_argument("--bundle-dir", required=True)
-    p.add_argument("--report", default="1")
-    args = p.parse_args()
 
-    md_path = Path(args.md)
-    bundle_dir = Path(args.bundle_dir)
 
-    macro_json = bundle_dir / "macro_news_1.json"
-    analyst_json = bundle_dir / "analyst_1.json"
-    catalysts_json = bundle_dir / "catalysts_1.json"
-    highconv_json = bundle_dir / "high_conv_1.json"
-    earnings_json = bundle_dir / "earnings_1.json"
-    yahoo_analyst_json = bundle_dir / "yahoo_analyst_1.json"
-
-    raw = _read_md(md_path)
-    raw = _force_reflow(raw)
-    lines = raw.splitlines()
-
-    body_lines, job_lines = _extract_job_summary(lines)
-
-    body_lines = _remove_section_by_heading(body_lines, ["### Makró / Politika / FED", "### Politika / FED / Makró"])
-    body_lines = _remove_section_by_heading(body_lines, ["### Bejelentések & fel/lemínősítések", "### 🧩 Bejelentések & fel/lemínősítések"])
-    body_lines = _remove_section_by_heading(body_lines, ["### Közeli katalizátorok", "### ⏳ Közelgő katalizátorok", "### Közelgő katalizátorok"])
-    body_lines = _remove_section_by_heading(body_lines, ["### Listán kívüli, 3–12 hónapos high-conviction jelöltek", "### 🚀 Listán kívüli, 3–12 hónapos high-conviction jelöltek"])
-
-    macro_block = _build_macro_block(macro_json)
-    body_lines = _insert_macro_after_coverage(body_lines, macro_block)
-
-    analyst_block = _ensure_block(
-        build_analyst_block(analyst_json),
-        "Bejelentések & fel/lemínősítések",
-        "Nem érkezett a #1 jelentés kritériumait teljesítő vállalati közlés vagy elemzői lépés az AH/PM sávban.",
-    )
-    catalysts_block = _ensure_block(
-        build_catalysts_block_from_file(catalysts_json),
-        "Közeli katalizátorok",
-        "Nem volt a #1 jelentés kritériumait teljesítő, közelgő katalizátor az AH/PM sávban.",
-    )
-    highconv_block = _ensure_block(
-        build_highconv_block_from_file(highconv_json),
-        "Listán kívüli, 3–12 hónapos high-conviction jelöltek",
-        "Nem volt a #1 jelentés kritériumait teljesítő, listán kívüli ismételt erős jelzés az AH/PM sávban.",
-    )
-
-    body_lines = _append_blocks(body_lines, [analyst_block, catalysts_block, highconv_block])
-
-    final_lines = body_lines[:]
-    if job_lines:
-        if final_lines and final_lines[-1].strip() != "":
-            final_lines.append("")
-        final_lines.extend(job_lines)
-
-    _write_md(md_path, "\n".join(final_lines).rstrip() + "\n")
-
-if __name__ == "__main__":
-    main()
 def _safe_json_load(path: Path):
     try:
         if not path.exists():
@@ -310,3 +256,80 @@ def build_yahoo_analyst_block_from_file(path: Path) -> str:
     return "\n".join(lines) + "\n"
 
 
+
+
+def main() -> None:
+    p = argparse.ArgumentParser()
+    p.add_argument("--md", required=True)
+    p.add_argument("--bundle-dir", required=True)
+    p.add_argument("--report", default="1")
+    args = p.parse_args()
+
+    md_path = Path(args.md)
+    bundle_dir = Path(args.bundle_dir)
+
+    macro_json = bundle_dir / "macro_news_1.json"
+    analyst_json = bundle_dir / "analyst_1.json"
+    catalysts_json = bundle_dir / "catalysts_1.json"
+    highconv_json = bundle_dir / "high_conv_1.json"
+    earnings_json = bundle_dir / "earnings_1.json"
+    yahoo_analyst_json = bundle_dir / "yahoo_analyst_1.json"
+
+    raw = _read_md(md_path)
+    raw = _force_reflow(raw)
+    lines = raw.splitlines()
+
+    body_lines, job_lines = _extract_job_summary(lines)
+
+    body_lines = _remove_section_by_heading(body_lines, ["### Makró / Politika / FED", "### Politika / FED / Makró"])
+    body_lines = _remove_section_by_heading(body_lines, ["### Bejelentések & fel/lemínősítések", "### 🧩 Bejelentések & fel/lemínősítések"])
+    body_lines = _remove_section_by_heading(body_lines, ["### Közeli katalizátorok", "### ⏳ Közelgő katalizátorok", "### Közelgő katalizátorok"])
+    body_lines = _remove_section_by_heading(body_lines, ["### Listán kívüli, 3–12 hónapos high-conviction jelöltek", "### 🚀 Listán kívüli, 3–12 hónapos high-conviction jelöltek"])
+
+    macro_block = _build_macro_block(macro_json)
+    body_lines = _insert_macro_after_coverage(body_lines, macro_block)
+
+    analyst_block = _ensure_block(
+        build_analyst_block(analyst_json),
+        "Bejelentések & fel/lemínősítések",
+        "Nem érkezett a #1 jelentés kritériumait teljesítő vállalati közlés vagy elemzői lépés az AH/PM sávban.",
+    )
+    catalysts_block = _ensure_block(
+        build_catalysts_block_from_file(catalysts_json),
+        "Közeli katalizátorok",
+        "Nem volt a #1 jelentés kritériumait teljesítő, közelgő katalizátor az AH/PM sávban.",
+    )
+    highconv_block = _ensure_block(
+        build_highconv_block_from_file(highconv_json),
+        "Listán kívüli, 3–12 hónapos high-conviction jelöltek",
+        "Nem volt a #1 jelentés kritériumait teljesítő, listán kívüli ismételt erős jelzés az AH/PM sávban.",
+    )
+
+    body_lines = _append_blocks(body_lines, [analyst_block, catalysts_block, highconv_block])
+
+    final_lines = body_lines[:]
+    if job_lines:
+        if final_lines and final_lines[-1].strip() != "":
+            final_lines.append("")
+        final_lines.extend(job_lines)
+# --- Earnings (v3) block injection (from reports/earnings_1.json) ---
+try:
+    earnings_json = Path("reports/earnings_1.json")
+    earnings_payload = _safe_json_load(earnings_json)
+    earnings_block = build_earnings_block_from_file(earnings_payload) if earnings_payload is not None else ""
+except Exception:
+    earnings_block = ""
+if earnings_block:
+    # beszúrjuk a riport végére, a Job summary ELÉ (hogy mindig látszódjon)
+    if final_lines and final_lines[-1].strip() != "":
+        final_lines.append("")
+    final_lines.append(earnings_block.rstrip())
+    final_lines.append("")
+
+
+    _write_md(md_path, "\n".join(final_lines).rstrip() + "\n")
+
+
+
+if __name__ == "__main__":
+    main()
