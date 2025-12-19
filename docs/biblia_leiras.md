@@ -460,3 +460,17 @@ scripts/
 - Apps Script webapp **CSAK** a **Makró / FED / piaci hangulat** feedet szolgáltatja.
 - Analyst/Catalyst jellegű scrape **nem** Apps Scriptből megy (401/403 blokkolás miatt), hanem a `analyst_catalyst_builder.py` építi.
 - A macro webapp-hoz van `?type=health` endpoint, ami forrásonként jelzi, ha valamelyik feed nem ad adatot.
+
+#### Makró blokk – üres adat kezelése (pontosítás)
+
+A Makró / Politika / FED blokk a #1 jelentésben **strukturálisan kötelező**.
+
+Amennyiben a `macro_news_1.json` az adott futás során üres,
+vagy nem tartalmaz piaci relevanciájú makró / FED / politikai eseményt,
+a `postprocess_report.py` **kötelezően beszúr egy üres (placeholder) makró blokkot**
+a jelentés elejére.
+
+Ez biztosítja, hogy:
+- a #1 jelentés blokkstruktúrája minden futásnál azonos maradjon,
+- az „adat = 0” állapot **nem minősül hibának**,
+- a `validate_run.py` guard BIBLIA-konform módon működjön.
