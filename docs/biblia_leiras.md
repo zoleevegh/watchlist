@@ -41,10 +41,11 @@ repo/
 └─ scripts/
     ├─ analyst_block_builder.py
     ├─ analyst_feed_parser.py
-    ├─analyst_catalyst_builder.py
+    ├─ analyst_catalyst_builder.py
     ├─ biblia_helper.py
     ├─ blocks_events_3.py
     ├─ blocks_intraday_3.py
+    ├─ earnings_fetcher.py
     ├─ export_biblia_md.py
     ├─ highconv_block_builder.py
     ├─ highconv_builder.py
@@ -55,6 +56,7 @@ repo/
     ├─ postprocess_report_3.py
     ├─ report_runner.py
     ├─ validate_run.py
+    ├─ yahoo_analyst_events_fetcher.py
     └─ (egyéb segédscriptek a projekt korábbi verzióiból)
 ```
 
