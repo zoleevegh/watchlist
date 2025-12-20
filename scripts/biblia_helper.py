@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# Verzió: v1.0.6
+# Verzió: v1.0.11
 # bocsáss meg Uram, mert balfék voltam.
 # adj erőt, hogy legközelebb elsőre jó legyen. Ámen.
 
@@ -226,7 +226,7 @@ szolgál kiindulópontként. A cél, hogy:
   high-conviction, Eladasi ar-blokk) fokozatosan átköltözzön a Python-scriptbe,
 - a webes / manuális réteg legfeljebb finomhangolásra, magyarázatra kelljen.
 
-"""
+# [AUTO-FIX] orphan triple-quote removed
 
 from __future__ import annotations
 import os
@@ -240,74 +240,74 @@ GIST_REPORT1_RAW_URL = "https://gist.githubusercontent.com/zoleevegh/5df443b8a46
 def get_report1_checklist() -> List[str]:
     """
     #1 – After-hours (22:00–02:00) + Premarket (10:00–15:30) — CEST
-
-    Rövid ellenőrző lista ahhoz, hogy a script által generált #1-es jelentés
-    megfelel-e a bibliának. A lista elemei végigzongorázhatók debug során.
-    """
-    return [
+# 
+#     # Rövid ellenőrző lista ahhoz, hogy a script által generált #1-es jelentés
+    # megfelel-e a bibliának. A lista elemei végigzongorázhatók debug során.
+#     # [AUTO-FIX] orphan triple-quote removed
+    # return [
         # Időzóna és árforrás
-        "Időzóna: Europe/Budapest (CET/CEST).",
-        "Árforrás: Yahoo Finance v8 2d/5m, includePrePost=true, US trading day.",
-        "Bázisár: RTH_zár = első pre/post gyertya előtti utolsó RTH 5m candle close.",
-        # AH/PM számolás
-        "AH_zár: 22:00–02:00 CEST közötti utolsó pre/post 5m candle záróára (ha nincs: AH=n/a).",
-        "PM_zár: 10:00–15:30 CEST közötti utolsó pre/post 5m candle záróára (ha nincs: PM=n/a).",
-        "AH% = (AH_zár - RTH_zár) / RTH_zár * 100, két tizedesre kerekítve.",
-        "PM% = (PM_zár - RTH_zár) / RTH_zár * 100, két tizedesre kerekítve.",
+#         # "Időzóna: Europe/Budapest (CET/CEST).",
+#         # "Árforrás: Yahoo Finance v8 2d/5m, includePrePost=true, US trading day.",
+        # "Bázisár: RTH_zár = első pre/post gyertya előtti utolsó RTH 5m candle close.",
+#         # AH/PM számolás
+#         # "AH_zár: 22:00-02:00 CEST közötti utolsó pre/post 5m candle záróára (ha nincs: AH=n/a).",
+#         # "PM_zár: 10:00-15:30 CEST közötti utolsó pre/post 5m candle záróára (ha nincs: PM=n/a).",
+#         # "AH% = (AH_zár - RTH_zár) / RTH_zár * 100, két tizedesre kerekítve.",
+        # "PM% = (PM_zár - RTH_zár) / RTH_zár * 100, két tizedesre kerekítve.",
     # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
         # Lefedettség, sorrend
-    # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
-        "Watchlist: ahol nincs quantity vagy az <= 0 → csak a watchlist-blokkban jelenik meg.",
-        # Küszöbök
-        "K oszlop: ticker-specifikus % küszöb; ha üres/hibás, implicit K=3.",
-        "Darabszámos blokk: minden pozíció szerepel, de jelölve, ha max(|AH%|,|PM%|) ≥ K.",
-        "Watchlist-blokk: CSAK azok a tickerek szerepelnek, ahol max(|AH%|,|PM%|) ≥ K.",
+#     # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
+        # "Watchlist: ahol nincs quantity vagy az <= 0 → csak a watchlist-blokkban jelenik meg.",
+#         # Küszöbök
+        # "K oszlop: ticker-specifikus % küszöb; ha üres/hibás, implicit K=3.",
+#         # "Darabszámos blokk: minden pozíció szerepel, de jelölve, ha max(|AH%|,|PM%|) ≥ K.",
+        # "Watchlist-blokk: CSAK azok a tickerek szerepelnek, ahol max(|AH%|,|PM%|) ≥ K.",
         # Sor-formátumok
-    # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
-        "Watchlist sor-formátum: 'TICKER — AH +x.xx% | PM -y.yy% — Watchlisten is érdemi AH/PM elmozdulás (≥K=...) az utolsó RTH záróhoz képest.'.",
-        # Eladasi ar
-        "Eladasi ar diff_pct = (aktuális ár - Eladasi ar) / Eladasi ar * 100, ha van eladási ár – jelenleg opcionális, külön blokk még nincs implementálva.",
+#     # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
+        # "Watchlist sor-formátum: 'TICKER — AH +x.xx% | PM -y.yy% — Watchlisten is érdemi AH/PM elmozdulás (≥K=...) az utolsó RTH záróhoz képest.'.",
+#         # Eladasi ar
+        # "Eladasi ar diff_pct = (aktuális ár - Eladasi ar) / Eladasi ar * 100, ha van eladási ár - jelenleg opcionális, külön blokk még nincs implementálva.",
         # Híres blokkok – target állapot
-        "Politika/FED / Trump-napihír blokk: jelenleg a workflow 'macro' paramétere adja a szöveget (nem automata scraping).",
+        # "Politika/FED / Trump-napihír blokk: jelenleg a workflow 'macro' paramétere adja a szöveget (nem automata scraping).",
     # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
         # Időbélyeg
-        "Jelentés végén kötelező az időbélyeg: 'Job summary generated at run-time (ISO8601 CEST)'.",
-    ]
+#         # "Jelentés végén kötelező az időbélyeg: 'Job summary generated at run-time (ISO8601 CEST)'.",
+    # ]
 
 
 def get_report2_checklist() -> List[str]:
     """
     #2 – Tegnapi nyitástól zárásig (Open→Close) jelentés.
-    """
+    # [AUTO-FIX] orphan triple-quote removed
     return [
-        "Időablak: előző kereskedési nap US RTH, 15:30–22:00 CEST (Open→Close).",
+        # "Időablak: előző kereskedési nap US RTH, 15:30-22:00 CEST (Open→Close).",
     # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
         "Open→Close% = (Close - Open) / Open * 100, két tizedesre.",
     # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
-        "Makró/FED/politika blokk a lefedettség után (előző napra).",
-        "Darabszámos & watchlist tickerek forrása: MASTER (ugyanaz, mint #1-nél).",
+        # "Makró/FED/politika blokk a lefedettség után (előző napra).",
+        # "Darabszámos & watchlist tickerek forrása: MASTER (ugyanaz, mint #1-nél).",
         "K oszlop: ticker-specifikus % mozgás küszöb; üres/hibás: K=3.",
     # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
-        "Sor-formátum: 'TICKER — Open→Close +x.xx% — rövid indok (eredmény, guide, M&A, makró stb.)'.",
+        # "Sor-formátum: 'TICKER — Open→Close +x.xx% — rövid indok (eredmény, guide, M&A, makró stb.)'.",
     # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
-        "Eladasi ar diff_pct (ha használjuk): (Close - Eladasi ar) / Eladasi ar * 100, kiegészítő infóként.",
+        # "Eladasi ar diff_pct (ha használjuk): (Close - Eladasi ar) / Eladasi ar * 100, kiegészítő infóként.",
     ]
 
 
 def get_report3_checklist() -> List[str]:
     """
     #3 – Ma nyitástól mostanáig (Open→Most) jelentés.
-    """
+    # [AUTO-FIX] orphan triple-quote removed
     return [
-        "Időablak: aktuális nap US RTH nyitástól (15:30 CEST) a lekérdezés pillanatáig (Open→Most).",
-        "Árforrás: Yahoo Finance intraday chart (1m/5m) vagy Open + utolsó elérhető ár.",
+        # "Időablak: aktuális nap US RTH nyitástól (15:30 CEST) a lekérdezés pillanatáig (Open→Most).",
+        # "Árforrás: Yahoo Finance intraday chart (1m/5m) vagy Open + utolsó elérhető ár.",
         "Open→Most% = (Last - Open) / Open * 100, két tizedesre.",
     # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
-        "K: intraday % küszöb (alap 3%), ticker szinten felülírható.",
+        # "K: intraday % küszöb (alap 3%), ticker szinten felülírható.",
         "Eladasi ar diff_pct = (Last - Eladasi ar) / Eladasi ar * 100, ha van adat.",
     # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
-        "Sor-formátum: 'TICKER — Open→Most +x.xx% (High/Open +y.yy%, Low/Open -z.zz%) — rövid indok.' (a zárójeles rész opcionális).",
-        "Blokksorrend: Lefedettség → Makró/FED (intraday) → Darabszámos → Watchlist → Bejelentések & fel/lemínősítések → Közeli katalizátorok (pl. zárás utáni jelentés) → High-conviction.",
+        # "Sor-formátum: 'TICKER — Open→Most +x.xx% (High/Open +y.yy%, Low/Open -z.zz%) — rövid indok.' (a zárójeles rész opcionális).",
+        # "Blokksorrend: Lefedettség → Makró/FED (intraday) → Darabszámos → Watchlist → Bejelentések & fel/lemínősítések → Közeli katalizátorok (pl. zárás utáni jelentés) → High-conviction.",
     # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
     ]
 
@@ -331,7 +331,7 @@ _SESSION.headers.update(
 
 
 def _safe_get_json(url: str, params: Optional[Dict[str, Any]] = None, timeout: int = 10) -> Optional[Dict[str, Any]]:
-    """Biztonságos JSON-letöltés – hiba esetén None-t ad vissza."""
+    # """Biztonságos JSON-letöltés - hiba esetén None-t ad vissza."""
     try:
         resp = _SESSION.get(url, params=params or {}, timeout=timeout)
         resp.raise_for_status()
@@ -344,7 +344,7 @@ def _safe_get_json(url: str, params: Optional[Dict[str, Any]] = None, timeout: i
 
 # --- Politika / FED / piaci hangulat ---
 
-    Visszatérési érték (siker esetén):
+    # Visszatérési érték (siker esetén):
         {
           "ticker": ...,
           "current": float,
@@ -357,7 +357,7 @@ def _safe_get_json(url: str, params: Optional[Dict[str, Any]] = None, timeout: i
           "sell": int,
           "strongSell": int,
         }
-    """
+    # [AUTO-FIX] orphan triple-quote removed
     url = f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{ticker}"
     params = {"modules": "financialData,defaultKeyStatistics,recommendationTrend"}
     data = _safe_get_json(url, params=params)
@@ -407,10 +407,10 @@ def _safe_get_json(url: str, params: Optional[Dict[str, Any]] = None, timeout: i
 
 
 def _load_banned_tickers_from_master(path: str = "reports/master.csv") -> Set[str]:
-    """MASTER/watchlist CSV-ből betölti az összes saját tickert (pozíció + watchlist).
+    # """MASTER/watchlist CSV-ből betölti az összes saját tickert (pozíció + watchlist).
 
     # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
-    """
+    # [AUTO-FIX] orphan triple-quote removed
     import csv
 
     banned: Set[str] = set()
@@ -459,10 +459,10 @@ def _load_banned_tickers_from_master(path: str = "reports/master.csv") -> Set[st
 
 
 def _load_sp500_universe() -> List[str]:
-    """S&P500 ticker-univerzum lekérése publikus forrásból.
+    # """S&P500 ticker-univerzum lekérése publikus forrásból.
 
     # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
-    """
+    # [AUTO-FIX] orphan triple-quote removed
     url = "https://datahub.io/core/s-and-p-500-companies/r/constituents.json"
     data = _safe_get_json(url)
     if not data:
@@ -534,8 +534,8 @@ def generate_highconviction_json(
     hard_upside_boost: float = 25.0,
     max_count: int = 10,
 ) -> List[Dict[str, Any]]:
-    """Automatikus high-conviction lista generálása (S&P500-univerzumra,
-    a saját portfólió + watchlist kizárásával)."""
+    # """Automatikus high-conviction lista generálása (S&P500-univerzumra,
+    # a saját portfólió + watchlist kizárásával)."""
 
     # 1) Alap univerzum: S&P500
     tickers = _load_sp500_universe()
@@ -608,12 +608,12 @@ def fetch_highconviction_events(path: str = "reports/high_conv_1.json") -> List[
     # High-conviction (3-12 hó) jelöltek betöltése.
 
     # Minden híváskor megpróbál egy FRISS listát generálni
-    (S&P500-univerzum, MASTER-beli tickerek kizárásával).
+    # (S&P500-univerzum, MASTER-beli tickerek kizárásával).
     # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
 
     # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
         ["XYZ – 23.4% konszenzus upside ...", ...]
-    """
+    # [AUTO-FIX] orphan triple-quote removed
     full = os.path.join(os.getcwd(), path)
 
     # 1) Első próbálkozás: generáljunk friss listát
@@ -671,207 +671,207 @@ def format_highconviction_block(events: List[str]) -> str:
     return "\n".join(lines)
 
 # -*- coding: utf-8 -*-
-"""
+# [AUTO-FIX] orphan triple-quote removed
 # BIBLIA HELPER – 1/2/3-as jelentések kanonikus leírása
 
-Ez a helper NEM technikai doksi (nincsenek benne path-ok, URL-ek, kódhívások),
-hanem a három jelentés (1/2/3) működési „bibliája”.
+# Ez a helper NEM technikai doksi (nincsenek benne path-ok, URL-ek, kódhívások),
+# hanem a három jelentés (1/2/3) működési "bibliája".
     # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
-"""
+# [AUTO-FIX] orphan triple-quote removed
 
 BIBLIA_HELP_TEXT = r"""
     # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
-------------------
-- Fókusz: árfolyamot érdemben mozgató információk (anyagi lényegesség).
+# ------------------
+# - Fókusz: árfolyamot érdemben mozgató információk (anyagi lényegesség).
     # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
-- Minden ±3,00% vagy nagyobb ármozgásnál kötelező a pontos % (két tizedes)
+# - Minden ±3,00% vagy nagyobb ármozgásnál kötelező a pontos % (két tizedes)
     # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
-    • „Lefedettség: HIÁNYOS – nem elérhető ticker(ek): … (oka: …)” – ha bármi hiányzik.
-- Ha egy blokk logikailag üres (pl. nincs high-conv jelölt), azt vagy ki kell hagyni,
+    # • "Lefedettség: HIÁNYOS - nem elérhető ticker(ek): … (oka: …)" - ha bármi hiányzik.
+# - Ha egy blokk logikailag üres (pl. nincs high-conv jelölt), azt vagy ki kell hagyni,
     # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
 
-Forrás-prioritások (A–E)
-------------------------
-A) Gyors, megbízható hírfeed:
-   - Reuters (Top, Markets, Breakingviews)
-   - AP News
-   - Bloomberg Top/Markets (ha elérhető)
-   - Dow Jones Newswires / The Fly / Benzinga Pro tape
+# Forrás-prioritások (A-E)
+# ------------------------
+# # A) Gyors, megbízható hírfeed:
+#    # - Reuters (Top, Markets, Breakingviews)
+   # - AP News
+#    # - Bloomberg Top/Markets (ha elérhető)
+   # - Dow Jones Newswires / The Fly / Benzinga Pro tape
 
-B) Hivatalos vállalati csatornák:
-   - SEC EDGAR (8-K, 6-K, 10-Q, 10-K)
-   # - Cég IR / Newsroom
-   - Business Wire, PR Newswire, GlobeNewswire
+# # B) Hivatalos vállalati csatornák:
+   # - SEC EDGAR (8-K, 6-K, 10-Q, 10-K)
+#    # - Cég IR / Newsroom
+   # - Business Wire, PR Newswire, GlobeNewswire
 
-C) Elemzői fel/lemínősítések, célárak:
-   - MarketBeat Ratings (elsődleges)
-   - StreetInsider / The Fly (Analyst)
-   - TipRanks (kiegészítő)
+# C) Elemzői fel/lemínősítések, célárak:
+#    # - MarketBeat Ratings (elsődleges)
+   # - StreetInsider / The Fly (Analyst)
+   # - TipRanks (kiegészítő)
 
-D) Makró / FED / politika:
-   - FederalReserve.gov
-    # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
-   - US Treasury
+# # D) Makró / FED / politika:
+   # - FederalReserve.gov
+#     # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
+   # - US Treasury
    # - Reuters/AP politikai / makró hírei
 
-E) Szektor-specifikus feedek:
+# E) Szektor-specifikus feedek:
     # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
 
 # Anyagi lényegesség – mik kerülnek be?
--------------------------------------
-- Guidance-emelés vagy -vágás (bevétel, EPS, margin, FCF).
-- Jelentős EPS/árbevétel meglepetés (pozitív vagy negatív).
+# -------------------------------------
+# - Guidance-emelés vagy -vágás (bevétel, EPS, margin, FCF).
+# - Jelentős EPS/árbevétel meglepetés (pozitív vagy negatív).
     # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
 
 
-I. #1 JELENTÉS – „TEGNAPI ZÁRÁSTÓL MOSTANÁIG” (AH + PM)
--------------------------------------------------------
-Időablakok (CET/CEST):
-- After-hours (AH): előző kereskedési nap 22:00–02:00.
-- Premarket (PM): aktuális nap 10:00–15:30.
+# I. #1 JELENTÉS - "TEGNAPI ZÁRÁSTÓL MOSTANÁIG" (AH + PM)
+# -------------------------------------------------------
+# Időablakok (CET/CEST):
+# - After-hours (AH): előző kereskedési nap 22:00-02:00.
+# - Premarket (PM): aktuális nap 10:00-15:30.
 # A #1-es riport CSAK ezekkel az idősávokkal foglalkozik; intraday Open→Close
     # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
 
     # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
-- Yahoo Finance chart (2 nap / 5 perces gyertya, includePrePost).
-- Bázisár: az utolsó rendes kereskedési (RTH) záróár.
-- AH/PM %: (AH/PM utolsó ár – előző RTH záró) / záró × 100.
+# - Yahoo Finance chart (2 nap / 5 perces gyertya, includePrePost).
+# - Bázisár: az utolsó rendes kereskedési (RTH) záróár.
+# - AH/PM %: (AH/PM utolsó ár - előző RTH záró) / záró × 100.
     # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
-    • pontos %-érték (két tizedre),
+    # • pontos %-érték (két tizedre),
     # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
-    • 1 mondatban az ok.
+    # • 1 mondatban az ok.
 
-Blokksorrend:
-1) Lefedettség blokk (TELJES / HIÁNYOS + hiányzó tickerek).
-2) Makró / FED / piaci hangulat blokk.
-3) Darabszámos tickerek AH/PM mozgásai.
-4) Watchlist tickerek AH/PM mozgásai (csak ha van releváns mozgás/hír).
-5) Bejelentések & fel/lemínősítések.
-6) Közeli katalizátorok (3–10 nap).
-7) Listán kívüli high-conviction jelöltek (ha vannak).
+# Blokksorrend:
+# 1) Lefedettség blokk (TELJES / HIÁNYOS + hiányzó tickerek).
+# 2) Makró / FED / piaci hangulat blokk.
+# 3) Darabszámos tickerek AH/PM mozgásai.
+# 4) Watchlist tickerek AH/PM mozgásai (csak ha van releváns mozgás/hír).
+# 5) Bejelentések & fel/lemínősítések.
+# 6) Közeli katalizátorok (3-10 nap).
+# 7) Listán kívüli high-conviction jelöltek (ha vannak).
 
-Makró / FED / piaci hangulat blokk (#1)
----------------------------------------
-    # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
-
-Tartalom:
-    # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
-    • kulcs makró-adatok (infláció, munkaerőpiac, GDP, PMI, stb.),
-    • Fed-kommentek (rate cut / hike várakozás, dot plot, stb.),
-    • globális kockázati étvágy (futures, hozamok, dollár, olaj, kriptó).
-    # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
-    • risk-on vs. risk-off hangulat,
+# Makró / FED / piaci hangulat blokk (#1)
+# ---------------------------------------
     # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
 
+# Tartalom:
     # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
-
-Darabszámos tickerek – AH/PM (#1)
----------------------------------
+    # • kulcs makró-adatok (infláció, munkaerőpiac, GDP, PMI, stb.),
+    # • Fed-kommentek (rate cut / hike várakozás, dot plot, stb.),
+    # • globális kockázati étvágy (futures, hozamok, dollár, olaj, kriptó).
+    # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
+    # • risk-on vs. risk-off hangulat,
     # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
 
     # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
-    • ±3,00% alatt → elegendő egy összefoglaló blokk („küszöb alatti”).
 
-    # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
-- Ticker.
-- AH változás % (két tized, ha van releváns AH forgalom).
-- PM változás % (két tized, ha van releváns PM forgalom).
-- Rövid ok (1 mondat), a forrás-prioritás szerint:
-    • earnings / guidance,
+# Darabszámos tickerek - AH/PM (#1)
+# ---------------------------------
     # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
 
     # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
-- „[Ticker]: Küszöb alatti AH/PM elmozdulás (<3%), nincs új lényeges hír.”
+    # • ±3,00% alatt → elegendő egy összefoglaló blokk ("küszöb alatti").
 
-Watchlist – AH/PM (#1)
-----------------------
+    # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
+# - Ticker.
+# - AH változás % (két tized, ha van releváns AH forgalom).
+# - PM változás % (két tized, ha van releváns PM forgalom).
+# - Rövid ok (1 mondat), a forrás-prioritás szerint:
+    # • earnings / guidance,
     # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
 
     # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
-    • hírfolyamban anyagilag lényeges esemény (earnings, guidance,
-      nagy deal, szabályozási döntés, elemzői fel/lemínősítés).
-    # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
+# - "[Ticker]: Küszöb alatti AH/PM elmozdulás (<3%), nincs új lényeges hír."
 
-Bejelentések & fel/lemínősítések (#1)
--------------------------------------
-    # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
-
-Közeli katalizátorok (#1)
--------------------------
-    # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
-- Formátum: „[Ticker] – [Esemény típusa] – [Dátum/idősáv] – 1 mondatos jelentőség.”
-
-Listán kívüli, 3–12 hónapos high-conviction jelöltek (#1)
----------------------------------------------------------
-Kritériumok (legalább 2 teljesüljön az 5-ből):
-1) Több friss felminősítés / céláremelés nagy házaktól.
-2) Guidance-emelés, pozitív vállalati iránymutatás.
-3) Konszenzus EPS/árbevétel felfelé módosul.
-4) 3–12 hónapon belüli konkrét katalizátor.
-5) Erős relatív erő, 52 hetes csúcs közeli teljesítmény.
-
-    # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
-
-
-II. #2 JELENTÉS – „TEGNAPI NYITÁSTÓL ZÁRÁSIG” (OPEN→CLOSE)
------------------------------------------------------------
-    # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
-- Előző kereskedési nap 15:30–22:00 (CET/CEST).
-
+# Watchlist - AH/PM (#1)
+# ----------------------
     # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
 
     # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
-- Open→Close %: (záró – nyitó) / nyitó × 100.
+    # • hírfolyamban anyagilag lényeges esemény (earnings, guidance,
+      # nagy deal, szabályozási döntés, elemzői fel/lemínősítés).
     # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
 
-Blokksorrend:
-1) Lefedettség blokk.
-2) Makró / FED / piaci hangulat – előző nap intraday eseményei.
-3) Darabszámos tickerek Open→Close mozgásai (≥3% fókusz).
-4) Watchlist tickerek Open→Close mozgásai (csak ha hír vagy ≥3%).
-5) Bejelentések & fel/lemínősítések (nap közben).
-6) Közeli katalizátorok.
-7) High-conv jelöltek (ha a nap során jön hozzájuk új jel).
-
-
-III. #3 JELENTÉS – „MA NYITÁSTÓL MOSTANÁIG” (OPEN→MOST)
---------------------------------------------------------
-    # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
-- Aktuális kereskedési nap 15:30–lekérdezés pillanata (CET/CEST).
-
-    # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
-    • Open→Most %,
+# Bejelentések & fel/lemínősítések (#1)
+# -------------------------------------
     # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
 
+# Közeli katalizátorok (#1)
+# -------------------------
     # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
-- Open→Most %: (aktuális ár – nyitóár) / nyitóár × 100.
-- High/Open %: (intraday csúcs – nyitó) / nyitó × 100.
-- Low/Open %: (intraday mélypont – nyitó) / nyitó × 100.
-    # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
+# - Formátum: "[Ticker] - [Esemény típusa] - [Dátum/idősáv] - 1 mondatos jelentőség."
 
-Blokksorrend:
-1) Lefedettség blokk.
-2) Makró / FED / piaci hangulat – aznapi intraday fejlemények.
-3) Darabszámos tickerek Open→Most (és ha kérve: High/Open, Low/Open).
-4) Watchlist tickerek (csak ha hír vagy ≥3%).
-5) Bejelentések & fel/lemínősítések (nap közben).
-6) Közeli katalizátorok (ha aznapi hír rájuk utal).
-7) High-conv jelöltek (ha ma erősödik a case).
-
+# Listán kívüli, 3-12 hónapos high-conviction jelöltek (#1)
+# ---------------------------------------------------------
+# Kritériumok (legalább 2 teljesüljön az 5-ből):
+# 1) Több friss felminősítés / céláremelés nagy házaktól.
+# 2) Guidance-emelés, pozitív vállalati iránymutatás.
+# 3) Konszenzus EPS/árbevétel felfelé módosul.
+# 4) 3-12 hónapon belüli konkrét katalizátor.
+# 5) Erős relatív erő, 52 hetes csúcs közeli teljesítmény.
 
     # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
---------------------------------------------------
+
+
+# II. #2 JELENTÉS - "TEGNAPI NYITÁSTÓL ZÁRÁSIG" (OPEN→CLOSE)
+# -----------------------------------------------------------
     # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
-        „Lefedettség: HIÁNYOS – nem elérhető ticker(ek): [lista]
-         (oka: pl. nincs friss adat / forráshiba / késik feed)”.
+# - Előző kereskedési nap 15:30-22:00 (CET/CEST).
+
     # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
 
-A fenti szabályok adják a három riport (1/2/3) kanonikus, hosszú távra érvényes
     # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
-"""
+# - Open→Close %: (záró - nyitó) / nyitó × 100.
+    # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
+
+# Blokksorrend:
+# 1) Lefedettség blokk.
+# 2) Makró / FED / piaci hangulat - előző nap intraday eseményei.
+# 3) Darabszámos tickerek Open→Close mozgásai (≥3% fókusz).
+# 4) Watchlist tickerek Open→Close mozgásai (csak ha hír vagy ≥3%).
+# 5) Bejelentések & fel/lemínősítések (nap közben).
+# 6) Közeli katalizátorok.
+# 7) High-conv jelöltek (ha a nap során jön hozzájuk új jel).
+
+
+# III. #3 JELENTÉS - "MA NYITÁSTÓL MOSTANÁIG" (OPEN→MOST)
+# --------------------------------------------------------
+    # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
+# - Aktuális kereskedési nap 15:30-lekérdezés pillanata (CET/CEST).
+
+    # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
+    # • Open→Most %,
+    # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
+
+    # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
+# - Open→Most %: (aktuális ár - nyitóár) / nyitóár × 100.
+# - High/Open %: (intraday csúcs - nyitó) / nyitó × 100.
+# - Low/Open %: (intraday mélypont - nyitó) / nyitó × 100.
+    # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
+
+# Blokksorrend:
+# 1) Lefedettség blokk.
+# 2) Makró / FED / piaci hangulat - aznapi intraday fejlemények.
+# 3) Darabszámos tickerek Open→Most (és ha kérve: High/Open, Low/Open).
+# 4) Watchlist tickerek (csak ha hír vagy ≥3%).
+# 5) Bejelentések & fel/lemínősítések (nap közben).
+# 6) Közeli katalizátorok (ha aznapi hír rájuk utal).
+# 7) High-conv jelöltek (ha ma erősödik a case).
+
+
+    # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
+# --------------------------------------------------
+    # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
+        # "Lefedettség: HIÁNYOS - nem elérhető ticker(ek): [lista]
+         # (oka: pl. nincs friss adat / forráshiba / késik feed)".
+    # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
+
+# A fenti szabályok adják a három riport (1/2/3) kanonikus, hosszú távra érvényes
+    # [DOKSI áthelyezve a docs/biblia_leiras.md fájlba – lásd 'Technikai működés és debug' fejezet]
+# [AUTO-FIX] orphan triple-quote removed
 
 def get_biblia_text() -> str:
-    """Helper, ha máshonnan akarod beolvasni a teljes bibliát."""
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #     # """Helper, ha máshonnan akarod beolvasni a teljes bibliát."""
     return BIBLIA_HELP_TEXT
 
 
