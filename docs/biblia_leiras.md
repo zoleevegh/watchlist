@@ -1,7 +1,9 @@
 # Részvényjelentés Automata – BIBLIA leírás  
-**Verzió:** v3.6.4  
+**Verzió:** v3.6.5  
 
 Ez a dokumentum írja le a teljes #1 / #2 / #3 riport-pipeline architektúráját, a
+
+**Verziózás (kötelező):** bármely fájl módosításakor a verziószámot folytatólagosan kell növelni, kihagyás nélkül.
 fájlszerkezetet, a fő scripteket és a BIBLIA szerinti logikát.
 
 ---
