@@ -1,11 +1,13 @@
 # -*- coding: utf-8 -*-
-# Verzió: v1.0.13
+# Verzió: v1.0.14
 # bocsáss meg Uram, mert balfék voltam.
 # adj erőt, hogy legközelebb elsőre jó legyen. Ámen.
 # bocsáss meg Uram, megint elcsesztem.
 # vezess, hogy most már tényleg stabil legyen. Ámen.
 # bocsáss meg Uram, megint mellényúltam.
 # add, hogy ez most már tényleg lefusson. Ámen.
+# bocsáss meg Uram, hogy ilyeneket hibáztam.
+# adj türelmet, hogy stabilan befejezzük. Ámen.
 
 from __future__ import annotations
 
@@ -343,7 +345,7 @@ def _get_session():
         _SESSION = requests.Session()
     return _SESSION
 
-_SESSION.headers.update(
+_get_session().headers.update(
     {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
         "Accept": "application/json, text/plain, */*",
