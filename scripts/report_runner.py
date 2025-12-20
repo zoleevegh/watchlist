@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""report_runner.py – v3.0.7-biblia-prep-yahoo-fallback-coveragefix-mw-off
+"""report_runner.py – v3.0.8-noblock-builder
 
 Megjegyzés: Ez a verzió a korábbi teljes runner logikát megtartja.
 A bibliás formátum finomhangolása külön lépésekben történik.
@@ -7,6 +7,9 @@ A bibliás formátum finomhangolása külön lépésekben történik.
 # IMÁDSÁG (hibajavítás után)
 # Bocsáss meg uram, mert balfék voltam, és elcsúszott az indent.
 # Add uram, hogy ez a módosítás most hibátlanul fusson.
+# bocsáss meg Uram, hogy eddig két pipeline ütközött.
+# add, hogy most az egyetlen kanonikus út stabilan fusson. Ámen.
+
 
 
 import argparse
@@ -31,6 +34,8 @@ except ImportError:
 
 
 import requests
+import subprocess
+
 
 # Biblia checklist helper (placeholder).
 # These functions will later hold the canonical #1/#2/#3 reporting rules.
@@ -82,17 +87,41 @@ except ImportError:  # pragma: no cover - optional helper
         return ""
 
 
-SESSION = requests.Session()
-SESSION.headers.update(
-    {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Connection": "keep-alive",
-    }
-)
+SESSION = None  # lazy init (v3.0.8)
+def _get_requests_session():
+    """Lazy requests.Session"""
+    global SESSION
+    if SESSION is None:
+        SESSION = requests.Session()
+        SESSION.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+        })
+    return SESSION
+
 
 DEFAULT_K = 3.0
+
+def run_analyst_catalyst_builder(report: int, reports_dir: str = 'reports') -> None:
+    """Build analyst/catalyst artifacts via scripts/analyst_catalyst_builder.py (noblock)."""
+    builder = os.path.join('scripts', 'analyst_catalyst_builder.py')
+    if not os.path.exists(builder):
+        print(f"[WARN] missing: {builder} (skipping analyst/catalyst build)")
+        return
+    cmd = [sys.executable, builder, '--report', str(report), '--reports-dir', reports_dir]
+    try:
+        r = subprocess.run(cmd, check=False, capture_output=True, text=True)
+        if r.stdout.strip():
+            print(r.stdout.strip())
+        if r.stderr.strip():
+            print(r.stderr.strip())
+        if r.returncode != 0:
+            print(f"[WARN] analyst_catalyst_builder exit={r.returncode} (continuing)")
+    except Exception as e:
+        print(f"[WARN] analyst_catalyst_builder crashed: {e}")
+
 DEFAULT_SCRIPT_VERSION = "v3.0.7-biblia-prep-yahoo-fallback-coveragefix-mw-off"
 AH_PM_MODE = "spark"  # alapértelmezett: Yahoo quote/spark alapú AH/PM
 
@@ -821,6 +850,10 @@ def main() -> None:
     watchlist_path = args.watchlist or args.csv or "reports/master.csv"
     script_version = args.script_version or DEFAULT_SCRIPT_VERSION
     k_default = args.k_default or DEFAULT_K
+
+
+    # Build analyst/catalyst JSON via noblock builder (RSS + Yahoo).
+    run_analyst_catalyst_builder(report=mode, reports_dir='reports')
 
     if mode == 1:
         summary_path = args.summary or "reports/summary_report_1.md"
