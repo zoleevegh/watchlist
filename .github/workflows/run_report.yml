@@ -1,5 +1,5 @@
-# PATCH: noblock analyst/catalyst builder v1.1.1 wired into workflow
-name: Run Report (Windows) # v2.2.9-biblia1-postprocess-orderfix-guard3
+# PATCH v4.0.2: noblock analyst/catalyst builder wired; removed blocked fallback
+name: Run Report (Windows) # v4.0.2-noblock-valid
 
 on:
   workflow_dispatch:
@@ -165,7 +165,7 @@ jobs:
             Write-Host "events_fetcher.py nem található – analyst/catalyst blokk nélkül fut tovább."
           }
           else {
-          python -X utf8 "scripts/analyst_catalyst_builder.py" --report $report --analyst-out "reports/analyst_${report}.json" --catalysts-out "reports/catalysts_${report}.json" --health-out "reports/health_analyst_${report}.json"
+            python -X utf8 "scripts\events_fetcher.py" `
               --report $report `
               --universe-json "reports\latest_${report}.json"
           }
@@ -187,7 +187,8 @@ jobs:
           }
 
           $summaryPath = "reports\summary_report_${report}.md"
-          python -X utf8 "scripts/analyst_catalyst_builder.py" --report $report --analyst-out "reports/analyst_${report}.json" --catalysts-out "reports/catalysts_${report}.json" --health-out "reports/health_analyst_${report}.json"
+
+          python -u -X utf8 "scripts\report_runner.py" `
             --report $report `
             --csv "$csv" `
             --summary "$summaryPath"
@@ -233,16 +234,15 @@ jobs:
 
           $analystOut   = "reports\analyst_${report}.json"
           $catalystsOut = "reports\catalysts_${report}.json"
-
-          if (Test-Path "scripts\analyst_feed_parser.py") {
-            python -X utf8 "scripts\analyst_feed_parser.py" `
-              --analyst-url "$analystUrl" `
-              --catalyst-url "$catalystUrl" `
-              --analyst-out "$analystOut" `
-              --catalysts-out "$catalystsOut"
+          if (Test-Path "scripts\analyst_catalyst_builder.py") {
+            python -X utf8 "scripts\analyst_catalyst_builder.py" `
+              --report $report `
+              --catalysts-out "$catalystsOut" `
+              --catalysts-out "$catalystsOut" `
+              --health-out "reports\health_analyst_${report}.json"
           }
           else {
-            Write-Host "analyst_feed_parser.py nem található – analyst/catalyst blokkok nélkül fut tovább."
+            Write-Host "analyst_catalyst_builder.py nem található – analyst/catalyst blokkok nélkül fut tovább."
           }
 
           # High-conv jelöltek buildelése (scripts\highconv_builder.py)
@@ -297,15 +297,8 @@ jobs:
           if (Test-Path "scripts/analyst_catalyst_builder.py") {
             python -X utf8 "scripts/analyst_catalyst_builder.py" `
               --report $report `
-              --analyst-out "$analystOut" `
-              --catalysts-out "$catalystsOut"
-          }
-          elseif (Test-Path "scripts/analyst_feed_parser.py") {
-      python -X utf8 "scripts/analyst_catalyst_builder.py" --report $report --analyst-out "reports/analyst_${report}.json" --catalysts-out "reports/catalysts_${report}.json" --health-out "reports/health_analyst_${report}.json"
-              --analyst-url "$analystUrl" `
-              --catalyst-url "$catalystUrl" `
-              --analyst-out "$analystOut" `
-              --catalysts-out "$catalystsOut"
+              --catalysts-out "$catalystsOut" `
+              --health-out "reports\health_analyst_${report}.json"
           }
           else {
             Write-Host "Analyst/catalyst builder nem található – blokkok nélkül fut tovább."
