@@ -1,5 +1,5 @@
 # Részvényjelentés Automata – BIBLIA leírás  
-**Verzió:** v3.6.3  
+**Verzió:** v3.6.4  
 
 Ez a dokumentum írja le a teljes #1 / #2 / #3 riport-pipeline architektúráját, a
 fájlszerkezetet, a fő scripteket és a BIBLIA szerinti logikát.
@@ -23,7 +23,7 @@ repo/
 │   │   ├─ catalysts_1.json
 │   │   ├─ health_analyst_1.json
 │   │   ├─ macro_news_1.json
-│   │   ├─ high_conv_1.json
+│   │   ├─ high_conv_1.json / high_conv_2.json / high_conv_3.json
 │   │   └─ summary_report_1.md
 │   ├─ 2/
 │   │   ├─ analyst_2.json
@@ -40,7 +40,7 @@ repo/
 │       └─ raw_catalysts_1.json
 └─ scripts/
     ├─ analyst_block_builder.py
-    ├─ analyst_feed_parser.py
+    ├─ analyst_feed_parser.py (LEGACY – ne használd, kivéve külön kérésre)
     ├─ analyst_catalyst_builder.py
     ├─ biblia_helper.py
     ├─ blocks_events_3.py
@@ -97,7 +97,7 @@ A konkrét logika:
 
 Ezeket később a postprocess lépés fűzi be a summary_report_X.md elejére.
 
-### 2.4 analyst_feed_parser.py
+### 2.4 analyst_feed_parser.py (LEGACY – ne használd, kivéve külön kérésre)
 
 - ANALYST_FEED_URL_1/2/3 és CATALYST_FEED_URL_1/2/3 hívása (Apps Script webapp),
 - a kapott JSON feedek feldolgozása egységes formára,
@@ -267,7 +267,7 @@ Megvalósítás: `blocks_events_3.py`, `blocks_intraday_3.py`, `postprocess_repo
    - kimenet: `macro_news_1.json`, `macro_news_2.json`, `macro_news_3.json`.
 
 3. **Analyst / Catalyst feed (Apps Script webapp)**  
-   - `analyst_feed_parser.py` hívja az ANALYST_FEED_URL_X és CATALYST_FEED_URL_X URL-eket,  
+   - `analyst_feed_parser.py (LEGACY – ne használd, kivéve külön kérésre)` hívja az ANALYST_FEED_URL_X és CATALYST_FEED_URL_X URL-eket,  
    - kimenet: `analyst_X.json`, `catalysts_X.json`.
 
 4. **High-conv builder**  
@@ -416,6 +416,8 @@ A `validate_run.py` a workflow-ban **postprocess után, Gist frissítés előtt*
 - Ez megszünteti a „kamu siker” állapotot.
 
 ### Verziózás
+
+(Állandó szabály: bármely fájl módosításakor a verziószámot folytatólagosan kell növelni, kihagyás nélkül.)
 A `validate_run.py` és a workflow módosításai is a kötelező verziófolytatás hatálya alá esnek.
 
 ---
