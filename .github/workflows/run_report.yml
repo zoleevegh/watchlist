@@ -1,3 +1,4 @@
+# PATCH: noblock analyst/catalyst builder v1.1.1 wired into workflow
 name: Run Report (Windows) # v2.2.9-biblia1-postprocess-orderfix-guard3
 
 on:
@@ -164,7 +165,7 @@ jobs:
             Write-Host "events_fetcher.py nem található – analyst/catalyst blokk nélkül fut tovább."
           }
           else {
-            python -X utf8 "scripts\events_fetcher.py" `
+          python -X utf8 "scripts/analyst_catalyst_builder.py" --report $report --analyst-out "reports/analyst_${report}.json" --catalysts-out "reports/catalysts_${report}.json" --health-out "reports/health_analyst_${report}.json"
               --report $report `
               --universe-json "reports\latest_${report}.json"
           }
@@ -186,8 +187,7 @@ jobs:
           }
 
           $summaryPath = "reports\summary_report_${report}.md"
-
-          python -u -X utf8 "scripts\report_runner.py" `
+          python -X utf8 "scripts/analyst_catalyst_builder.py" --report $report --analyst-out "reports/analyst_${report}.json" --catalysts-out "reports/catalysts_${report}.json" --health-out "reports/health_analyst_${report}.json"
             --report $report `
             --csv "$csv" `
             --summary "$summaryPath"
@@ -301,7 +301,7 @@ jobs:
               --catalysts-out "$catalystsOut"
           }
           elseif (Test-Path "scripts/analyst_feed_parser.py") {
-            python -X utf8 "scripts/analyst_feed_parser.py" `
+      python -X utf8 "scripts/analyst_catalyst_builder.py" --report $report --analyst-out "reports/analyst_${report}.json" --catalysts-out "reports/catalysts_${report}.json" --health-out "reports/health_analyst_${report}.json"
               --analyst-url "$analystUrl" `
               --catalyst-url "$catalystUrl" `
               --analyst-out "$analystOut" `
