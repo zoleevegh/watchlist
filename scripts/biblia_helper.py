@@ -326,7 +326,6 @@ import time
 import datetime as _dt
 from typing import List, Optional, Dict, Any, Set
 
-import requests
 
 _SESSION = requests.Session()
 _SESSION.headers.update(
@@ -352,231 +351,6 @@ def _safe_get_json(url: str, params: Optional[Dict[str, Any]] = None, timeout: i
 # --- Politika / FED / piaci hangulat ---
 
 # --- Politika / FED / piaci hangulat ---
-
-def fetch_yahoo_macro_news(report_type: int = 1, now_cet: Optional[object] = None) -> List[str]:
-    """
-    Politika / FED / piaci hangulat hírek – JSON-alapú feed a makróblokkhoz.
-
-    A tényleges webes hírfetch (Yahoo Finance / CNBC / Bloomberg) külön
-    workflow-ban vagy scriptben fut, és az eredményt JSON-ben menti a
-    ``reports/macro_news_{report_type}.json`` fájlba.
-
-    Várt JSON-struktúra (UTF-8):
-
-    {
-        "generated_at": "2025-11-24T09:35:00+01:00",
-        "report_type": 1,
-        "items": [
-            "Yahoo Finance: Stocks edge higher as investors await Fed minutes",
-            "Bloomberg: Treasury yields fall after dovish Fed comments",
-            "CNBC: Investors eye key inflation data later this week"
-        ]
-    }
-
-    IDŐABLAKOK (hírekre, CEST – a JSON-ban már szűrve, itt csak dokumentáció):
-
-    - report_type 1 vagy 2 esetén: előző kereskedési nap 15:30 → now_cet
-    - report_type 3 esetén: előző piaczárás 22:00 → now_cet
-
-    A gyakorlatban:
-
-    - #1 és #2: az előző US RTH nyitástól (15:30) számítva minden makró/FED/politikai
-      hír, ami a mostani lekérdezésig kijött (beleértve a hétvégét is, ha hétfőn fut),
-    - #3: az előző zárás (22:00) után érkező hírek a lekérdezés pillanatáig.
-
-    Jelenlegi implementáció:
-
-    - megpróbálja beolvasni a ``reports/macro_news_{report_type}.json`` fájlt;
-    - ha nincs ilyen fájl, vagy hibás a formátum → üres listát ad vissza;
-    - legfeljebb 8 sztringet ad vissza, felesleges whitespace nélkül.
-    """
-    filename = f"macro_news_{report_type}.json"
-    candidates = [
-        os.path.join("reports", filename),
-        filename,
-    ]
-
-    for path in candidates:
-        if os.path.exists(path):
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-            except Exception:
-                continue
-
-            items = data.get("items") if isinstance(data, dict) else data
-            if not isinstance(items, list):
-                return []
-
-            cleaned: List[str] = []
-            for item in items:
-                if not isinstance(item, str):
-                    continue
-                s = item.strip()
-                if s:
-                    cleaned.append(s)
-            # Maximum 8 headline – a formázó úgyis tovább szűri.
-            return cleaned[:8]
-
-    # Ha semmilyen JSON-t nem találunk, üres listát adunk vissza.
-    return []
-
-
-def summarize_macro_items(items: List[str], max_lines: int = 4) -> List[str]:
-    """Nyers Yahoo/CNBC/Bloomberg headline-okból magyar mondatokat gyárt.
-
-    - Forrásprefixel dolgozunk: "Yahoo Finance:", "CNBC:", "Bloomberg:" stb.
-    - max_lines sor erejéig alakítjuk át őket magyar mondatokká.
-    """
-    summary: List[str] = []
-
-    for raw in items:
-        s = (raw or "").strip()
-        if not s:
-            continue
-
-        core = s
-        prefix = ""
-        if s.startswith("Yahoo Finance:"):
-            prefix = "A Yahoo Finance szerint"
-            core = s.split(":", 1)[1].strip() or core
-        elif s.startswith("CNBC:"):
-            prefix = "A CNBC beszámolója szerint"
-            core = s.split(":", 1)[1].strip() or core
-        elif s.startswith("Bloomberg:"):
-            prefix = "A Bloomberg kiemeli, hogy"
-            core = s.split(":", 1)[1].strip() or core
-
-        if prefix:
-            sentence = f"{prefix}: {core}"
-        else:
-            sentence = f"Piaci hír: {s}"
-
-        summary.append(sentence)
-        if len(summary) >= max_lines:
-            break
-
-    return summary
-
-
-def format_macro_block(macro_text: Optional[str], yahoo_news: List[str]) -> str:
-    """
-    Politika / FED / piaci hangulat blokk formázása.
-
-    - Ha van manuális macro_text → azt mindig megjelenítjük (első sorok).
-    - Ha vannak hírek → ezekből készül 3–4 magyar mondat a summarize_macro_items
-      segítségével, bulletpontosan.
-    - Ha semmi sincs → generikus fallback szöveget adunk vissza.
-    """
-    lines: List[str] = []
-    title = "**Politika / FED / piaci hangulat**"
-
-    text = (macro_text or "").strip()
-    # Ha valaha "auto" kerülne ide, kezeljük üresként, ne jelenjen meg a szó.
-    if text.lower() == "auto":
-        text = ""
-
-    summarized = summarize_macro_items(yahoo_news or [])
-
-    if text and summarized:
-        lines.append(title)
-        lines.append(text)
-        lines.extend(f"- {item}" for item in summarized)
-    elif text:
-        lines.append(title)
-        lines.append(text)
-    elif summarized:
-        lines.append(title)
-        lines.extend(f"- {item}" for item in summarized)
-    else:
-        # Fallback: nincs releváns hír, de a blokk akkor is jelenjen meg.
-        lines.append(title)
-        lines.append(
-            "Ma nem érkezett érdemi politikai vagy FED-bejelentés; "
-            "a piacok elsősorban a vállalati hírekre és makroadatokra fókuszálnak."
-        )
-
-    return "\n".join(lines)
-
-
-def _load_json_list(path: str) -> List[Any]:
-    """Egyszerű JSON-lista betöltő helper – hiba esetén üres listát ad."""
-    try:
-        full = os.path.join(os.getcwd(), path)
-        if not os.path.exists(full):
-            return []
-        with open(full, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if isinstance(data, list):
-            return data
-    except Exception:
-        return []
-    return []
-
-
-def fetch_analyst_events(path: str = "reports/analyst_1.json") -> List[str]:
-    """Elemzői fel/lemínősítések eseményeinek betöltése opcionális JSON-fájlból."""
-    raw = _load_json_list(path)
-    events: List[str] = []
-    for item in raw:
-        if isinstance(item, str):
-            txt = item.strip()
-        elif isinstance(item, dict):
-            txt = str(item.get("text", "")).strip()
-        else:
-            txt = str(item).strip()
-        if txt:
-            events.append(txt)
-    return events
-
-
-def format_analyst_block(events: List[str]) -> str:
-    if not events:
-        return ""
-    lines = ["**Bejelentések & elemzői fel/lemínősítések**"]
-    for e in events:
-        e = str(e).strip()
-        if not e:
-            continue
-        lines.append(f"- {e}")
-    return "\n".join(lines)
-
-
-# --- Közeli katalizátorok ---
-
-def fetch_catalyst_events(path: str = "reports/catalysts_1.json") -> List[str]:
-    """Közeli (3–12 hónapos) katalizátorok betöltése opcionális JSON-fájlból."""
-    raw = _load_json_list(path)
-    events: List[str] = []
-    for item in raw:
-        if isinstance(item, str):
-            txt = item.strip()
-        elif isinstance(item, dict):
-            txt = str(item.get("text", "")).strip()
-        else:
-            txt = str(item).strip()
-        if txt:
-            events.append(txt)
-    return events
-
-
-def format_catalyst_block(events: List[str]) -> str:
-    if not events:
-        return ""
-    lines = ["**Közeli katalizátorok (3–12 hónap)**"]
-    for e in events:
-        e = str(e).strip()
-        if not e:
-            continue
-        lines.append(f"- {e}")
-    return "\n".join(lines)
-
-
-# --- High-conviction (3–12 hónapos, listán kívüli jelöltek) ---
-
-def _yahoo_reco_and_price(ticker: str) -> Optional[Dict[str, Any]]:
-    """
-    Yahoo Finance quoteSummary lekérése egy tickerre – recommendation + PT + ár.
 
     Visszatérési érték (siker esetén):
         {
@@ -762,7 +536,7 @@ def _filter_highconv_candidates(
 
 
 def generate_highconviction_json(
-    path: str = "reports/highconviction_1.json",
+    path: str = "reports/high_conv_1.json",
     min_upside_pct: float = 15.0,
     min_analysts: int = 10,
     min_buy_ratio: float = 0.70,
@@ -838,7 +612,7 @@ def generate_highconviction_json(
     return payload
 
 
-def fetch_highconviction_events(path: str = "reports/highconviction_1.json") -> List[str]:
+def fetch_highconviction_events(path: str = "reports/high_conv_1.json") -> List[str]:
     """
     High-conviction (3–12 hó) jelöltek betöltése.
 
@@ -1142,3 +916,31 @@ működési keretét. Kódoldali módosításnál mindig ez legyen az igazodási
 def get_biblia_text() -> str:
     """Helper, ha máshonnan akarod beolvasni a teljes bibliát."""
     return BIBLIA_HELP_TEXT
+
+
+
+# =========================
+# HOWTO – PIPELINE OVERVIEW
+# =========================
+# 1) macro_news_{r}.json
+# 2) earnings_{r}.json
+# 3) analyst_{r}.json / catalysts_{r}.json
+# 4) high_conv_{r}.json
+# 5) report_runner.py
+# 6) postprocess_report.py (macro + reflow)
+# 7) validate_run.py (guard)
+# 8) publish (gist)
+
+# =========================
+# REPORT-SPECIFIC FILES
+# =========================
+# #1 -> high_conv_1.json
+# #2 -> high_conv_2.json
+# #3 -> high_conv_3.json
+
+# =========================
+# TROUBLESHOOTING
+# =========================
+# - Lapított report -> postprocess reflow
+# - Hiányzó adat -> Lefedettség: HIÁNYOS (WARN)
+# - MarketBeat 403 -> analyst feed üres, placeholder OK
