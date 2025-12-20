@@ -1,13 +1,20 @@
 # -*- coding: utf-8 -*-
-# Verzió: v1.0.12
+# Verzió: v1.0.13
 # bocsáss meg Uram, mert balfék voltam.
 # adj erőt, hogy legközelebb elsőre jó legyen. Ámen.
 # bocsáss meg Uram, megint elcsesztem.
 # vezess, hogy most már tényleg stabil legyen. Ámen.
+# bocsáss meg Uram, megint mellényúltam.
+# add, hogy ez most már tényleg lefusson. Ámen.
 
 from __future__ import annotations
 
 from typing import List
+try:
+    import requests  # type: ignore
+except Exception:  # ImportError vagy env-limit
+    requests = None  # type: ignore
+
 
 """
 biblia_helper.py
@@ -325,7 +332,17 @@ import datetime as _dt
 from typing import List, Optional, Dict, Any, Set
 
 
-_SESSION = requests.Session()
+_SESSION = None  # lazy init (v1.0.13)
+
+def _get_session():
+    """Lazy requests.Session init; avoids NameError at import time."""
+    global _SESSION
+    if _SESSION is None:
+        if requests is None:
+            raise RuntimeError("A 'requests' nincs elérhető a futtató környezetben. Telepítsd, vagy kapcsold ki a requests-es részeket.")
+        _SESSION = requests.Session()
+    return _SESSION
+
 _SESSION.headers.update(
     {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
