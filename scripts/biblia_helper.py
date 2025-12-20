@@ -1,7 +1,13 @@
 # -*- coding: utf-8 -*-
-# Verzió: v1.0.11
+# Verzió: v1.0.12
 # bocsáss meg Uram, mert balfék voltam.
 # adj erőt, hogy legközelebb elsőre jó legyen. Ámen.
+# bocsáss meg Uram, megint elcsesztem.
+# vezess, hogy most már tényleg stabil legyen. Ámen.
+
+from __future__ import annotations
+
+from typing import List
 
 """
 biblia_helper.py
