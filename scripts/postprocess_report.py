@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""postprocess_report.py – v3.3.9-macro-insert-robust2nings-v3-inject
+"""postprocess_report.py – v3.4.2-format-reflow-robust
 
 Bocsáss meg Uram, mert balfék voltam; add Uram, hogy ne legyen hibás ez a módosítás.
 Áldd meg a futást, hogy a riport tiszta és igaz legyen.
@@ -59,7 +59,7 @@ def _force_reflow(raw: str) -> str:
         s = s.replace(t, f"\n{t}")
 
     # 2) Headings: minden '### ' előtt 2 sortörés (szebb)
-    s = re.sub(r"\n\s*(###\s+)", r"\n\n\1", s)
+    s = re.sub(r"\n\s*(##+\s+)", r"\n\n\1", s)
 
     # 3) bullet: minden ' - ' vagy '\t- ' új sorra
     s = re.sub(r"\s+-\s+", r"\n- ", s)
