@@ -1,3 +1,14 @@
+# Részvények – #1/#2/#3 riport pipeline (rövid)
+
+Igazságforrások:
+- **Szabály (kanonikus):** `docs/biblia_leiras.md`
+- **Technikai howto:** `biblia_helper.py`
+
+Artifact-szabály (kötelező): minden riport **külön** JSON-okkal dolgozik.
+- #1 → `high_conv_1.json`
+- #2 → `high_conv_2.json`
+- #3 → `high_conv_3.json`
+
 # Részvényjelentés Automata  
 ### #1 / #2 / #3 Market Report Engine
 
@@ -40,7 +51,7 @@ Blokkok:
 • Darabszámos tickerek AH/PM mozgásai  
 • Watchlist (≥3% AH/PM)  
 • Elemzői lépések + katalizátorok (analyst_1.json / catalysts_1.json)  
-• High-conv jelöltek: #1 → high_conv_1.json, #2 → high_conv_2.json, #3 → high_conv_3.json alapján)
+• High-conviction jelöltek (csak listán kívüli tickerek, high_conv_1.json alapján)
 
 ---
 
@@ -52,7 +63,7 @@ Blokkok:
 • elemzői lépések, szektorhatások  
 • makróblokkok (macro_news_2.json)  
 • analyst & catalyst blokkok (analyst_2.json, catalysts_2.json)  
-• High-conv jelöltek: #1 → high_conv_1.json, #2 → high_conv_2.json, #3 → high_conv_3.json-ből  
+• high-conv blokkok ugyanabból a high_conv_1.json-ből  
 
 A #2-es riport végső összefűzését a `postprocess_report_2.py` wrapper végzi, a fő `postprocess_report.py` motorra támaszkodva.
 
@@ -80,7 +91,7 @@ GitHub Action: `.github/workflows/run_report.yml`
 
 1. `report_runner.py` (#1/#2/#3 futás – árak, AH/PM, Open→Close, Intraday)  
 2. `macro_fetcher.py` (macro_news_X.json)  
-3. `analyst_feed_parser.py (LEGACY – kivéve külön kérésre)` (analyst_X.json, catalysts_X.json)  
+3. `analyst_feed_parser.py` (analyst_X.json, catalysts_X.json)  
 4. `highconv_builder.py` (high_conv_1.json)  
 5. `postprocess_report.py` / `postprocess_report_2.py` / `postprocess_report_3.py`  
 6. `summary_report_X.md`  
@@ -109,7 +120,7 @@ repo/
     - postprocess_report_3.py
     - blocks_events_3.py
     - blocks_intraday_3.py
-    - analyst_feed_parser.py (LEGACY – kivéve külön kérésre)
+    - analyst_feed_parser.py
     - analyst_block_builder.py
     - highconv_builder.py
     - highconv_block_builder.py
@@ -179,7 +190,7 @@ Ez biztosítja, hogy a nyitás előtti releváns információk ne essenek ki.
 
 
 scripts/
-├── analyst_feed_parser.py (LEGACY – kivéve külön kérésre)
+├── analyst_feed_parser.py
 ├── analyst_block_builder.py
 ├── analyst_catalyst_builder.py   # NEW – MarketBeat / MarketWatch analyst & catalyst parser (jina-md)
 ├── highconv_block_builder.py
@@ -199,10 +210,10 @@ A workflow csak akkor áll PIROSRA, ha:
 - kötelező blokk‑header hiányzik,
 - vagy a jelentés nem felel meg a BIBLIA blokk‑sorrendjének.
 
+## Legacy / ne használd a fő útban
 
-## Szükségtelen / legacy fájlok
+Az alábbiak **nem** részei a fő pipeline-nak (csak régi kísérletek / fallback):
+- `analyst_feed_parser.py`
 
-Az alábbi elemek **legacy** (ne kerüljenek a fő pipeline-ba):
-- analyst_feed_parser.py (csak régi kísérlet / fallback)
 
-A fő út: analyst_catalyst_builder.py + report_runner.py + postprocess_report.py + validate_run.py.
+#1 időkapu: hírek/indoklások csak AH (22:00–02:00) és PM (10:00–15:30) sávból.
