@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# Verzió: v1.0.2
+# Verzió: v1.0.4
 # bocsáss meg Uram, mert balfék voltam.
 # adj erőt, hogy legközelebb elsőre jó legyen. Ámen.
 
@@ -8,7 +8,7 @@ biblia_helper.py
 
 Kanonikus szabálykönyv a #1 / #2 / #3 jelentésekhez ("biblia").
 
-CÉL
+# CÉL
 ----
 Ha valaha elveszne a ChatGPT-beszélgetés vagy bármilyen külön dokumentáció,
 EZ A FÁJL tartalmazza, hogy:
@@ -28,7 +28,7 @@ A legutóbbi #1-es jelentés (After-hours + Premarket) mindig itt érhető el RA
 
 https://gist.githubusercontent.com/zoleevegh/5df443b8a46ef863cdc97aad62756510/raw/summary_report_1.md
 
-Ezt a GitHub Action minden #1-es futás után automatikusan frissíti a
+# Ezt a GitHub Action minden #1-es futás után automatikusan frissíti a
 `reports/summary_report_1.md` tartalmával. Ha bármi elveszne, innen bármikor
 lekérhető a legutolsó #1-es riport.
 
@@ -56,7 +56,7 @@ FONTOS ALAPELVEK (MINDEN JELENTÉSRE)
     - Ha a cella üres vagy nem számszerű, a diff_pct nem kötelező,
       a jelentés többi része ettől függetlenül lefuthat.
 
-HÍRFORRÁS-PRIORITÁS
+# HÍRFORRÁS-PRIORITÁS
 -------------------
 A) Gyors, megbízható hírdótok:
     1. Reuters (Top/Markets/Breakingviews) – elsődleges.
@@ -84,7 +84,7 @@ E) Szektor-specifikus:
     - Kriptoérzékeny papírok (MSTR, COIN, BTDR, RGTI, IREN, SOUN stb.):
       Coindesk / The Block csak megerősítésként, nem önálló primer forrásként.
 
-ANYAGI LÉNYEGESSÉG
+# ANYAGI LÉNYEGESSÉG
 ------------------
 Egy hír / esemény akkor kerül be a jelentésbe (akkor is, ha a % mozgás
 3% alatt marad), ha legalább az alábbiak közül egy teljesül:
@@ -99,7 +99,7 @@ Nem kerül be:
     - puszta pletyka (főleg Reddit/Stocktwits),
     - kis jelentőségű PR-hír, ami nem mozgat árfolyamot.
 
-HIGH-CONVICTION BLOKK
+# HIGH-CONVICTION BLOKK
 ----------------------
 - Név: „Listán kívüli, 3–12 hónapos high-conviction jelöltek”.
 - Csak olyan ticker kerülhet ide, amely NINCS a felhasználó
@@ -122,7 +122,7 @@ LEFEDETTSÉG-BLOKK (MINDEN JELENTÉS ELEJÉN KÖTELEZŐ)
 - FONTOS: az, hogy egy tickernek nincs AH/PM gyertyája egy adott
   2d/5m charton, nem lefedettség-hiba (ilyenkor AH/PM = n/a).
 
-IDŐABLAKOK – KIVONAT
+# IDŐABLAKOK – KIVONAT
 --------------------
 #1 – After-hours (22:00–02:00) + Premarket (10:00–15:30)
     - Bázis: az utolsó teljes RTH (Regular Trading Hours) záróár,
@@ -200,9 +200,9 @@ Ezen felül a #1-es pipeline további Python moduljai:
     - blokkok: Lefedettség, Makró/FED, Darabszámos, Watchlist, Bejelentések & fel/lemínősítések,
       Katalizátorok, Listán kívüli 3–12 hó high-conviction jelöltek.
 
-PYTHONON KÍVÜL MARADÓ / RÉSZBEN MANUÁLIS ELEMEK
+# PYTHONON KÍVÜL MARADÓ / RÉSZBEN MANUÁLIS ELEMEK
 ----------------------------------------------
-A #1-es jelentés célállapota a biblia szerint ma már nagyrészt Python-scriptből fut
+# A #1-es jelentés célállapota a biblia szerint ma már nagyrészt Python-scriptből fut
 (makró, bejelentések, katalizátorok, high-conviction blokkok). Jelenleg kimondottan
 „backlog” státuszban az alábbi elem maradt:
 
@@ -211,7 +211,7 @@ A #1-es jelentés célállapota a biblia szerint ma már nagyrészt Python-scrip
     - de külön, önálló riportblokk (pl. „X% alá/fölé jött az exithez képest”) még NINCS generálva Pythonból,
       csak kiegészítő információként használható.
 
-A KÖVETKEZŐ LÉPÉSEK #1-HEZ
+# A KÖVETKEZŐ LÉPÉSEK #1-HEZ
 ---------------------------
 A script fejlesztésének következő, biblia szerinti lépése #1-nél elsősorban az
 „Eladasi ar” alapú, külön riportblokk leprogramozása (pl. „re-entry radar”, „túl drága a korábbi exithez képest”).
@@ -619,9 +619,9 @@ def generate_highconviction_json(
 
 def fetch_highconviction_events(path: str = "reports/high_conv_1.json") -> List[str]:
     """
-    # High-conviction (3-12 hó) jelöltek betöltése.
+    High-conviction (3–12 hó) jelöltek betöltése.
 
-    Minden híváskor megpróbál egy FRISS listát generálni
+    # Minden híváskor megpróbál egy FRISS listát generálni
     (S&P500-univerzum, MASTER-beli tickerek kizárásával).
     A JSON fájlt csak logolási / debug célból írjuk ki.
 
@@ -686,7 +686,7 @@ def format_highconviction_block(events: List[str]) -> str:
 
 # -*- coding: utf-8 -*-
 """
-BIBLIA HELPER – 1/2/3-as jelentések kanonikus leírása
+# BIBLIA HELPER – 1/2/3-as jelentések kanonikus leírása
 
 Ez a helper NEM technikai doksi (nincsenek benne path-ok, URL-ek, kódhívások),
 hanem a három jelentés (1/2/3) működési „bibliája”.
@@ -720,7 +720,7 @@ A) Gyors, megbízható hírfeed:
 
 B) Hivatalos vállalati csatornák:
    - SEC EDGAR (8-K, 6-K, 10-Q, 10-K)
-   - Cég IR / Newsroom
+   # - Cég IR / Newsroom
    - Business Wire, PR Newswire, GlobeNewswire
 
 C) Elemzői fel/lemínősítések, célárak:
@@ -732,12 +732,12 @@ D) Makró / FED / politika:
    - FederalReserve.gov
    - BLS, BEA
    - US Treasury
-   - Reuters/AP politikai / makró hírei
+   # - Reuters/AP politikai / makró hírei
 
 E) Szektor-specifikus feedek:
    - Félvezetők, AI, kripto, biotech, stb. – csak megerősített, több forrásból.
 
-Anyagi lényegesség – mik kerülnek be?
+# Anyagi lényegesség – mik kerülnek be?
 -------------------------------------
 - Guidance-emelés vagy -vágás (bevétel, EPS, margin, FCF).
 - Jelentős EPS/árbevétel meglepetés (pozitív vagy negatív).
@@ -754,7 +754,7 @@ I. #1 JELENTÉS – „TEGNAPI ZÁRÁSTÓL MOSTANÁIG” (AH + PM)
 Időablakok (CET/CEST):
 - After-hours (AH): előző kereskedési nap 22:00–02:00.
 - Premarket (PM): aktuális nap 10:00–15:30.
-A #1-es riport CSAK ezekkel az idősávokkal foglalkozik; intraday Open→Close
+# A #1-es riport CSAK ezekkel az idősávokkal foglalkozik; intraday Open→Close
 mozgás NEM része.
 
 Árforrás és számolás:
