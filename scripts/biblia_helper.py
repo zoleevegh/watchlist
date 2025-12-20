@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# Verzió: v1.0.4
+# Verzió: v1.0.6
 # bocsáss meg Uram, mert balfék voltam.
 # adj erőt, hogy legközelebb elsőre jó legyen. Ámen.
 
@@ -605,7 +605,7 @@ def generate_highconviction_json(
 
 def fetch_highconviction_events(path: str = "reports/high_conv_1.json") -> List[str]:
     """
-    High-conviction (3–12 hó) jelöltek betöltése.
+    # High-conviction (3-12 hó) jelöltek betöltése.
 
     # Minden híváskor megpróbál egy FRISS listát generálni
     (S&P500-univerzum, MASTER-beli tickerek kizárásával).
