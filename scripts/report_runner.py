@@ -22,7 +22,7 @@ import os
 import sys
 from typing import Dict, List, Optional, Tuple
 
-__version__ = "v3.0.9"
+__version__ = "v3.0.10"
 
 try:
     from zoneinfo import ZoneInfo
@@ -122,7 +122,7 @@ def run_analyst_catalyst_builder(report: int, reports_dir: str = 'reports') -> N
     except Exception as e:
         print(f"[WARN] analyst_catalyst_builder crashed: {e}")
 
-DEFAULT_SCRIPT_VERSION = "v3.0.9-biblia-macro-window-fix"
+DEFAULT_SCRIPT_VERSION = "v3.0.10-biblia-macro-window-fix"
 AH_PM_MODE = "spark"  # alapértelmezett: Yahoo quote/spark alapú AH/PM
 
 
@@ -583,47 +583,42 @@ def generate_model_report(
         macro_block = format_macro_block(macro_text_final, [])
         if macro_block:
             macro_block = (
-                "### 🏛️ Makró / FED / politika
-"
-                f"- Időablak: {last_us_rth_close_cet(now).strftime('%Y-%m-%d %H:%M')} → {now.strftime('%Y-%m-%d %H:%M')} (CE(S)T)
-
-"
+                "### 🏛️ Makró / FED / politika\n"
+                f"- Időablak: {last_us_rth_close_cet(now).strftime('%Y-%m-%d %H:%M')} → {now.strftime('%Y-%m-%d %H:%M')} (CE(S)T)\n\n"
                 + macro_block
             )
     else:
         macro_block = ""
 
         # Elemzői lépések / közeli katalizátorok / high-conviction események (5/6/7. blokk)
-    analyst_events = fetch_analyst_events(ANALYST_EVENTS_PATH)
+        analyst_events = fetch_analyst_events(ANALYST_EVENTS_PATH)
     analyst_block = format_analyst_block(analyst_events)
-if analyst_block:
-    if isinstance(analyst_block, list):
-        analyst_block = "
-".join(analyst_block)
-    if analyst_block.lstrip().startswith("###"):
-        first_nl = analyst_block.find("
-")
-        if first_nl != -1:
-            analyst_block = (
-                analyst_block[:first_nl+1]
-                + f"- Időablak: {last_us_rth_close_cet(now).strftime('%Y-%m-%d %H:%M')} → {now.strftime('%Y-%m-%d %H:%M')} (CE(S)T)
+    if analyst_block:
+        if isinstance(analyst_block, list):
+            analyst_block = "\n".join(analyst_block)
 
-"
-                + analyst_block[first_nl+1:]
-            )
+        window_line = f"- Időablak: {last_us_rth_close_cet(now).strftime('%Y-%m-%d %H:%M')} → {now.strftime('%Y-%m-%d %H:%M')} (CE(S)T)"
+
+        if analyst_block.lstrip().startswith("###"):
+            first_nl = analyst_block.find("\n")
+            if first_nl != -1:
+                analyst_block = (
+                    analyst_block[:first_nl + 1]
+                    + window_line
+                    + "\n\n"
+                    + analyst_block[first_nl + 1 :]
+                )
+            else:
+                analyst_block = analyst_block + "\n" + window_line + "\n"
         else:
-            analyst_block = analyst_block + "
-" + f"- Időablak: {last_us_rth_close_cet(now).strftime('%Y-%m-%d %H:%M')} → {now.strftime('%Y-%m-%d %H:%M')} (CE(S)T)
-"
+            analyst_block = (
+                "### 🧩 Bejelentések & fel-/lemínősítések\n"
+                + window_line
+                + "\n\n"
+                + analyst_block
+            )
     else:
-        analyst_block = (
-            "### 🧩 Bejelentések & fel-/lemínősítések
-"
-            f"- Időablak: {last_us_rth_close_cet(now).strftime('%Y-%m-%d %H:%M')} → {now.strftime('%Y-%m-%d %H:%M')} (CE(S)T)
-
-"
-            + analyst_block
-        )
+        analyst_block = ""
 
     catalyst_events = fetch_catalyst_events(CATALYST_EVENTS_PATH)
     catalyst_block = format_catalyst_block(catalyst_events)
