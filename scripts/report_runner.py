@@ -22,7 +22,7 @@ import os
 import sys
 from typing import Dict, List, Optional, Tuple
 
-__version__ = "v3.0.10"
+__version__ = "v3.0.11"
 
 try:
     from zoneinfo import ZoneInfo
@@ -122,7 +122,7 @@ def run_analyst_catalyst_builder(report: int, reports_dir: str = 'reports') -> N
     except Exception as e:
         print(f"[WARN] analyst_catalyst_builder crashed: {e}")
 
-DEFAULT_SCRIPT_VERSION = "v3.0.10-biblia-macro-window-fix"
+DEFAULT_SCRIPT_VERSION = "v3.0.11-biblia-coverage-weekend"
 AH_PM_MODE = "spark"  # alapértelmezett: Yahoo quote/spark alapú AH/PM
 
 
@@ -365,6 +365,10 @@ def compute_ah_pm_move(
 
     # Ha nincs egyáltalán pre/post adat, akkor tényleg nincs mit jelenteni
     if not ah_points and not pm_points:
+        # Weekend/market-closed vagy adatforrás-szegény eset: RTH close lehet, de nincs pre/post.
+        # Ilyenkor NE legyen coverage-miss; csak AH/PM marad None.
+        if rth_points:
+            return rth_points[-1][1], None, None
         return None, None, None
 
     # 1) Keressük meg az IDŐBEN LEGHAMARABB érkező pre/post gyertyát
@@ -451,6 +455,15 @@ def last_us_rth_close_cet(now_bud: Optional[dt.datetime] = None) -> dt.datetime:
     )
     return close_ny.astimezone(bud_tz)
 
+def is_us_market_closed_weekend(now_bud: Optional[dt.datetime] = None) -> bool:
+    """True if it's weekend in New York (heuristic market-closed)."""
+    ny_tz = _tz("America/New_York")
+    now_bud = now_bud or now_cet()
+    now_ny = now_bud.astimezone(ny_tz)
+    return now_ny.weekday() >= 5
+
+
+
 
 def generate_model_report(
     watchlist_path: Optional[str],
@@ -496,7 +509,7 @@ def generate_model_report(
 
             # 2) Ha nincs értelmezhető adat a quote feedből, próbáljuk meg a chartot
             if rth_close is None and ah_pct is None and pm_pct is None:
-                meta, ts, closes = fetch_chart(sym)
+                meta, ts, closes = fetch_chart(sym, range_str=("5d" if is_us_market_closed_weekend(now) else "2d"))
                 rth_close_chart, ah_from_chart, pm_from_chart = compute_ah_pm_move(meta, ts, closes)
                 rth_close = rth_close_chart
                 if ah_pct is None:
@@ -545,6 +558,7 @@ def generate_model_report(
         )
 
     now = now_cet()
+    weekend_closed = is_us_market_closed_weekend(now)
 
     header_lines = [
         "## After-hours & Premarket – #1 jelentés",
