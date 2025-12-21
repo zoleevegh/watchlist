@@ -1,5 +1,74 @@
 # Részvényjelentés Automata – BIBLIA leírás  
-**Verzió:** v3.6.11  
+**Verzió:** v3.6.12  
+
+
+## Könyvtárszerkezet (kanonikus, *aktuális*)
+
+```
+/
+  .github/
+    workflows/
+      run_report.yml
+      update_biblia_docs.yml   (ha van)
+  docs/
+    biblia_leiras.md
+    biblia_helper_docs.md     (ha van)
+  reports/
+    master.csv
+    macro_news_1.json
+    macro_news_2.json
+    macro_news_3.json
+
+    raw_analyst_1.json
+    raw_catalysts_1.json
+    raw_analyst_2.json        (ha engedélyezed / ha létezik)
+    raw_catalysts_2.json      (ha engedélyezed / ha létezik)
+    raw_analyst_3.json        (ha engedélyezed / ha létezik)
+    raw_catalysts_3.json      (ha engedélyezed / ha létezik)
+
+    analyst_1.json
+    catalysts_1.json
+    analyst_2.json
+    catalysts_2.json
+    analyst_3.json
+    catalysts_3.json
+
+    latest_1.json
+    latest_2.json
+    latest_3.json
+    latest_1.md
+    latest_2.md
+    latest_3.md
+
+    summary_report_1.md
+    summary_report_2.md
+    summary_report_3.md
+
+    health_analyst_1.json
+    health_analyst_2.json
+    health_analyst_3.json
+  scripts/
+    crawler_analyst_catalyst.py
+    events_fetcher.py
+    sec_edgar_fetcher.py
+    yahoo_analyst_events_fetcher.py
+    earnings_fetcher.py
+    highconv_builder.py
+    highconv_block_builder.py
+    analyst_catalyst_builder.py   (WIP / csak ha be van kötve)
+    report_runner.py
+    report_runner_3.py            (#3 speciális postprocess, ha létezik)
+    postprocess_report.py
+    postprocess_report_2.py
+    postprocess_report_3.py
+    blocks_events_3.py
+    blocks_intraday_3.py
+    validate_run.py
+    biblia_helper.py
+  readme.md
+```
+
+**Fontos:** a pipeline **nem** `reports/1/2/3` almappákba ír, hanem **a `reports/` gyökérbe**, a fájlnévben jelölve a report számát.
 
 Ez a dokumentum írja le a teljes #1 / #2 / #3 riport-pipeline architektúráját, a
 
@@ -777,3 +846,66 @@ IV. LEFEDETTSÉG ÉS FALLBACK LOGIKA – ÖSSZEFOGLALÓ
 ---
 
 működési keretét. Kódoldali módosításnál mindig ez legyen az igazodási pont.
+
+
+
+## Adatfolyam (kanonikus, a futó workflow szerint)
+
+### 0) Bemenet
+- `reports/master.csv` – MASTER ticker-univerzum (robust letöltés után mindig ez az alap)
+
+### 1) Makró feed (Apps Script webapp)
+- A workflow **curl-lel** tölti le:
+  - `reports/macro_news_{report}.json`
+- Ha nincs `MACRO_FEED_URL_{report}`, a fájl üres `[]`.
+
+### 2) SEC EDGAR filing réteg (tény-alapú catalyst)
+- `scripts/sec_edgar_fetcher.py`
+- Kimenet: javasolt külön artifact `reports/sec_filings_{report}.json` **vagy** beolvasztás a catalysts JSON-ba (projekt-döntés).
+- Kötelező env: `SEC_USER_AGENT`
+
+### 3) Nyers analyst & catalyst események
+- `scripts/crawler_analyst_catalyst.py`
+- Kimenetek (nyers):
+  - `reports/raw_analyst_{report}.json`
+  - `reports/raw_catalysts_{report}.json`
+
+### 4) Normalizált analyst & catalyst JSON
+- `scripts/events_fetcher.py`
+- Kimenetek:
+  - `reports/analyst_{report}.json`
+  - `reports/catalysts_{report}.json`
+  - opcionális health:
+    - `reports/health_analyst_{report}.json`
+
+### 5) Report generálás
+- `scripts/report_runner.py` – #1/#2/#3 generálás a biblia szerinti blokkokkal
+- #3 esetén, ha létezik:
+  - `scripts/report_runner_3.py` (külön intraday/postprocess)
+
+### 6) Earnings fetch (kiegészítő)
+- `scripts/earnings_fetcher.py` – earnings/earnings-katalizátor kiegészítés (ha be van kötve a workflow-ba)
+
+### 7) Yahoo analyst events (kiegészítő)
+- `scripts/yahoo_analyst_events_fetcher.py` – jelenleg **aktív step** a workflow-ban
+
+### 8) Postprocess
+- `scripts/postprocess_report.py` / `_2.py` / `_3.py`
+
+### 9) Validáció
+- `scripts/validate_run.py`
+
+### 10) Publikálás (artifact / fixed gist)
+- A workflow a `reports/**` kimeneteket artifactként feltölti, majd frissíti a fix Gist(ek)et.
+
+
+## Nem használt fájlok (törölhetőek a repo-ból)
+
+Az alábbi fájlok **nincsenek hívva** a `run_report.yml` jelenlegi futásában, és a jelenlegi pipeline-hoz nem szükségesek:
+
+- `scripts/analyst_feed_parser.py`
+- `scripts/macro_fetcher.py`
+- `scripts/macro_news_fetcher.py`
+- `scripts/export_biblia_md.py` *(csak akkor kell, ha külön “update_biblia_docs.yml” workflow használja)*
+
+**Megjegyzés:** ha később bevezeted az `update_biblia_docs.yml` automatát, akkor az `export_biblia_md.py` visszakerülhet.
