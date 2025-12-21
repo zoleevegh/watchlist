@@ -22,7 +22,7 @@ import os
 import sys
 from typing import Dict, List, Optional, Tuple
 
-__version__ = "v3.0.7"
+__version__ = "v3.0.9"
 
 try:
     from zoneinfo import ZoneInfo
@@ -122,7 +122,7 @@ def run_analyst_catalyst_builder(report: int, reports_dir: str = 'reports') -> N
     except Exception as e:
         print(f"[WARN] analyst_catalyst_builder crashed: {e}")
 
-DEFAULT_SCRIPT_VERSION = "v3.0.7-biblia-prep-yahoo-fallback-coveragefix-mw-off"
+DEFAULT_SCRIPT_VERSION = "v3.0.9-biblia-macro-window-fix"
 AH_PM_MODE = "spark"  # alapértelmezett: Yahoo quote/spark alapú AH/PM
 
 
@@ -407,6 +407,51 @@ def fmt_pct(value: Optional[float]) -> str:
     return f"{value:+.2f}%"
 
 
+def _tz(name: str):
+    try:
+        return ZoneInfo(name)
+    except Exception:
+        return dt.timezone.utc
+
+def now_cet() -> dt.datetime:
+    """Current time in Europe/Budapest (handles CET/CEST correctly when zoneinfo is available)."""
+    tz = _tz("Europe/Budapest")
+    return dt.datetime.now(tz)
+
+def last_us_rth_close_cet(now_bud: Optional[dt.datetime] = None) -> dt.datetime:
+    """Return the most recent US RTH close (16:00 America/New_York) converted to Europe/Budapest.
+
+    Heuristic (holiday-aware calendar nélkül, de DST-t kezeli):
+    - Ha NY idő szerint hétfő–péntek és most >= 16:00 → mai zárás a legutolsó.
+    - Egyébként az előző munkanap 16:00 a legutolsó (szombat/vasárnap → péntek).
+    """
+    bud_tz = _tz("Europe/Budapest")
+    ny_tz = _tz("America/New_York")
+
+    now_bud = now_bud or now_cet()
+    now_ny = now_bud.astimezone(ny_tz)
+
+    # Decide which date's close is the "last close"
+    wd = now_ny.weekday()  # Mon=0 .. Sun=6
+
+    def prev_weekday(d: dt.date) -> dt.date:
+        # step back until Mon-Fri
+        while d.weekday() >= 5:
+            d = d - dt.timedelta(days=1)
+        return d
+
+    if wd < 5 and (now_ny.hour > 16 or (now_ny.hour == 16 and now_ny.minute >= 0)):
+        close_date = now_ny.date()
+    else:
+        # previous day, then roll back over weekend if needed
+        close_date = prev_weekday(now_ny.date() - dt.timedelta(days=1))
+
+    close_ny = dt.datetime(
+        close_date.year, close_date.month, close_date.day, 16, 0, 0, tzinfo=ny_tz
+    )
+    return close_ny.astimezone(bud_tz)
+
+
 def generate_model_report(
     watchlist_path: Optional[str],
     script_version: str,
@@ -499,7 +544,7 @@ def generate_model_report(
             + " (oka: lásd belső logot / forráshibát)"
         )
 
-    now = dt.datetime.now(dt.timezone(dt.timedelta(hours=1)))
+    now = now_cet()
 
     header_lines = [
         "## After-hours & Premarket – #1 jelentés",
@@ -511,10 +556,15 @@ def generate_model_report(
         "- AH: előző kereskedési nap 22:00–02:00",
         "- PM: aktuális nap 10:00–15:30",
         "",
+        "**Időablak (Makró + Bejelentések):** az utolsó piaci zárástól a lekérdezés pillanatáig.",
+        "(Időpontok automatikusan számolva US RTH záró = 16:00 ET alapján.)",
+        "",
         "**Árforrás:** Yahoo Finance chart (v8 – 2d/5m, includePrePost; "
         "utolsó RTH záró → AH/PM utolsó ár alapján számolt % mozgás)",
         "",
         coverage_line,
+        "",
+        f"Makró/Bejelentések ablak (CE(S)T): {last_us_rth_close_cet(now).strftime('%Y-%m-%d %H:%M')} → {now.strftime('%Y-%m-%d %H:%M')}",
     ]
 
 
@@ -531,12 +581,49 @@ def generate_model_report(
     if macro_text_final:
         # A Yahoo-makró híreket itt nem keverjük hozzá, a webapp már tartalmazza az összefoglalót.
         macro_block = format_macro_block(macro_text_final, [])
+        if macro_block:
+            macro_block = (
+                "### 🏛️ Makró / FED / politika
+"
+                f"- Időablak: {last_us_rth_close_cet(now).strftime('%Y-%m-%d %H:%M')} → {now.strftime('%Y-%m-%d %H:%M')} (CE(S)T)
+
+"
+                + macro_block
+            )
     else:
         macro_block = ""
 
         # Elemzői lépések / közeli katalizátorok / high-conviction események (5/6/7. blokk)
     analyst_events = fetch_analyst_events(ANALYST_EVENTS_PATH)
     analyst_block = format_analyst_block(analyst_events)
+if analyst_block:
+    if isinstance(analyst_block, list):
+        analyst_block = "
+".join(analyst_block)
+    if analyst_block.lstrip().startswith("###"):
+        first_nl = analyst_block.find("
+")
+        if first_nl != -1:
+            analyst_block = (
+                analyst_block[:first_nl+1]
+                + f"- Időablak: {last_us_rth_close_cet(now).strftime('%Y-%m-%d %H:%M')} → {now.strftime('%Y-%m-%d %H:%M')} (CE(S)T)
+
+"
+                + analyst_block[first_nl+1:]
+            )
+        else:
+            analyst_block = analyst_block + "
+" + f"- Időablak: {last_us_rth_close_cet(now).strftime('%Y-%m-%d %H:%M')} → {now.strftime('%Y-%m-%d %H:%M')} (CE(S)T)
+"
+    else:
+        analyst_block = (
+            "### 🧩 Bejelentések & fel-/lemínősítések
+"
+            f"- Időablak: {last_us_rth_close_cet(now).strftime('%Y-%m-%d %H:%M')} → {now.strftime('%Y-%m-%d %H:%M')} (CE(S)T)
+
+"
+            + analyst_block
+        )
 
     catalyst_events = fetch_catalyst_events(CATALYST_EVENTS_PATH)
     catalyst_block = format_catalyst_block(catalyst_events)
@@ -654,7 +741,7 @@ def generate_report2_macro_only(
         "Lefedettség: HIÁNYOS – ticker-szintű #2 modul még fejlesztés alatt ebben a verzióban."
     )
 
-    now = dt.datetime.now(dt.timezone(dt.timedelta(hours=1)))
+    now = now_cet()
 
     header_lines = [
         "#2 – Előző kereskedési nap: nyitástól zárásig (15:30–22:00) — CEST",
@@ -741,7 +828,7 @@ def generate_report3_macro_only(
         "Lefedettség: HIÁNYOS – ticker-szintű #3 modul még fejlesztés alatt ebben a verzióban."
     )
 
-    now = dt.datetime.now(dt.timezone(dt.timedelta(hours=1)))
+    now = now_cet()
 
     header_lines = [
         "#3 – Mai kereskedési nap: nyitástól mostanáig (15:30-tól) — CEST",
