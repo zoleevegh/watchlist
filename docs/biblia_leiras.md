@@ -67,7 +67,7 @@ Ha bármely workflow, script, README vagy komment ellentmond ennek a dokumentumn
 akkor **EZ A DOKUMENTUM AZ IRÁNYADÓ**, és az eltérést hibának kell tekinteni.
 
 
-**Verzió:** v3.6.14  
+**Verzió:** v3.6.15  
 
 
 
