@@ -22,7 +22,7 @@ import os
 import sys
 from typing import Dict, List, Optional, Tuple
 
-__version__ = "v3.0.13"
+__version__ = "v3.0.14"
 
 try:
     from zoneinfo import ZoneInfo
@@ -122,7 +122,7 @@ def run_analyst_catalyst_builder(report: int, reports_dir: str = 'reports') -> N
     except Exception as e:
         print(f"[WARN] analyst_catalyst_builder crashed: {e}")
 
-DEFAULT_SCRIPT_VERSION = "v3.0.13-biblia-quote-nullproof"
+DEFAULT_SCRIPT_VERSION = "v3.0.14-biblia-quote-nullproof-selfcontained"
 AH_PM_MODE = "spark"  # alapértelmezett: Yahoo quote/spark alapú AH/PM
 
 
@@ -236,26 +236,25 @@ def load_watchlist(path: Optional[str]) -> Dict[str, Dict]:
 def fetch_yahoo_quote_batch(symbols: List[str]) -> Dict[str, Tuple[Optional[float], Optional[float], Optional[float]]]:
     """Batch quote fetch (Yahoo quote endpoint).
 
-Nullproof:
+Self-contained + nullproof (no external UA/log dependency):
 - resp.json() can be None
 - quoteResponse can be None
-- result can be None
-- sometimes shape differs; we fall back to empty
+- result can be None / wrong type
 Returns: dict[symbol] -> (regularMarketPrice, regularMarketPreviousClose)
 """
     out = {}
     if not symbols:
         return out
+    user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
     try:
         url = "https://query1.finance.yahoo.com/v7/finance/quote"
         params = {"symbols": ",".join(symbols)}
-        headers = {"User-Agent": UA}
+        headers = {"User-Agent": user_agent}
         resp = requests.get(url, params=params, headers=headers, timeout=15)
         if resp.status_code != 200:
-            log(f"[YF-QUOTE] batch non-200: {resp.status_code}")
+            print(f"[YF-QUOTE] batch non-200: {resp.status_code}")
             return out
         data = resp.json() or {}
-        # Sometimes data is not a dict
         if not isinstance(data, dict):
             return out
         qr = data.get("quoteResponse") or {}
@@ -275,7 +274,7 @@ Returns: dict[symbol] -> (regularMarketPrice, regularMarketPreviousClose)
             out[sym] = (px, prev)
         return out
     except Exception as e:
-        log(f"[YF-QUOTE] batch fetch error: {e}")
+        print(f"[YF-QUOTE] batch fetch error: {e}")
         return out
 
 
