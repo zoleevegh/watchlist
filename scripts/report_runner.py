@@ -22,7 +22,7 @@ import os
 import sys
 from typing import Dict, List, Optional, Tuple
 
-__version__ = "v3.0.12"
+__version__ = "v3.0.13"
 
 try:
     from zoneinfo import ZoneInfo
@@ -122,7 +122,7 @@ def run_analyst_catalyst_builder(report: int, reports_dir: str = 'reports') -> N
     except Exception as e:
         print(f"[WARN] analyst_catalyst_builder crashed: {e}")
 
-DEFAULT_SCRIPT_VERSION = "v3.0.12-biblia-coverage-weekend-quote-guard"
+DEFAULT_SCRIPT_VERSION = "v3.0.13-biblia-quote-nullproof"
 AH_PM_MODE = "spark"  # alapértelmezett: Yahoo quote/spark alapú AH/PM
 
 
@@ -234,58 +234,50 @@ def load_watchlist(path: Optional[str]) -> Dict[str, Dict]:
 
 
 def fetch_yahoo_quote_batch(symbols: List[str]) -> Dict[str, Tuple[Optional[float], Optional[float], Optional[float]]]:
-    """Batch-ben lehúzza a Yahoo quote (spark) feedet AH/PM-hez.
+    """Batch quote fetch (Yahoo quote endpoint).
 
-    Visszatér: {ticker: (regular_prev_close, ah_pct, pm_pct)}
-
-    - AH: postMarketChangePercent
-    - PM: preMarketChangePercent
-    - Ha valamelyik mező hiányzik, None marad.
-    """
+Nullproof:
+- resp.json() can be None
+- quoteResponse can be None
+- result can be None
+- sometimes shape differs; we fall back to empty
+Returns: dict[symbol] -> (regularMarketPrice, regularMarketPreviousClose)
+"""
+    out = {}
     if not symbols:
-        return {}
-
-    # Yahoo quote endpoint – ez hajtja a webes portfólió UI-t is.
-    url = "https://query1.finance.yahoo.com/v7/finance/quote"
-    joined = ",".join(sorted(set(symbols)))
-    params = {"symbols": joined}
-
+        return out
     try:
-        resp = SESSION.get(url, params=params, timeout=10)
-        resp.raise_for_status()
-    except Exception as e:
-        debug(f"[YF-QUOTE] batch fetch error: {e}")
-        return {}
-
-    try:
+        url = "https://query1.finance.yahoo.com/v7/finance/quote"
+        params = {"symbols": ",".join(symbols)}
+        headers = {"User-Agent": UA}
+        resp = requests.get(url, params=params, headers=headers, timeout=15)
+        if resp.status_code != 200:
+            log(f"[YF-QUOTE] batch non-200: {resp.status_code}")
+            return out
         data = resp.json() or {}
+        # Sometimes data is not a dict
+        if not isinstance(data, dict):
+            return out
+        qr = data.get("quoteResponse") or {}
+        if not isinstance(qr, dict):
+            qr = {}
+        result = qr.get("result") or []
+        if not isinstance(result, list):
+            result = []
+        for row in result:
+            if not isinstance(row, dict):
+                continue
+            sym = row.get("symbol")
+            if not sym:
+                continue
+            px = row.get("regularMarketPrice")
+            prev = row.get("regularMarketPreviousClose")
+            out[sym] = (px, prev)
+        return out
     except Exception as e:
-        debug(f"[YF-QUOTE] JSON parse error: {e}")
-        return {}
+        log(f"[YF-QUOTE] batch fetch error: {e}")
+        return out
 
-    result_list = data.get("quoteResponse", {}).get("result", []) or []
-    out: Dict[str, Tuple[Optional[float], Optional[float], Optional[float]]] = {}
-
-    for item in result_list:
-        sym = item.get("symbol")
-        if not sym:
-            continue
-        prev_close = item.get("regularMarketPreviousClose")
-        # Ezek már %-ban érkeznek (nem 0–1 frakcióban)
-        ah_pct = item.get("postMarketChangePercent")
-        pm_pct = item.get("preMarketChangePercent")
-        # Biztonság kedvéért float() konverzió – ha nem konvertálható, None marad
-        def _to_float(x):
-            try:
-                return float(x)
-            except Exception:
-                return None
-        prev_close_f = _to_float(prev_close)
-        ah_pct_f = _to_float(ah_pct)
-        pm_pct_f = _to_float(pm_pct)
-        out[sym.upper()] = (prev_close_f, ah_pct_f, pm_pct_f)
-
-    return out
 
 
 def fetch_chart(symbol: str) -> Tuple[dict, List[int], List[Optional[float]]]:
@@ -486,7 +478,7 @@ def generate_model_report(
     if report == 1:
         ah_pm_mode = os.environ.get("AH_PM_MODE", AH_PM_MODE).lower()
         if ah_pm_mode == "spark":
-            quote_map = fetch_yahoo_quote_batch(all_symbols) or {}
+            quote_map = fetch_yahoo_quote_batch(all_symbols) or {} or {}
             if all_symbols and not quote_map:
                 debug("[WARN] Yahoo quote batch üres/blocked – chart fallback kényszerítve minden tickerre.")
                 ah_pm_mode = "chart"
