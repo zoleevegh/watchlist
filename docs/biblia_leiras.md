@@ -1,137 +1,76 @@
 # Részvényjelentés Automata – BIBLIA leírás  
-**Verzió:** v3.6.12  
 
+## Alapelvek és hatáskör
 
-## Könyvtárszerkezet (kanonikus, *aktuális*)
+## Könyvtárszerkezet (KANONIKUS – FUTÓ ÁLLAPOT)
 
 ```
-/
-  .github/
-    workflows/
-      run_report.yml
-      update_biblia_docs.yml   (ha van)
-  docs/
-    biblia_leiras.md
-    biblia_helper_docs.md     (ha van)
-  reports/
-    master.csv
-    macro_news_1.json
-    macro_news_2.json
-    macro_news_3.json
-
-    raw_analyst_1.json
-    raw_catalysts_1.json
-    raw_analyst_2.json        (ha engedélyezed / ha létezik)
-    raw_catalysts_2.json      (ha engedélyezed / ha létezik)
-    raw_analyst_3.json        (ha engedélyezed / ha létezik)
-    raw_catalysts_3.json      (ha engedélyezed / ha létezik)
-
-    analyst_1.json
-    catalysts_1.json
-    analyst_2.json
-    catalysts_2.json
-    analyst_3.json
-    catalysts_3.json
-
-    latest_1.json
-    latest_2.json
-    latest_3.json
-    latest_1.md
-    latest_2.md
-    latest_3.md
-
-    summary_report_1.md
-    summary_report_2.md
-    summary_report_3.md
-
-    health_analyst_1.json
-    health_analyst_2.json
-    health_analyst_3.json
-  scripts/
-    crawler_analyst_catalyst.py
-    events_fetcher.py
-    sec_edgar_fetcher.py
-    yahoo_analyst_events_fetcher.py
-    earnings_fetcher.py
-    highconv_builder.py
-    highconv_block_builder.py
-    analyst_catalyst_builder.py   (WIP / csak ha be van kötve)
-    report_runner.py
-    report_runner_3.py            (#3 speciális postprocess, ha létezik)
-    postprocess_report.py
-    postprocess_report_2.py
-    postprocess_report_3.py
-    blocks_events_3.py
-    blocks_intraday_3.py
-    validate_run.py
-    biblia_helper.py
-  readme.md
-```
-
-**Fontos:** a pipeline **nem** `reports/1/2/3` almappákba ír, hanem **a `reports/` gyökérbe**, a fájlnévben jelölve a report számát.
-
-Ez a dokumentum írja le a teljes #1 / #2 / #3 riport-pipeline architektúráját, a
-
-**Verziózás (kötelező):** bármely fájl módosításakor a verziószámot folytatólagosan kell növelni, kihagyás nélkül.
-fájlszerkezetet, a fő scripteket és a BIBLIA szerinti logikát.
-
----
-
-## 1. Könyvtárszerkezet
-
-```text
 repo/
 ├─ README.md
 ├─ .github/
-│   └─ workflows/
-│       ├─ run_report.yml
-│       └─ update_biblia_docs.yml
+│  └─ workflows/
+│     └─ run_report.yml
 ├─ docs/
-│   └─ biblia_leiras.md
+│  └─ biblia_leiras.md
 ├─ reports/
-│   ├─ 1/
-│   │   ├─ analyst_1.json
-│   │   ├─ catalysts_1.json
-│   │   ├─ health_analyst_1.json
-│   │   ├─ macro_news_1.json
-│   │   ├─ high_conv_1.json
-│   │   └─ summary_report_1.md
-│   ├─ 2/
-│   │   ├─ analyst_2.json
-│   │   ├─ catalysts_2.json
-│   │   ├─ health_analyst_2.json
-│   │   ├─ macro_news_2.json
-│   │   └─ summary_report_2.md
-│   └─ 3/
-│       ├─ latest_3.json
-│       ├─ latest_3.md
-│       ├─ macro_news_3.json
-│       ├─ summary_report_3.md
-│       ├─ raw_analyst_1.json
-│       └─ raw_catalysts_1.json
+│  ├─ master.csv
+│  ├─ macro_news_1.json
+│  ├─ macro_news_2.json
+│  ├─ macro_news_3.json
+│  ├─ raw_analyst_1.json
+│  ├─ raw_catalysts_1.json
+│  ├─ raw_analyst_2.json
+│  ├─ raw_catalysts_2.json
+│  ├─ raw_analyst_3.json
+│  ├─ raw_catalysts_3.json
+│  ├─ analyst_1.json
+│  ├─ analyst_2.json
+│  ├─ analyst_3.json
+│  ├─ catalysts_1.json
+│  ├─ catalysts_2.json
+│  ├─ catalysts_3.json
+│  ├─ health_analyst_1.json
+│  ├─ health_analyst_2.json
+│  ├─ health_analyst_3.json
+│  ├─ latest_1.json
+│  ├─ latest_2.json
+│  ├─ latest_3.json
+│  ├─ latest_1.md
+│  ├─ latest_2.md
+│  ├─ latest_3.md
+│  ├─ summary_report_1.md
+│  ├─ summary_report_2.md
+│  └─ summary_report_3.md
 └─ scripts/
-    ├─ analyst_block_builder.py
-    ├─ analyst_feed_parser.py
-    ├─ analyst_catalyst_builder.py
-    ├─ biblia_helper.py
-    ├─ blocks_events_3.py
-    ├─ blocks_intraday_3.py
-    ├─ earnings_fetcher.py
-    ├─ export_biblia_md.py
-    ├─ highconv_block_builder.py
-    ├─ highconv_builder.py
-    ├─ macro_fetcher.py
-    ├─ macro_highconv_helpers_v2.py
-    ├─ postprocess_report.py
-    ├─ postprocess_report_2.py
-    ├─ postprocess_report_3.py
-    ├─ report_runner.py
-    ├─ validate_run.py
-    ├─ yahoo_analyst_events_fetcher.py
-    └─ (egyéb segédscriptek a projekt korábbi verzióiból)
+   ├─ macro_fetcher.py
+   ├─ sec_edgar_fetcher.py
+   ├─ crawler_analyst_catalyst.py
+   ├─ events_fetcher.py
+   ├─ yahoo_analyst_events_fetcher.py
+   ├─ earnings_fetcher.py
+   ├─ report_runner.py
+   ├─ report_runner_3.py
+   ├─ postprocess_report.py
+   ├─ postprocess_report_2.py
+   ├─ postprocess_report_3.py
+   ├─ blocks_events_3.py
+   ├─ blocks_intraday_3.py
+   ├─ validate_run.py
+   └─ biblia_helper.py
 ```
 
----
+A fenti lista **előírás**: ami itt szerepel, annak léteznie és futnia kell. Ami nem szerepel, az nem része a rendszernek.
+
+Ez a dokumentum a **Részvények projekt egyetlen kanonikus szabálykönyve**.
+
+Ha bármely workflow, script, README vagy komment ellentmond ennek a dokumentumnak,
+akkor **EZ A DOKUMENTUM AZ IRÁNYADÓ**, és az eltérést hibának kell tekinteni.
+
+
+**Verzió:** v3.6.14  
+
+
+
 
 ## 2. Scripts – szerepek és felelősségek
 
