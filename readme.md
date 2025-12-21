@@ -106,7 +106,6 @@ repo/
 - README.md  ← ez a dokumentum
 - .github/workflows/
     - run_report.yml
-    - update_biblia_docs.yml
 - docs/
     - biblia_leiras.md (a teljes módszertan)
 - reports/
