@@ -1,387 +1,449 @@
-#!/usr/bin/env python3
-"""
-SEC EDGAR fetcher — v1.0.0
+# PATCH v4.0.2: noblock analyst/catalyst builder wired; removed blocked fallback
+name: Run Report (Windows) # v4.0.2-noblock-valid
 
-Cél
-- Stabil, "mindig legyen adat" jellegű katalizátor-forrás: SEC EDGAR filingek (8-K, 6-K, 10-Q, 10-K, S-1, DEF 14A, stb.)
-- Kimenet: a pipeline által felhasználható, egységesített catalyst esemény JSON.
+on:
+  workflow_dispatch:
+    inputs:
+      report:
+        description: 'Jelentés: 1=AH+PM, 2=Open→Close (előző nap), 3=Ma Open→Most'
+        default: '1'
+        required: false
+  repository_dispatch:
+    types: [run_report]
 
-Fő elvek (BIBLIA-kompatibilis)
-- SEC = tényforrás, nem híraggregátor.
-- Szigorú rate-limit + kötelező User-Agent (SEC policy).
-- Cache-eli a ticker→CIK mappinget.
+jobs:
+  run:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      PYTHONUNBUFFERED: '1'
+      # ← IDE írd a Google Sheets "Publish to web" CSV linkjét (MASTER)
+      DEFAULT_CSV_URL: https://docs.google.com/spreadsheets/d/e/2PACX-1vTf5h3xx4LWJvI-e7PSyc8g6uGZT-H6pCeuwEqs7NqeCDKuAltTpL_ncPOWMtooRw/pub?output=csv
 
-Kimeneti séma (rugalmas)
-- A crawler_analyst_catalyst.py normalizálója bármilyen extra mezőt elvisel.
-- Kötelező mezők: ticker, event_type, headline, summary, source, ts
-- Extra: url, form, accession, filing_date
+      # Analyst / Catalyst feed webapp (Apps Script – ÚJ ID)
+      ANALYST_FEED_URL_1: "https://script.google.com/macros/s/AKfycbzFY0L5KPCJaPc8QugZWaibJwQUOTs_fs1gR1gTHBSlzsyhr2THMIm0dzeslwzCm3AzJw/exec?type=analyst&report=1"
+      CATALYST_FEED_URL_1: "https://script.google.com/macros/s/AKfycbzFY0L5KPCJaPc8QugZWaibJwQUOTs_fs1gR1gTHBSlzsyhr2THMIm0dzeslwzCm3AzJw/exec?type=catalyst&report=1"
 
-Használat
-  python scripts/sec_edgar_fetcher_v1.0.0.py \
-      --report 1 \
-      --master-csv reports/master.csv \
-      --out reports/1/catalysts_1.json
+      ANALYST_FEED_URL_2: "https://script.google.com/macros/s/AKfycbzFY0L5KPCJaPc8QugZWaibJwQUOTs_fs1gR1gTHBSlzsyhr2THMIm0dzeslwzCm3AzJw/exec?type=analyst&report=2"
+      CATALYST_FEED_URL_2: "https://script.google.com/macros/s/AKfycbzFY0L5KPCJaPc8QugZWaibJwQUOTs_fs1gR1gTHBSlzsyhr2THMIm0dzeslwzCm3AzJw/exec?type=catalyst&report=2"
 
-Ajánlott a workflow-ban:
-- futtasd postprocess előtt
-- report=1/2/3 szerint külön fájlba írjon
+      ANALYST_FEED_URL_3: "https://script.google.com/macros/s/AKfycbzFY0L5KPCJaPc8QugZWaibJwQUOTs_fs1gR1gTHBSlzsyhr2THMIm0dzeslwzCm3AzJw/exec?type=analyst&report=3"
+      CATALYST_FEED_URL_3: "https://script.google.com/macros/s/AKfycbzFY0L5KPCJaPc8QugZWaibJwQUOTs_fs1gR1gTHBSlzsyhr2THMIm0dzeslwzCm3AzJw/exec?type=catalyst&report=3"
 
-Megjegyzés
-- A SEC "submissions" JSON nem ad megbízható perces timestampet, tipikusan csak filingDate.
-  Emiatt a v1 "lookback" időablakkal dolgozik (órában).
-"""
-from __future__ import annotations
+      # Makró / FED / piaci hangulat feed (Apps Script webapp – külön MACRO projekt)
+      MACRO_FEED_URL_1: "https://script.google.com/macros/s/AKfycbwfUmWTywq1joSUzTuc584QD_CHHLpolKDCf7Cgbjrz1rCWwwxyzdf2BcQ1_RRBZ-OvyA/exec?type=macro&report=1"
+      MACRO_FEED_URL_2: "https://script.google.com/macros/s/AKfycbwfUmWTywq1joSUzTuc584QD_CHHLpolKDCf7Cgbjrz1rCWwwxyzdf2BcQ1_RRBZ-OvyA/exec?type=macro&report=2"
+      MACRO_FEED_URL_3: "https://script.google.com/macros/s/AKfycbwfUmWTywq1joSUzTuc584QD_CHHLpolKDCf7Cgbjrz1rCWwwxyzdf2BcQ1_RRBZ-OvyA/exec?type=macro&report=3"
 
-import argparse
-import datetime as dt
-import json
-import os
-import re
-import sys
-import time
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-try:
-    import requests  # type: ignore
-except ImportError:
-    requests = None
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
+      - name: Install deps
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas requests yfinance pytz feedparser beautifulsoup4
 
-SEC_TICKER_JSON_PRIMARY = "https://www.sec.gov/files/company_tickers.json"
-SEC_SUBMISSIONS = "https://data.sec.gov/submissions/CIK{cik10}.json"
-SEC_ARCHIVES_DOC = "https://www.sec.gov/Archives/edgar/data/{cik_int}/{acc_no_nodash}/{primary_doc}"
+      - name: Resolve inputs (report, macro)
+        id: vars
+        shell: pwsh
+        run: |
+          $report = "${{ github.event.inputs.report }}"
+          if (-not $report) { $report = "${{ github.event.client_payload.report }}" }
+          if (-not $report) { $report = "1" }
+          $macro = "auto"
+          "report=$report" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "macro=$macro"   | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
-DEFAULT_FORMS = [
-    # "mindig hasznos" / anyagilag lényeges formok
-    "8-K", "6-K", "10-Q", "10-K", "20-F", "40-F",
-    "S-1", "S-3", "F-1", "F-3",
-    "424B1", "424B2", "424B3", "424B4", "424B5",
-    "DEF 14A", "DEFA14A",
-    "SC 13D", "SC 13G", "13F-HR",
-]
+          Write-Host "REPORT: $report"
+          Write-Host "MACRO:  $macro"
 
-# SEC rate limit: nem túl agresszív. 0.2–0.3s requestenként általában oké.
-DEFAULT_SLEEP_SEC = 0.25
+      - name: Fetch macro feed (Apps Script webapp)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path reports | Out-Null
 
+          $report = "${{ steps.vars.outputs.report }}"
+          if (-not $report) { $report = "1" }
 
-def eprint(*args: Any) -> None:
-    print(*args, file=sys.stderr)
+          $out = "reports\macro_news_${report}.json"
 
+          # URL kiválasztás report szerint
+          $url = ""
+          if ($report -eq "1") { $url = "${{ env.MACRO_FEED_URL_1 }}" }
+          elseif ($report -eq "2") { $url = "${{ env.MACRO_FEED_URL_2 }}" }
+          elseif ($report -eq "3") { $url = "${{ env.MACRO_FEED_URL_3 }}" }
 
-def require_requests() -> None:
-    if requests is None:
-        raise RuntimeError("Hiányzó függőség: requests. Add hozzá a requirements.txt-hez: requests")
+          if (-not $url) {
+            Write-Host "MACRO_FEED_URL_${report} nincs beállítva → üres macro_news_${report}.json"
+            "[]" | Out-File -FilePath $out -Encoding utf8
+            exit 0
+          }
 
+          Write-Host "Makró feed letöltés: $url"
+          & curl.exe -fL --retry 3 --retry-all-errors -A "Mozilla/5.0" "$url" -o "$out"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "Makró feed sikertelen (curl exit $LASTEXITCODE) → üres JSON"
+            "[]" | Out-File -FilePath $out -Encoding utf8
+            exit 0
+          }
 
-def now_utc() -> dt.datetime:
-    return dt.datetime.now(dt.timezone.utc)
+          if ((Get-Item "$out").Length -lt 3) {
+            Write-Host "Makró feed üres/kicsi → üres JSON"
+            "[]" | Out-File -FilePath $out -Encoding utf8
+            exit 0
+          }
 
+          $first = Get-Content "$out" -TotalCount 1
+          if ($first -match "<!DOCTYPE html>|<html") {
+            Write-Host "Makró feed HTML-t adott vissza (auth/redirect?) → üres JSON"
+            "[]" | Out-File -FilePath $out -Encoding utf8
+            exit 0
+          }
 
-def parse_yyyymmdd(s: str) -> Optional[dt.date]:
-    s = (s or "").strip()
-    if not s:
-        return None
-    try:
-        return dt.datetime.strptime(s, "%Y-%m-%d").date()
-    except Exception:
-        return None
+          if (($first.TrimStart() -notmatch "^\[|^\{")) {
+            Write-Host "Makró feed nem JSON (első sor: $first) → üres JSON"
+            "[]" | Out-File -FilePath $out -Encoding utf8
+            exit 0
+          }
 
+          Write-Host "Makró feed OK → $out"
 
-def safe_slug(s: str) -> str:
-    s = re.sub(r"[^A-Za-z0-9._-]+", "_", s)
-    return s[:150]
+      - name: Fetch MASTER CSV (robust)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path reports | Out-Null
+          $out    = "reports\master.csv"
+          $csvUrl = "${{ env.DEFAULT_CSV_URL }}"
 
+          Write-Host "Letöltés (DEFAULT_CSV_URL): $csvUrl"
+          & curl.exe -fL --retry 3 --retry-all-errors -A "Mozilla/5.0" "$csvUrl" -o "$out"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "CSV letöltés sikertelen (curl exit $LASTEXITCODE)"
+            exit 1
+          }
 
-@dataclass
-class Filing:
-    ticker: str
-    cik10: str
-    filing_date: str
-    form: str
-    accession: str
-    primary_doc: str
+          if ((Get-Item "$out").Length -lt 10) {
+            Write-Error "A CSV túl kicsi / üres"
+            exit 1
+          }
 
-    def to_event(self) -> Dict[str, Any]:
-        # filingDate jellemzően YYYY-MM-DD
-        # ts-nek: date + "T00:00:00Z" (jobb híján), de később lehet finomítani.
-        ts = f"{self.filing_date}T00:00:00Z" if self.filing_date else ""
-        url = ""
-        try:
-            cik_int = str(int(self.cik10))
-            acc_no_nodash = self.accession.replace("-", "")
-            if self.primary_doc:
-                url = SEC_ARCHIVES_DOC.format(cik_int=cik_int, acc_no_nodash=acc_no_nodash, primary_doc=self.primary_doc)
-        except Exception:
-            url = ""
+          $first = Get-Content "$out" -TotalCount 1
+          if ($first -match "<!DOCTYPE html>|<html") {
+            Write-Error "Nem CSV érkezett (HTML). Ellenőrizd a Publish to web linket."
+            exit 1
+          }
 
-        headline = f"SEC filing: {self.form}"
-        summary = f"{self.form} benyújtva az SEC-hez ({self.filing_date})."
-        return {
-            "ticker": self.ticker,
-            "event_type": "sec_filing",
-            "headline": headline,
-            "summary": summary,
-            "source": "SEC EDGAR",
-            "ts": ts,
-            "url": url,
-            "form": self.form,
-            "accession": self.accession,
-            "filing_date": self.filing_date,
-            "primary_doc": self.primary_doc,
-        }
+          Get-Content "$out" -TotalCount 5 | ForEach-Object { Write-Host "CSV> $_" }
 
+      - name: Build raw analyst & catalyst events (#1/#2/#3)
+        shell: pwsh
+        run: |
+          $report = "${{ steps.vars.outputs.report }}"
+          if (-not $report) { $report = "1" }
 
-class SecClient:
-    def __init__(self, user_agent: str, cache_dir: Path, sleep_sec: float = DEFAULT_SLEEP_SEC, timeout: int = 25) -> None:
-        require_requests()
-        self.user_agent = user_agent
-        self.cache_dir = cache_dir
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-        self.sleep_sec = sleep_sec
-        self.timeout = timeout
-        self._session = requests.Session()  # type: ignore
-        self._session.headers.update({
-            "User-Agent": self.user_agent,
-            "Accept-Encoding": "gzip, deflate",
-            "Accept": "application/json,text/plain,*/*",
-        })
+          if (-not (Test-Path "scripts\crawler_analyst_catalyst.py")) {
+            Write-Host "crawler_analyst_catalyst.py nem található – raw_analyst/raw_catalysts nélkül fut tovább."
+          }
+          else {
+            python -X utf8 "scripts\crawler_analyst_catalyst.py" --report $report
+          }
 
-    def _get(self, url: str) -> Any:
-        resp = self._session.get(url, timeout=self.timeout)  # type: ignore
-        if resp.status_code == 403:
-            raise RuntimeError("SEC 403: valószínűleg hiányzó/gyenge User-Agent vagy túl gyors lekérés.")
-        resp.raise_for_status()
-        time.sleep(self.sleep_sec)
-        ctype = resp.headers.get("content-type", "")
-        if "json" in ctype or url.endswith(".json"):
-            return resp.json()
-        return resp.text
+      - name: Build analyst & catalyst JSON (events_fetcher) (#1/#2/#3)
+        shell: pwsh
+        run: |
+          $report = "${{ steps.vars.outputs.report }}"
+          if (-not $report) { $report = "1" }
 
-    def load_ticker_map(self, force_refresh: bool = False) -> Dict[str, str]:
-        """
-        Visszaad: { "AAPL": "0000320193", ... } (CIK 10 számjegyre zéróval kitöltve)
-        """
-        cache_path = self.cache_dir / "sec_company_tickers.json"
-        if cache_path.exists() and not force_refresh:
-            try:
-                return json.loads(cache_path.read_text(encoding="utf-8"))
-            except Exception:
-                pass
+          if (-not (Test-Path "scripts\events_fetcher.py")) {
+            Write-Host "events_fetcher.py nem található – analyst/catalyst blokk nélkül fut tovább."
+          }
+          else {
+            python -X utf8 "scripts\events_fetcher.py" `
+              --report $report `
+              --universe-json "reports\latest_${report}.json"
+          }
 
-        data = self._get(SEC_TICKER_JSON_PRIMARY)
-        # company_tickers.json: dict indexelt elemekkel
-        out: Dict[str, str] = {}
-        if isinstance(data, dict):
-            for _, row in data.items():
-                try:
-                    ticker = str(row.get("ticker", "")).upper().strip()
-                    cik = str(row.get("cik_str", "")).strip()
-                    if ticker and cik:
-                        out[ticker] = str(int(cik)).zfill(10)
-                except Exception:
-                    continue
+      - name: Run report (#1/#2/#3)
+        shell: pwsh
+        run: |
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+          $env:PYTHONIOENCODING = "utf-8"
 
-        cache_path.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
-        return out
+          $report = "${{ steps.vars.outputs.report }}"
+          if (-not $report) { $report = "1" }
 
-    def fetch_submissions(self, cik10: str) -> Dict[str, Any]:
-        url = SEC_SUBMISSIONS.format(cik10=cik10)
-        data = self._get(url)
-        if not isinstance(data, dict):
-            raise RuntimeError("SEC submissions válasz nem dict.")
-        return data
+          $csv    = "reports\master.csv"
 
+          if (-not (Test-Path "scripts\report_runner.py")) {
+            Write-Error "scripts\report_runner.py hiányzik a repóban"
+            exit 1
+          }
 
-def read_master_tickers(master_csv: Path) -> List[str]:
-    """
-    MASTER CSV minimál támogatás:
-    - első oszlopban lehet 'ticker' vagy 'symbol'
-    - ha nincs header, akkor az első oszlopot tickernek vesszük
-    """
-    import csv
-    if not master_csv.exists():
-        raise FileNotFoundError(f"MASTER CSV nem található: {master_csv}")
-    rows = master_csv.read_text(encoding="utf-8").splitlines()
-    if not rows:
-        return []
-    reader = csv.reader(rows)
-    header = rows[0].lower()
-    has_header = ("ticker" in header) or ("symbol" in header)
-    tickers: List[str] = []
-    if has_header:
-        dict_reader = csv.DictReader(rows)
-        for r in dict_reader:
-            t = (r.get("ticker") or r.get("symbol") or "").strip().upper()
-            if t:
-                tickers.append(t)
-    else:
-        # első oszlop
-        for r in reader:
-            if not r:
-                continue
-            t = (r[0] or "").strip().upper()
-            if t and t != "TICKER":
-                tickers.append(t)
-    # dedup while preserving order
-    seen = set()
-    out = []
-    for t in tickers:
-        if t not in seen:
-            seen.add(t)
-            out.append(t)
-    return out
+          $summaryPath = "reports\summary_report_${report}.md"
 
+          python -u -X utf8 "scripts\report_runner.py" `
+            --report $report `
+            --csv "$csv" `
+            --summary "$summaryPath"
 
-def report_default_lookback_hours(report: int) -> int:
-    # pragmatikus defaultok
-    if report == 1:
-        return 48
-    if report == 2:
-        return 96
-    return 24
+          if (Test-Path $summaryPath) {
+            Get-Content $summaryPath | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8
+          } else {
+            Write-Host "Nincs summary fájl (expected: $summaryPath)"
+          }
 
+      - name: Earnings fetcher
+        run: python scripts/earnings_fetcher.py --report "${{ steps.vars.outputs.report }}"
 
-def within_lookback(filing_date: str, lookback_hours: int, ref_utc: dt.datetime) -> bool:
-    d = parse_yyyymmdd(filing_date)
-    if not d:
-        return False
-    # filingDate "nap" szinten van. Kezeljük úgy, hogy a nap 00:00 UTC.
-    filing_dt = dt.datetime(d.year, d.month, d.day, tzinfo=dt.timezone.utc)
-    delta = ref_utc - filing_dt
-    return delta.total_seconds() >= 0 and delta.total_seconds() <= lookback_hours * 3600
+      - name: Yahoo analyst events fetcher
+        run: python scripts/yahoo_analyst_events_fetcher.py --report "${{ steps.vars.outputs.report }}"
 
+      - name: Postprocess report (#1/#2/#3)
+        shell: pwsh
+        run: |
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+          $env:PYTHONIOENCODING = "utf-8"
 
-def extract_recent_filings(submissions: Dict[str, Any], ticker: str, cik10: str, forms_allow: set[str], lookback_hours: int, ref_utc: dt.datetime) -> List[Filing]:
-    """
-    submissions['filings']['recent']:
-      accessionNumber[], filingDate[], form[], primaryDocument[]
-    """
-    filings = submissions.get("filings", {}).get("recent", {})
-    acc = filings.get("accessionNumber", []) or []
-    dates = filings.get("filingDate", []) or []
-    forms = filings.get("form", []) or []
-    docs = filings.get("primaryDocument", []) or []
+          $report = "${{ steps.vars.outputs.report }}"
+          if (-not $report) { $report = "1" }
 
-    out: List[Filing] = []
-    n = min(len(acc), len(dates), len(forms))
-    for i in range(n):
-        form = str(forms[i] or "").strip()
-        if forms_allow and form not in forms_allow:
-            continue
-        filing_date = str(dates[i] or "").strip()
-        if not within_lookback(filing_date, lookback_hours, ref_utc):
-            continue
-        accession = str(acc[i] or "").strip()
-        primary_doc = str(docs[i] or "").strip() if i < len(docs) else ""
-        out.append(Filing(
-            ticker=ticker,
-            cik10=cik10,
-            filing_date=filing_date,
-            form=form,
-            accession=accession,
-            primary_doc=primary_doc
-        ))
-    return out
+          # Analyst / catalyst feed URL-k report szerint
+          if ($report -eq "1") {
+            $analystUrl  = "${{ env.ANALYST_FEED_URL_1 }}"
+            $catalystUrl = "${{ env.CATALYST_FEED_URL_1 }}"
+          }
+          elseif ($report -eq "2") {
+            $analystUrl  = "${{ env.ANALYST_FEED_URL_2 }}"
+            $catalystUrl = "${{ env.CATALYST_FEED_URL_2 }}"
+          }
+          elseif ($report -eq "3") {
+            $analystUrl  = "${{ env.ANALYST_FEED_URL_3 }}"
+            $catalystUrl = "${{ env.CATALYST_FEED_URL_3 }}"
+          }
+          else {
+            Write-Host "Ismeretlen report szám: $report"
+            exit 1
+          }
 
+          $analystOut   = "reports\analyst_${report}.json"
+          $catalystsOut = "reports\catalysts_${report}.json"
+          if (Test-Path "scripts\analyst_catalyst_builder.py") {
+            python -X utf8 "scripts\analyst_catalyst_builder.py" `
+              --report $report `
+              --catalysts-out "$catalystsOut" `
+              --catalysts-out "$catalystsOut" `
+              --health-out "reports\health_analyst_${report}.json"
+          }
+          else {
+            Write-Host "analyst_catalyst_builder.py nem található – analyst/catalyst blokkok nélkül fut tovább."
+          }
 
-def main() -> None:
-    ap = argparse.ArgumentParser(description="SEC EDGAR filings → catalysts JSON (BIBLIA v1)")
-    ap.add_argument("--report", type=int, required=True, choices=[1,2,3], help="Report # (1/2/3)")
-    ap.add_argument("--master-csv", required=True, help="MASTER CSV (tickerek)")
-    ap.add_argument("--out", required=True, help="Kimeneti JSON path (pl. reports/1/catalysts_1.json)")
-    ap.add_argument("--forms", default=",".join(DEFAULT_FORMS), help="Vesszővel elválasztott SEC form whitelist")
-    ap.add_argument("--lookback-hours", type=int, default=0, help="Lookback órában (0=report default)")
-    ap.add_argument("--cache-dir", default=".cache/sec", help="Cache könyvtár")
-    ap.add_argument("--sleep-sec", type=float, default=DEFAULT_SLEEP_SEC, help="SEC request sleep (sec)")
-    ap.add_argument("--timeout", type=int, default=25, help="HTTP timeout (sec)")
-    ap.add_argument("--refresh-ticker-map", action="store_true", help="Ticker→CIK cache frissítése")
-    ap.add_argument("--user-agent", default=os.getenv("SEC_USER_AGENT",""), help="Kötelező! Pl: 'ZoliStocksBot/1.0 (email@domain.com)'")
-    ap.add_argument("--max-tickers", type=int, default=0, help="0=korlátlan (debughoz hasznos)")
-    args = ap.parse_args()
+          # High-conv jelöltek buildelése (scripts\highconv_builder.py)
+          if (Test-Path "scripts\highconv_builder.py") {
+            python -X utf8 "scripts\highconv_builder.py"
+          }
+          else {
+            Write-Host "highconv_builder.py nem található – high-conv blokk nélkül fut tovább."
+          }
 
-    ua = (args.user_agent or "").strip()
-    if not ua or len(ua) < 10:
-        raise SystemExit("HIBA: Adj meg erős SEC User-Agentet --user-agent vagy SEC_USER_AGENT env alatt. Pl: 'ZoliStocksBot/1.0 (contact: you@domain.com)'")
+          if ($report -eq "3") {
+            if (Test-Path "scripts\report_runner_3.py") {
+              Write-Host "#3-as jelentés: runner_3/
+      - name: SEC EDGAR – catalysts (report 1)
+        run: |
+          python scripts/sec_edgar_fetcher.py --report 1 --master-csv reports/master.csv --out reports/1/catalysts_1.json
 
-    report = args.report
-    lookback_hours = args.lookback_hours or report_default_lookback_hours(report)
+      - name: SEC EDGAR – catalysts (report 2)
+        run: |
+          python scripts/sec_edgar_fetcher.py --report 2 --master-csv reports/master.csv --out reports/2/catalysts_2.json
 
-    master_csv = Path(args.master_csv)
-    out_path = Path(args.out)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
+      - name: SEC EDGAR – catalysts (report 3)
+        run: |
+          python scripts/sec_edgar_fetcher.py --report 3 --master-csv reports/master.csv --out reports/3/catalysts_3.json
+postprocess_report_3 futtatása..."
+              python -X utf8 "scripts\report_runner_3.py"
+            }
+            else {
+              Write-Host "report_runner_3.py nem található – #3-as jelentés intraday postprocess nélkül marad."
+            }
+          }
+          elseif ($report -eq "2") {
+            if (Test-Path "scripts\postprocess_report_2.py") {
+              Write-Host "#2-es jelentés: postprocess_report_2.py fut..."
+              python -X utf8 "scripts\postprocess_report_2.py"
+            }
+            else {
+              Write-Host "postprocess_report_2.py nem található – nyers #2-es riport marad."
+            }
+          }
+          else {
+            if (Test-Path "scripts\postprocess_report.py") {
+              $mdPath    = "reports\summary_report_${report}.md"
+              $bundleDir = "reports"
 
-    tickers = read_master_tickers(master_csv)
-    if args.max_tickers and args.max_tickers > 0:
-        tickers = tickers[:args.max_tickers]
+              python -u -X utf8 "scripts\postprocess_report.py" `
+                --report $report `
+                --md "$mdPath" `
+                --bundle-dir "$bundleDir"
+            }
+            else {
+              Write-Host "postprocess_report.py nem található – nyers #1-es riport marad."
+            }
+          }
+      - name: Build analyst & catalyst feed (Python)
+        shell: pwsh
+        run: |
+          $report = "${{ inputs.report }}"
+          if ([string]::IsNullOrWhiteSpace($report)) { $report = "1" }
 
-    ref = now_utc()
-    cache_dir = Path(args.cache_dir)
-    client = SecClient(user_agent=ua, cache_dir=cache_dir, sleep_sec=args.sleep_sec, timeout=args.timeout)
+          $analystOut   = "reports/analyst_${report}.json"
+          $catalystsOut = "reports/catalysts_${report}.json"
 
-    ticker_map = client.load_ticker_map(force_refresh=bool(args.refresh_ticker_map))
+          if (Test-Path "scripts/analyst_catalyst_builder.py") {
+            python -X utf8 "scripts/analyst_catalyst_builder.py" `
+              --report $report `
+              --catalysts-out "$catalystsOut" `
+              --health-out "reports\health_analyst_${report}.json"
+          }
+          else {
+            Write-Host "Analyst/catalyst builder nem található – blokkok nélkül fut tovább."
+          }
 
-    events: List[Dict[str, Any]] = []
-    missing_cik: List[str] = []
-    errors: List[Tuple[str,str]] = []
+      - name: Validate report output
+        shell: pwsh
+        run: python scripts/validate_run.py --report "${{ steps.vars.outputs.report }}"
 
-    forms_allow = set([f.strip() for f in (args.forms or "").split(",") if f.strip()])
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: report-bundle
+          path: reports/**
+          if-no-files-found: warn
 
-    for t in tickers:
-        cik10 = ticker_map.get(t)
-        if not cik10:
-            missing_cik.append(t)
-            continue
-        try:
-            submissions = client.fetch_submissions(cik10)
-            filings = extract_recent_filings(
-                submissions=submissions,
-                ticker=t,
-                cik10=cik10,
-                forms_allow=forms_allow,
-                lookback_hours=lookback_hours,
-                ref_utc=ref,
-            )
-            for f in filings:
-                events.append(f.to_event())
-        except Exception as e:
-            errors.append((t, repr(e)))
-            continue
+      # Fix Gist frissítése – #1-es jelentés
+      - name: Update fixed Gist with #1 report
+        if: always()
+        shell: pwsh
+        env:
+          GIST_ID: 5df443b8a46ef863cdc97aad62756510
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+        run: |
+          if (-not $env:GIST_TOKEN) {
+            Write-Host "No GIST_TOKEN secret – skip Gist update (#1)."
+            exit 0
+          }
 
-    # Dedupe: ticker+form+filing_date+accession
-    seen = set()
-    deduped: List[Dict[str, Any]] = []
-    for ev in events:
-        key = (ev.get("ticker",""), ev.get("form",""), ev.get("filing_date",""), ev.get("accession",""))
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(ev)
+          $path = "reports\summary_report_1.md"
+          if (-not (Test-Path $path)) {
+            Write-Host "summary_report_1.md nem található – valószínűleg nem #1-es riport futott. Skip."
+            exit 0
+          }
 
-    out_obj = {
-        "meta": {
-            "source": "SEC EDGAR",
-            "generated_utc": ref.isoformat(),
-            "report": report,
-            "lookback_hours": lookback_hours,
-            "forms_allow": sorted(list(forms_allow)),
-            "tickers_total": len(tickers),
-            "events_total": len(deduped),
-            "missing_cik": missing_cik[:200],
-            "errors": [{"ticker": t, "error": err} for t, err in errors[:200]],
-        },
-        "events": deduped,
-    }
+          $content = Get-Content -Raw $path
+          $body = @{
+            files = @{
+              "summary_report_1.md" = @{
+                content = $content
+              }
+            }
+          }
 
-    out_path.write_text(json.dumps(out_obj, ensure_ascii=False, indent=2), encoding="utf-8")
+          $json = $body | ConvertTo-Json -Depth 5
+          $url  = "https://api.github.com/gists/$($env:GIST_ID)"
 
-    eprint(f"[sec_edgar_fetcher] Mentve: {out_path} (events: {len(deduped)})")
-    if missing_cik:
-        eprint(f"[sec_edgar_fetcher] FIGYELEM: {len(missing_cik)} tickerhez nincs CIK mapping (pl. {missing_cik[:8]})")
-    if errors:
-        eprint(f"[sec_edgar_fetcher] FIGYELEM: {len(errors)} ticker hiba (pl. {errors[:3]})")
+          $resp = curl.exe -s -X PATCH $url `
+            -H "Authorization: Bearer $($env:GIST_TOKEN)" `
+            -H "Accept: application/vnd.github+json" `
+            -H "Content-Type: application/json" `
+            -d $json
 
+          "Raw URL for this run:" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          "https://gist.githubusercontent.com/zoleevegh/5df443b8a46ef863cdc97aad62756510/raw/summary_report_1.md?run=$env:GITHUB_RUN_ID" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
 
-if __name__ == "__main__":
-    main()
+      # Fix Gist – #2-es jelentés
+      - name: Update fixed Gist with #2 report
+        if: always()
+        shell: pwsh
+        env:
+          GIST_ID: 31b8daf60f983fbdfe37e3d0f2251fc7
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+        run: |
+          if (-not $env:GIST_TOKEN) {
+            Write-Host "No GIST_TOKEN secret – skip Gist update (#2)."
+            exit 0
+          }
+
+          $path = "reports\summary_report_2.md"
+          if (-not (Test-Path $path)) {
+            Write-Host "summary_report_2.md nem található – valószínűleg nem #2-es riport futott. Skip."
+            exit 0
+          }
+
+          $content = Get-Content -Raw $path
+          $body = @{
+            files = @{
+              "summary_report_2.md" = @{
+                content = $content
+              }
+            }
+          }
+
+          $json = $body | ConvertTo-Json -Depth 5
+          $url  = "https://api.github.com/gists/$($env:GIST_ID)"
+
+          $resp = curl.exe -s -X PATCH $url `
+            -H "Authorization: Bearer $($env:GIST_TOKEN)" `
+            -H "Accept: application/vnd.github+json" `
+            -H "Content-Type: application/json" `
+            -d $json
+
+          "Raw URL for #2 fixed gist:" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          "https://gist.githubusercontent.com/zoleevegh/31b8daf60f983fbdfe37e3d0f2251fc7/raw/summary_report_2.md" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+      # Fix Gist – #3-as jelentés
+      - name: Update fixed Gist with #3 report
+        if: always()
+        shell: pwsh
+        env:
+          GIST_ID: 8f77c3b0ec040030d492859095686030
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+        run: |
+          if (-not $env:GIST_TOKEN) {
+            Write-Host "No GIST_TOKEN secret – skip Gist update (#3)."
+            exit 0
+          }
+
+          $path = "reports\summary_report_3.md"
+          if (-not (Test-Path $path)) {
+            Write-Host "summary_report_3.md nem található – valószínűleg nem #3-as riport futott. Skip."
+            exit 0
+          }
+
+          $content = Get-Content -Raw $path
+          $body = @{
+            files = @{
+              "summary_report_3.md" = @{
+                content = $content
+              }
+            }
+          }
+
+          $json = $body | ConvertTo-Json -Depth 5
+          $url  = "https://api.github.com/gists/$($env:GIST_ID)"
+
+          $resp = curl.exe -s -X PATCH $url `
+            -H "Authorization: Bearer $($env:GIST_TOKEN)" `
+            -H "Accept: application/vnd.github+json" `
+            -H "Content-Type: application/json" `
+            -d $json
+
+          "Raw URL for #3 fixed gist:" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          "https://gist.githubusercontent.com/zoleevegh/8f77c3b0ec040030d492859095686030/raw/summary_report_3.md" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
