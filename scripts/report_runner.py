@@ -22,7 +22,7 @@ import os
 import sys
 from typing import Dict, List, Optional, Tuple
 
-__version__ = "v3.0.11"
+__version__ = "v3.0.12"
 
 try:
     from zoneinfo import ZoneInfo
@@ -122,7 +122,7 @@ def run_analyst_catalyst_builder(report: int, reports_dir: str = 'reports') -> N
     except Exception as e:
         print(f"[WARN] analyst_catalyst_builder crashed: {e}")
 
-DEFAULT_SCRIPT_VERSION = "v3.0.11-biblia-coverage-weekend"
+DEFAULT_SCRIPT_VERSION = "v3.0.12-biblia-coverage-weekend-quote-guard"
 AH_PM_MODE = "spark"  # alapértelmezett: Yahoo quote/spark alapú AH/PM
 
 
@@ -258,7 +258,7 @@ def fetch_yahoo_quote_batch(symbols: List[str]) -> Dict[str, Tuple[Optional[floa
         return {}
 
     try:
-        data = resp.json()
+        data = resp.json() or {}
     except Exception as e:
         debug(f"[YF-QUOTE] JSON parse error: {e}")
         return {}
@@ -486,7 +486,7 @@ def generate_model_report(
     if report == 1:
         ah_pm_mode = os.environ.get("AH_PM_MODE", AH_PM_MODE).lower()
         if ah_pm_mode == "spark":
-            quote_map = fetch_yahoo_quote_batch(all_symbols)
+            quote_map = fetch_yahoo_quote_batch(all_symbols) or {}
             if all_symbols and not quote_map:
                 debug("[WARN] Yahoo quote batch üres/blocked – chart fallback kényszerítve minden tickerre.")
                 ah_pm_mode = "chart"
