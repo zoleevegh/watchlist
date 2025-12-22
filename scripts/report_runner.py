@@ -22,7 +22,7 @@ import os
 import sys
 from typing import Dict, List, Optional, Tuple
 
-__version__ = "v3.0.13"
+__version__ = "v3.0.14"
 
 try:
     from zoneinfo import ZoneInfo
@@ -122,7 +122,7 @@ def run_analyst_catalyst_builder(report: int, reports_dir: str = 'reports') -> N
     except Exception as e:
         print(f"[WARN] analyst_catalyst_builder crashed: {e}")
 
-DEFAULT_SCRIPT_VERSION = "v3.0.13-biblia-ahpm-retry-quote-fallback-labelfix"
+DEFAULT_SCRIPT_VERSION = "v3.0.14-biblia-blockorder-labelfix"
 AH_PM_MODE = "chart"  # alapértelmezett: Yahoo quote/spark alapú AH/PM
 
 
