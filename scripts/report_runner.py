@@ -23,10 +23,10 @@ import sys
 
 
 # Built at load_positions(): ticker -> \" (2 lot: IBKR+RAIFFEISEN)\" 
-POSITION_LOT_NOTES: Dict[str, str] = {}
+POSITION_LOT_NOTES = {}  # ticker -> " (N lot: BROKER+...)"
 from typing import Dict, List, Optional, Tuple
 
-__version__ = "v3.0.16"
+__version__ = "v3.0.17"
 
 try:
     from zoneinfo import ZoneInfo
@@ -194,7 +194,7 @@ def run_analyst_catalyst_builder(report: int, reports_dir: str = 'reports') -> N
     except Exception as e:
         print(f"[WARN] analyst_catalyst_builder crashed: {e}")
 
-DEFAULT_SCRIPT_VERSION = "v3.0.16-biblia-positions-lotnote-A"
+DEFAULT_SCRIPT_VERSION = "v3.0.17-biblia-positions-lotnote-A-namefix"
 AH_PM_MODE = "chart"  # alapértelmezett: Yahoo quote/spark alapú AH/PM
 
 
