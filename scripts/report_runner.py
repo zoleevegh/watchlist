@@ -22,7 +22,7 @@ import os
 import sys
 from typing import Dict, List, Optional, Tuple
 
-__version__ = "v3.0.14"
+__version__ = "v3.0.15"
 
 try:
     from zoneinfo import ZoneInfo
@@ -104,6 +104,74 @@ def _get_requests_session():
 
 DEFAULT_K = 3.0
 
+def _prev_close_bud(now_bud: dt.datetime) -> dt.datetime:
+    """Previous US trading day close expressed in Budapest time at 22:00.
+    Rule of thumb (biblia #1 macro block): previous close 22:00 CEST -> now.
+    """
+    # normalize tz-aware
+    if now_bud.tzinfo is None:
+        now_bud = now_bud.replace(tzinfo=ZoneInfo("Europe/Budapest"))
+    close_t = dt.time(22, 0)
+    wd = now_bud.weekday()  # Mon=0 ... Sun=6
+    # If weekend, go back to Friday
+    if wd == 5:  # Sat
+        base = now_bud - dt.timedelta(days=1)
+        base = base.replace(hour=22, minute=0, second=0, microsecond=0)
+        return base - dt.timedelta(days=base.weekday() - 4) if base.weekday() != 4 else base
+    if wd == 6:  # Sun
+        base = now_bud - dt.timedelta(days=2)
+        return base.replace(hour=22, minute=0, second=0, microsecond=0)
+    # Weekday: if before 22:00, previous day's close (Mon -> Fri)
+    if now_bud.time() < close_t:
+        if wd == 0:
+            base = now_bud - dt.timedelta(days=3)
+        else:
+            base = now_bud - dt.timedelta(days=1)
+        return base.replace(hour=22, minute=0, second=0, microsecond=0)
+    # After close: today's close
+    return now_bud.replace(hour=22, minute=0, second=0, microsecond=0)
+
+
+def _sanitize_macro_lines(macro_text: str) -> List[str]:
+    """Keep only real lines; no headings/boilerplate. Never invent content."""
+    out: List[str] = []
+    for raw in (macro_text or "").splitlines():
+        s = raw.strip()
+        if not s:
+            continue
+        if s.startswith("#"):
+            continue
+        if s.lower().startswith("időablak"):
+            continue
+        if s.lower().startswith("time window"):
+            continue
+        out.append(s)
+    return out
+
+
+def build_macro_block_report1(macro_text: str, now_bud: dt.datetime) -> str:
+    """Biblia-style #1 macro block:
+    - Always prints time window line at top
+    - If no news: single 'no material news' line (no filler)
+    - If news: 3–6 lines max (we do not pad to 3; we never invent)
+    """
+    start_bud = _prev_close_bud(now_bud)
+    tzname = now_bud.tzname() or "CEST"
+    window_line = f"**Időablak:** {start_bud.strftime('%Y-%m-%d %H:%M')} {tzname} → {now_bud.strftime('%Y-%m-%d %H:%M')} {tzname}"
+
+    lines = ["### 🧭 Makró / FED / Politika", window_line, ""]
+    items = _sanitize_macro_lines(macro_text)
+
+    if not items:
+        lines.append("Az előző piaczárás óta nem érkezett a piac egészét érdemben befolyásoló makró, FED vagy politikai hír.")
+        return "\n".join(lines)
+
+    # Keep up to 6 lines; never invent missing lines.
+    items = items[:6]
+    lines.extend(items)
+    return "\n".join(lines)
+
+
 def run_analyst_catalyst_builder(report: int, reports_dir: str = 'reports') -> None:
     """Build analyst/catalyst artifacts via scripts/analyst_catalyst_builder.py (noblock)."""
     builder = os.path.join('scripts', 'analyst_catalyst_builder.py')
@@ -122,7 +190,7 @@ def run_analyst_catalyst_builder(report: int, reports_dir: str = 'reports') -> N
     except Exception as e:
         print(f"[WARN] analyst_catalyst_builder crashed: {e}")
 
-DEFAULT_SCRIPT_VERSION = "v3.0.14-biblia-blockorder-labelfix"
+DEFAULT_SCRIPT_VERSION = "v3.0.15-biblia-macro-window-linesafe"
 AH_PM_MODE = "chart"  # alapértelmezett: Yahoo quote/spark alapú AH/PM
 
 
@@ -580,9 +648,9 @@ def generate_model_report(
 
     if macro_text_final:
         # A Yahoo-makró híreket itt nem keverjük hozzá, a webapp már tartalmazza az összefoglalót.
-        macro_block = format_macro_block(macro_text_final, [])
+        macro_block = build_macro_block_report1(macro_text_final, now_bud=dt.datetime.now(ZoneInfo("Europe/Budapest")))
     else:
-        macro_block = ""
+        macro_block = build_macro_block_report1("", now_bud=dt.datetime.now(ZoneInfo("Europe/Budapest")))
 
         # Elemzői lépések / közeli katalizátorok / high-conviction események (5/6/7. blokk)
     analyst_events = fetch_analyst_events(ANALYST_EVENTS_PATH)
