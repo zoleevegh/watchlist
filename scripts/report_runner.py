@@ -26,7 +26,7 @@ import sys
 POSITION_LOT_NOTES = {}  # ticker -> " (N lot: BROKER+...)"
 from typing import Dict, List, Optional, Tuple
 
-__version__ = "v3.0.17"
+__version__ = "v3.0.18"
 
 try:
     from zoneinfo import ZoneInfo
@@ -194,7 +194,7 @@ def run_analyst_catalyst_builder(report: int, reports_dir: str = 'reports') -> N
     except Exception as e:
         print(f"[WARN] analyst_catalyst_builder crashed: {e}")
 
-DEFAULT_SCRIPT_VERSION = "v3.0.17-biblia-positions-lotnote-A-namefix"
+DEFAULT_SCRIPT_VERSION = "v3.0.18-biblia-positions-lotnote-A-rowsrawfix"
 AH_PM_MODE = "chart"  # alapértelmezett: Yahoo quote/spark alapú AH/PM
 
 
@@ -219,6 +219,8 @@ def find_col(headers: List[str], candidates: List[str]) -> Optional[str]:
 
 
 def infer_positions_from_watchlist(path: Optional[str]) -> Dict[str, Dict]:
+
+    rows_raw = []  # raw CSV rows for lot/broker notes (Option A)
     """Darabszámos pozíciók kinyerése a MASTER / watchlist CSV-ből.
 
     Logika:
