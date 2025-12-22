@@ -22,7 +22,7 @@ import os
 import sys
 from typing import Dict, List, Optional, Tuple
 
-__version__ = "v3.0.11"
+__version__ = "v3.0.13"
 
 try:
     from zoneinfo import ZoneInfo
@@ -122,7 +122,7 @@ def run_analyst_catalyst_builder(report: int, reports_dir: str = 'reports') -> N
     except Exception as e:
         print(f"[WARN] analyst_catalyst_builder crashed: {e}")
 
-DEFAULT_SCRIPT_VERSION = "v3.0.11-biblia-ahpm-retry-quote-fallback"
+DEFAULT_SCRIPT_VERSION = "v3.0.13-biblia-ahpm-retry-quote-fallback-labelfix"
 AH_PM_MODE = "chart"  # alapértelmezett: Yahoo quote/spark alapú AH/PM
 
 
@@ -353,7 +353,6 @@ def fetch_chart(symbol: str) -> Tuple[dict, List[int], List[Optional[float]]]:
 
 
 def compute_ah_pm_move(
-def compute_ah_pm_move(
     meta: dict, timestamps: List[int], closes: List[Optional[float]]
 ) -> Tuple[Optional[float], Optional[float], Optional[float]]:
     """Visszaadja: (rth_close_price, ah_pct, pm_pct)
@@ -562,7 +561,7 @@ def generate_model_report(
         "- AH: előző kereskedési nap 22:00–02:00",
         "- PM: aktuális nap 10:00–15:30",
         "",
-        "**Árforrás:** Yahoo Finance chart (v8 – 2d/5m, includePrePost; "
+        "**Árforrás:** Yahoo Finance chart (v8 – 2d/5m; hétfő/hétvége: 5d/5m; includePrePost; "
         "utolsó RTH záró → AH/PM utolsó ár alapján számolt % mozgás)",
         "",
         coverage_line,
