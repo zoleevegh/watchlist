@@ -22,7 +22,7 @@ import os
 import sys
 from typing import Dict, List, Optional, Tuple
 
-__version__ = "v3.0.10"
+__version__ = "v3.0.11"
 
 try:
     from zoneinfo import ZoneInfo
@@ -122,7 +122,7 @@ def run_analyst_catalyst_builder(report: int, reports_dir: str = 'reports') -> N
     except Exception as e:
         print(f"[WARN] analyst_catalyst_builder crashed: {e}")
 
-DEFAULT_SCRIPT_VERSION = "v3.0.10-biblia-ahpm-sessionfix-5d"
+DEFAULT_SCRIPT_VERSION = "v3.0.11-biblia-ahpm-retry-quote-fallback"
 AH_PM_MODE = "chart"  # alapértelmezett: Yahoo quote/spark alapú AH/PM
 
 
@@ -288,30 +288,71 @@ def fetch_yahoo_quote_batch(symbols: List[str]) -> Dict[str, Tuple[Optional[floa
     return out
 
 
+
+def fetch_yahoo_quote_single(symbol: str) -> Tuple[Optional[float], Optional[float], Optional[float]]:
+    """Single-symbol Yahoo quote fallback (prev_close, ah_pct, pm_pct). Best-effort."""
+    url = "https://query1.finance.yahoo.com/v7/finance/quote"
+    params = {"symbols": symbol}
+    try:
+        resp = _get_requests_session().get(url, params=params, timeout=12)
+        resp.raise_for_status()
+        data = resp.json()
+        items = (data.get("quoteResponse", {}) or {}).get("result", []) or []
+        if not items:
+            return (None, None, None)
+        item = items[0] or {}
+        def _to_float(x):
+            try:
+                return float(x)
+            except Exception:
+                return None
+        prev_close = _to_float(item.get("regularMarketPreviousClose"))
+        ah_pct = _to_float(item.get("postMarketChangePercent"))
+        pm_pct = _to_float(item.get("preMarketChangePercent"))
+        return (prev_close, ah_pct, pm_pct)
+    except Exception:
+        return (None, None, None)
+
+
+def _chart_get(host: str, symbol: str, params: dict):
+    url = f"https://{host}/v8/finance/chart/{symbol}"
+    return _get_requests_session().get(url, params=params, timeout=15)
+
+
 def fetch_chart(symbol: str) -> Tuple[dict, List[int], List[Optional[float]]]:
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+    """Yahoo chart v8 with retries + host fallback (query1 -> query2)."""
     ny_now = dt.datetime.now(ZoneInfo("America/New_York"))
     rng = "5d" if ny_now.weekday() in (0, 5, 6) else "2d"
     params = {"range": rng, "interval": "5m", "includePrePost": "true"}
-    resp = _get_requests_session().get(url, params=params, timeout=10)
-    resp.raise_for_status()
-    data = resp.json()
-    chart = data.get("chart", {})
-    error = chart.get("error")
-    if error:
-        raise RuntimeError(f"chart_error: {error}")
-    result = chart.get("result")
-    if not result:
-        raise RuntimeError("no_result")
-    res0 = result[0]
-    meta = res0.get("meta") or {}
-    ts = res0.get("timestamp") or []
-    indicators = res0.get("indicators") or {}
-    quotes = indicators.get("quote") or [{}]
-    closes = quotes[0].get("close") or []
-    return meta, ts, closes
+
+    last_err = None
+    for host in ("query1.finance.yahoo.com", "query2.finance.yahoo.com"):
+        for _ in range(3):
+            try:
+                resp = _chart_get(host, symbol, params)
+                resp.raise_for_status()
+                data = resp.json()
+                chart = data.get("chart", {})
+                error = chart.get("error")
+                if error:
+                    raise RuntimeError(f"chart_error: {error}")
+                result = chart.get("result")
+                if not result:
+                    raise RuntimeError("no_result")
+                res0 = result[0]
+                meta = res0.get("meta") or {}
+                ts = res0.get("timestamp") or []
+                indicators = res0.get("indicators") or {}
+                quotes = indicators.get("quote") or [{}]
+                closes = quotes[0].get("close") or []
+                return meta, ts, closes
+            except Exception as e:
+                last_err = e
+                continue
+    raise RuntimeError(str(last_err) if last_err else "chart_failed")
 
 
+def compute_ah_pm_move(
 def compute_ah_pm_move(
     meta: dict, timestamps: List[int], closes: List[Optional[float]]
 ) -> Tuple[Optional[float], Optional[float], Optional[float]]:
@@ -461,9 +502,17 @@ def generate_model_report(
                 if pm_pct is None:
                     pm_pct = pm_from_chart
         except Exception as e:
-            # Valódi forráshiba / HTTP hiba / stb. – ez lefedettség-hiba
-            missing[sym] = str(e)
-            continue
+            # Chart hiba esetén próbáljuk meg a single-quote fallbackot (ha elérhető)
+            rth_close_q, ah_q, pm_q = fetch_yahoo_quote_single(sym)
+            if rth_close is None:
+                rth_close = rth_close_q
+            if ah_pct is None:
+                ah_pct = ah_q
+            if pm_pct is None:
+                pm_pct = pm_q
+            if rth_close is None and ah_pct is None and pm_pct is None:
+                missing[sym] = str(e)
+                continue
 
         # Ha sem bázisár, sem AH/PM % nem állt elő, ez lefedettségi hiba (ne fusson át csendben).
         if rth_close is None or ah_pct is None or pm_pct is None:
