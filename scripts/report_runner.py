@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""report_runner.py – v3.0.8-noblock-builder
+"""report_runner.py – v3.0.10-biblia-ahpm-sessionfix-5d
 
 Megjegyzés: Ez a verzió a korábbi teljes runner logikát megtartja.
 A bibliás formátum finomhangolása külön lépésekben történik.
@@ -22,7 +22,7 @@ import os
 import sys
 from typing import Dict, List, Optional, Tuple
 
-__version__ = "v3.0.9"
+__version__ = "v3.0.10"
 
 try:
     from zoneinfo import ZoneInfo
@@ -87,7 +87,7 @@ except ImportError:  # pragma: no cover - optional helper
         return ""
 
 
-SESSION = None  # lazy init (v3.0.8)
+SESSION = None  # lazy init (v3.0.10)
 def _get_requests_session():
     """Lazy requests.Session"""
     global SESSION
@@ -122,7 +122,7 @@ def run_analyst_catalyst_builder(report: int, reports_dir: str = 'reports') -> N
     except Exception as e:
         print(f"[WARN] analyst_catalyst_builder crashed: {e}")
 
-DEFAULT_SCRIPT_VERSION = "v3.0.9-biblia-ah-pm-friday-fix"
+DEFAULT_SCRIPT_VERSION = "v3.0.10-biblia-ahpm-sessionfix-5d"
 AH_PM_MODE = "chart"  # alapértelmezett: Yahoo quote/spark alapú AH/PM
 
 
@@ -251,7 +251,7 @@ def fetch_yahoo_quote_batch(symbols: List[str]) -> Dict[str, Tuple[Optional[floa
     params = {"symbols": joined}
 
     try:
-        resp = SESSION.get(url, params=params, timeout=10)
+        resp = _get_requests_session().get(url, params=params, timeout=10)
         resp.raise_for_status()
     except Exception as e:
         debug(f"[YF-QUOTE] batch fetch error: {e}")
@@ -290,8 +290,10 @@ def fetch_yahoo_quote_batch(symbols: List[str]) -> Dict[str, Tuple[Optional[floa
 
 def fetch_chart(symbol: str) -> Tuple[dict, List[int], List[Optional[float]]]:
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
-    params = {"range": "2d", "interval": "5m", "includePrePost": "true"}
-    resp = SESSION.get(url, params=params, timeout=10)
+    ny_now = dt.datetime.now(ZoneInfo("America/New_York"))
+    rng = "5d" if ny_now.weekday() in (0, 5, 6) else "2d"
+    params = {"range": rng, "interval": "5m", "includePrePost": "true"}
+    resp = _get_requests_session().get(url, params=params, timeout=10)
     resp.raise_for_status()
     data = resp.json()
     chart = data.get("chart", {})
