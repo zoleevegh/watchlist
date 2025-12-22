@@ -1,4 +1,4 @@
-# PATCH v4.0.2: noblock analyst/catalyst builder wired; removed blocked fallback
+# PATCH v4.0.2-masterurlfix: noblock analyst/catalyst builder wired; removed blocked fallback
 name: Run Report (Windows) # v4.0.2-noblock-valid
 
 on:
@@ -18,7 +18,7 @@ jobs:
     env:
       PYTHONUNBUFFERED: '1'
       # ← IDE írd a Google Sheets "Publish to web" CSV linkjét (MASTER)
-      DEFAULT_CSV_URL: https://docs.google.com/spreadsheets/d/e/2PACX-1vTf5h3xx4LWJvI-e7PSyc8g6uGZT-H6pCeuwEqs7NqeCDKuAltTpL_ncPOWMtooRw/pub?output=csv
+      DEFAULT_CSV_URL: https://docs.google.com/spreadsheets/d/e/2PACX-1vQkgyw0ONwSfc2KnrmWGqf8fWVQxS-R08RySndB69KDJ8L1Cz-H2F1AZtyDfhBGedC0qdC1SFo_aDye/pub?output=csv
 
       # Analyst / Catalyst feed webapp (Apps Script – ÚJ ID)
       ANALYST_FEED_URL_1: "https://script.google.com/macros/s/AKfycbzFY0L5KPCJaPc8QugZWaibJwQUOTs_fs1gR1gTHBSlzsyhr2THMIm0dzeslwzCm3AzJw/exec?type=analyst&report=1"
