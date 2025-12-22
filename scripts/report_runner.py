@@ -22,7 +22,7 @@ import os
 import sys
 from typing import Dict, List, Optional, Tuple
 
-__version__ = "v3.0.14"
+__version__ = "v3.0.7"
 
 try:
     from zoneinfo import ZoneInfo
@@ -122,7 +122,7 @@ def run_analyst_catalyst_builder(report: int, reports_dir: str = 'reports') -> N
     except Exception as e:
         print(f"[WARN] analyst_catalyst_builder crashed: {e}")
 
-DEFAULT_SCRIPT_VERSION = "v3.0.14-biblia-quote-nullproof-selfcontained"
+DEFAULT_SCRIPT_VERSION = "v3.0.7-biblia-prep-yahoo-fallback-coveragefix-mw-off"
 AH_PM_MODE = "spark"  # alapértelmezett: Yahoo quote/spark alapú AH/PM
 
 
@@ -234,49 +234,58 @@ def load_watchlist(path: Optional[str]) -> Dict[str, Dict]:
 
 
 def fetch_yahoo_quote_batch(symbols: List[str]) -> Dict[str, Tuple[Optional[float], Optional[float], Optional[float]]]:
-    """Batch quote fetch (Yahoo quote endpoint).
+    """Batch-ben lehúzza a Yahoo quote (spark) feedet AH/PM-hez.
 
-Self-contained + nullproof (no external UA/log dependency):
-- resp.json() can be None
-- quoteResponse can be None
-- result can be None / wrong type
-Returns: dict[symbol] -> (regularMarketPrice, regularMarketPreviousClose)
-"""
-    out = {}
+    Visszatér: {ticker: (regular_prev_close, ah_pct, pm_pct)}
+
+    - AH: postMarketChangePercent
+    - PM: preMarketChangePercent
+    - Ha valamelyik mező hiányzik, None marad.
+    """
     if not symbols:
-        return out
-    user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
-    try:
-        url = "https://query1.finance.yahoo.com/v7/finance/quote"
-        params = {"symbols": ",".join(symbols)}
-        headers = {"User-Agent": user_agent}
-        resp = requests.get(url, params=params, headers=headers, timeout=15)
-        if resp.status_code != 200:
-            print(f"[YF-QUOTE] batch non-200: {resp.status_code}")
-            return out
-        data = resp.json() or {}
-        if not isinstance(data, dict):
-            return out
-        qr = data.get("quoteResponse") or {}
-        if not isinstance(qr, dict):
-            qr = {}
-        result = qr.get("result") or []
-        if not isinstance(result, list):
-            result = []
-        for row in result:
-            if not isinstance(row, dict):
-                continue
-            sym = row.get("symbol")
-            if not sym:
-                continue
-            px = row.get("regularMarketPrice")
-            prev = row.get("regularMarketPreviousClose")
-            out[sym] = (px, prev)
-        return out
-    except Exception as e:
-        print(f"[YF-QUOTE] batch fetch error: {e}")
-        return out
+        return {}
 
+    # Yahoo quote endpoint – ez hajtja a webes portfólió UI-t is.
+    url = "https://query1.finance.yahoo.com/v7/finance/quote"
+    joined = ",".join(sorted(set(symbols)))
+    params = {"symbols": joined}
+
+    try:
+        resp = SESSION.get(url, params=params, timeout=10)
+        resp.raise_for_status()
+    except Exception as e:
+        debug(f"[YF-QUOTE] batch fetch error: {e}")
+        return {}
+
+    try:
+        data = resp.json()
+    except Exception as e:
+        debug(f"[YF-QUOTE] JSON parse error: {e}")
+        return {}
+
+    result_list = data.get("quoteResponse", {}).get("result", []) or []
+    out: Dict[str, Tuple[Optional[float], Optional[float], Optional[float]]] = {}
+
+    for item in result_list:
+        sym = item.get("symbol")
+        if not sym:
+            continue
+        prev_close = item.get("regularMarketPreviousClose")
+        # Ezek már %-ban érkeznek (nem 0–1 frakcióban)
+        ah_pct = item.get("postMarketChangePercent")
+        pm_pct = item.get("preMarketChangePercent")
+        # Biztonság kedvéért float() konverzió – ha nem konvertálható, None marad
+        def _to_float(x):
+            try:
+                return float(x)
+            except Exception:
+                return None
+        prev_close_f = _to_float(prev_close)
+        ah_pct_f = _to_float(ah_pct)
+        pm_pct_f = _to_float(pm_pct)
+        out[sym.upper()] = (prev_close_f, ah_pct_f, pm_pct_f)
+
+    return out
 
 
 def fetch_chart(symbol: str) -> Tuple[dict, List[int], List[Optional[float]]]:
@@ -356,10 +365,6 @@ def compute_ah_pm_move(
 
     # Ha nincs egyáltalán pre/post adat, akkor tényleg nincs mit jelenteni
     if not ah_points and not pm_points:
-        # Weekend/market-closed vagy adatforrás-szegény eset: RTH close lehet, de nincs pre/post.
-        # Ilyenkor NE legyen coverage-miss; csak AH/PM marad None.
-        if rth_points:
-            return rth_points[-1][1], None, None
         return None, None, None
 
     # 1) Keressük meg az IDŐBEN LEGHAMARABB érkező pre/post gyertyát
@@ -402,60 +407,6 @@ def fmt_pct(value: Optional[float]) -> str:
     return f"{value:+.2f}%"
 
 
-def _tz(name: str):
-    try:
-        return ZoneInfo(name)
-    except Exception:
-        return dt.timezone.utc
-
-def now_cet() -> dt.datetime:
-    """Current time in Europe/Budapest (handles CET/CEST correctly when zoneinfo is available)."""
-    tz = _tz("Europe/Budapest")
-    return dt.datetime.now(tz)
-
-def last_us_rth_close_cet(now_bud: Optional[dt.datetime] = None) -> dt.datetime:
-    """Return the most recent US RTH close (16:00 America/New_York) converted to Europe/Budapest.
-
-    Heuristic (holiday-aware calendar nélkül, de DST-t kezeli):
-    - Ha NY idő szerint hétfő–péntek és most >= 16:00 → mai zárás a legutolsó.
-    - Egyébként az előző munkanap 16:00 a legutolsó (szombat/vasárnap → péntek).
-    """
-    bud_tz = _tz("Europe/Budapest")
-    ny_tz = _tz("America/New_York")
-
-    now_bud = now_bud or now_cet()
-    now_ny = now_bud.astimezone(ny_tz)
-
-    # Decide which date's close is the "last close"
-    wd = now_ny.weekday()  # Mon=0 .. Sun=6
-
-    def prev_weekday(d: dt.date) -> dt.date:
-        # step back until Mon-Fri
-        while d.weekday() >= 5:
-            d = d - dt.timedelta(days=1)
-        return d
-
-    if wd < 5 and (now_ny.hour > 16 or (now_ny.hour == 16 and now_ny.minute >= 0)):
-        close_date = now_ny.date()
-    else:
-        # previous day, then roll back over weekend if needed
-        close_date = prev_weekday(now_ny.date() - dt.timedelta(days=1))
-
-    close_ny = dt.datetime(
-        close_date.year, close_date.month, close_date.day, 16, 0, 0, tzinfo=ny_tz
-    )
-    return close_ny.astimezone(bud_tz)
-
-def is_us_market_closed_weekend(now_bud: Optional[dt.datetime] = None) -> bool:
-    """True if it's weekend in New York (heuristic market-closed)."""
-    ny_tz = _tz("America/New_York")
-    now_bud = now_bud or now_cet()
-    now_ny = now_bud.astimezone(ny_tz)
-    return now_ny.weekday() >= 5
-
-
-
-
 def generate_model_report(
     watchlist_path: Optional[str],
     script_version: str,
@@ -477,7 +428,7 @@ def generate_model_report(
     if report == 1:
         ah_pm_mode = os.environ.get("AH_PM_MODE", AH_PM_MODE).lower()
         if ah_pm_mode == "spark":
-            quote_map = fetch_yahoo_quote_batch(all_symbols) or {} or {}
+            quote_map = fetch_yahoo_quote_batch(all_symbols)
             if all_symbols and not quote_map:
                 debug("[WARN] Yahoo quote batch üres/blocked – chart fallback kényszerítve minden tickerre.")
                 ah_pm_mode = "chart"
@@ -500,7 +451,7 @@ def generate_model_report(
 
             # 2) Ha nincs értelmezhető adat a quote feedből, próbáljuk meg a chartot
             if rth_close is None and ah_pct is None and pm_pct is None:
-                meta, ts, closes = fetch_chart(sym, range_str=("5d" if is_us_market_closed_weekend(now) else "2d"))
+                meta, ts, closes = fetch_chart(sym)
                 rth_close_chart, ah_from_chart, pm_from_chart = compute_ah_pm_move(meta, ts, closes)
                 rth_close = rth_close_chart
                 if ah_pct is None:
@@ -548,8 +499,7 @@ def generate_model_report(
             + " (oka: lásd belső logot / forráshibát)"
         )
 
-    now = now_cet()
-    weekend_closed = is_us_market_closed_weekend(now)
+    now = dt.datetime.now(dt.timezone(dt.timedelta(hours=1)))
 
     header_lines = [
         "## After-hours & Premarket – #1 jelentés",
@@ -561,15 +511,10 @@ def generate_model_report(
         "- AH: előző kereskedési nap 22:00–02:00",
         "- PM: aktuális nap 10:00–15:30",
         "",
-        "**Időablak (Makró + Bejelentések):** az utolsó piaci zárástól a lekérdezés pillanatáig.",
-        "(Időpontok automatikusan számolva US RTH záró = 16:00 ET alapján.)",
-        "",
         "**Árforrás:** Yahoo Finance chart (v8 – 2d/5m, includePrePost; "
         "utolsó RTH záró → AH/PM utolsó ár alapján számolt % mozgás)",
         "",
         coverage_line,
-        "",
-        f"Makró/Bejelentések ablak (CE(S)T): {last_us_rth_close_cet(now).strftime('%Y-%m-%d %H:%M')} → {now.strftime('%Y-%m-%d %H:%M')}",
     ]
 
 
@@ -586,44 +531,12 @@ def generate_model_report(
     if macro_text_final:
         # A Yahoo-makró híreket itt nem keverjük hozzá, a webapp már tartalmazza az összefoglalót.
         macro_block = format_macro_block(macro_text_final, [])
-        if macro_block:
-            macro_block = (
-                "### 🏛️ Makró / FED / politika\n"
-                f"- Időablak: {last_us_rth_close_cet(now).strftime('%Y-%m-%d %H:%M')} → {now.strftime('%Y-%m-%d %H:%M')} (CE(S)T)\n\n"
-                + macro_block
-            )
     else:
         macro_block = ""
 
         # Elemzői lépések / közeli katalizátorok / high-conviction események (5/6/7. blokk)
-        analyst_events = fetch_analyst_events(ANALYST_EVENTS_PATH)
+    analyst_events = fetch_analyst_events(ANALYST_EVENTS_PATH)
     analyst_block = format_analyst_block(analyst_events)
-    if analyst_block:
-        if isinstance(analyst_block, list):
-            analyst_block = "\n".join(analyst_block)
-
-        window_line = f"- Időablak: {last_us_rth_close_cet(now).strftime('%Y-%m-%d %H:%M')} → {now.strftime('%Y-%m-%d %H:%M')} (CE(S)T)"
-
-        if analyst_block.lstrip().startswith("###"):
-            first_nl = analyst_block.find("\n")
-            if first_nl != -1:
-                analyst_block = (
-                    analyst_block[:first_nl + 1]
-                    + window_line
-                    + "\n\n"
-                    + analyst_block[first_nl + 1 :]
-                )
-            else:
-                analyst_block = analyst_block + "\n" + window_line + "\n"
-        else:
-            analyst_block = (
-                "### 🧩 Bejelentések & fel-/lemínősítések\n"
-                + window_line
-                + "\n\n"
-                + analyst_block
-            )
-    else:
-        analyst_block = ""
 
     catalyst_events = fetch_catalyst_events(CATALYST_EVENTS_PATH)
     catalyst_block = format_catalyst_block(catalyst_events)
@@ -741,7 +654,7 @@ def generate_report2_macro_only(
         "Lefedettség: HIÁNYOS – ticker-szintű #2 modul még fejlesztés alatt ebben a verzióban."
     )
 
-    now = now_cet()
+    now = dt.datetime.now(dt.timezone(dt.timedelta(hours=1)))
 
     header_lines = [
         "#2 – Előző kereskedési nap: nyitástól zárásig (15:30–22:00) — CEST",
@@ -828,7 +741,7 @@ def generate_report3_macro_only(
         "Lefedettség: HIÁNYOS – ticker-szintű #3 modul még fejlesztés alatt ebben a verzióban."
     )
 
-    now = now_cet()
+    now = dt.datetime.now(dt.timezone(dt.timedelta(hours=1)))
 
     header_lines = [
         "#3 – Mai kereskedési nap: nyitástól mostanáig (15:30-tól) — CEST",
