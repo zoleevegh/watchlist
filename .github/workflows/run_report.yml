@@ -1,4 +1,4 @@
-# PATCH v4.0.2-masterurlfix: noblock analyst/catalyst builder wired; removed blocked fallback
+# PATCH v4.0.3: master url fix + macro debug
 name: Run Report (Windows) # v4.0.2-noblock-valid
 
 on:
@@ -114,6 +114,30 @@ jobs:
           }
 
           Write-Host "Makró feed OK → $out"
+
+
+      - name: Debug macro feed file (count + size)
+        shell: pwsh
+        run: |
+          $p = "reports\macro_news_${{ steps.inputs.outputs.report }}.json"
+          if (Test-Path $p) {
+            $len = (Get-Item $p).Length
+            Write-Host "MACRO_FILE: $p (bytes=$len)"
+            try {
+              $json = Get-Content $p -Raw | ConvertFrom-Json
+              if ($null -eq $json) { Write-Host "MACRO_ITEMS: null" }
+              elseif ($json.items) { Write-Host ("MACRO_ITEMS: " + ($json.items.Count)) }
+              elseif ($json.Count) { Write-Host ("MACRO_ITEMS: " + ($json.Count)) }
+              else { Write-Host "MACRO_ITEMS: 0" }
+            } catch {
+              Write-Host "MACRO_PARSE_ERROR: $($_.Exception.Message)"
+              Write-Host "MACRO_HEAD:"
+              Get-Content $p -TotalCount 20
+            }
+          } else {
+            Write-Host "MACRO_FILE_MISSING: $p"
+          }
+
 
       - name: Fetch MASTER CSV (robust)
         shell: pwsh
