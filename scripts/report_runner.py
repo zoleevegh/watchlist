@@ -20,9 +20,13 @@ import re
 import math
 import os
 import sys
+
+
+# Built at load_positions(): ticker -> \" (2 lot: IBKR+RAIFFEISEN)\" 
+POSITION_LOT_NOTES: Dict[str, str] = {}
 from typing import Dict, List, Optional, Tuple
 
-__version__ = "v3.0.15"
+__version__ = "v3.0.16"
 
 try:
     from zoneinfo import ZoneInfo
@@ -190,7 +194,7 @@ def run_analyst_catalyst_builder(report: int, reports_dir: str = 'reports') -> N
     except Exception as e:
         print(f"[WARN] analyst_catalyst_builder crashed: {e}")
 
-DEFAULT_SCRIPT_VERSION = "v3.0.15-biblia-macro-window-linesafe"
+DEFAULT_SCRIPT_VERSION = "v3.0.16-biblia-positions-lotnote-A"
 AH_PM_MODE = "chart"  # alapértelmezett: Yahoo quote/spark alapú AH/PM
 
 
@@ -244,6 +248,7 @@ def infer_positions_from_watchlist(path: Optional[str]) -> Dict[str, Dict]:
             return positions
 
         for row in reader:
+            rows_raw.append(dict(row))
             sym = (row.get(ticker_col) or "").strip().upper()
             if not sym:
                 continue
@@ -259,6 +264,34 @@ def infer_positions_from_watchlist(path: Optional[str]) -> Dict[str, Dict]:
                 "ticker": sym,
                 "quantity": prev + qty,
             }
+
+        # Build informational lot/broker notes for ticker-unique reporting (Option A)
+    global POSITION_LOT_NOTES
+    lot_map: Dict[str, Dict[str, object]] = {}
+    for _row in rows_raw:
+        _t = str(_row.get('ticker','') or _row.get('Ticker','') or '').strip().upper()
+        if not _t:
+            continue
+        _q = _row.get('quantity') if 'quantity' in _row else _row.get('qty')
+        try:
+            _qty = float(str(_q).replace(',', '.')) if _q not in (None, '') else 0.0
+        except Exception:
+            _qty = 0.0
+        if _qty <= 0:
+            continue
+        _broker = str(_row.get('broker','') or _row.get('Broker','') or _row.get('bróker','') or '').strip()
+        if _t not in lot_map:
+            lot_map[_t] = {'lots': 0, 'brokers': set()}
+        lot_map[_t]['lots'] = int(lot_map[_t]['lots']) + 1
+        if _broker:
+            lot_map[_t]['brokers'].add(_broker)
+    POSITION_LOT_NOTES = {}
+    for _t, _info in lot_map.items():
+        _lots = int(_info.get('lots', 0))
+        if _lots >= 2:
+            _brokers = _info.get('brokers') or set()
+            _btxt = '+'.join(sorted(list(_brokers))) if _brokers else 'multi'
+            POSITION_LOT_NOTES[_t] = f" ({_lots} lot: {_btxt})"
 
     if positions:
         debug(f"[INFO] Inferred {len(positions)} darabszámos pozíció a watchlist/master CSV-ből.")
@@ -686,7 +719,8 @@ def generate_model_report(
         ah_pct = entry["ah_pct"]
         pm_pct = entry["pm_pct"]
         max_move = entry.get("max_move")
-        base = f"{sym} — AH {fmt_pct(ah_pct)} | PM {fmt_pct(pm_pct)}"
+        note = POSITION_LOT_NOTES.get(sym, "")
+        base = f"{sym}{note} — AH {fmt_pct(ah_pct)} | PM {fmt_pct(pm_pct)}"
         comment = ""
 
         if max_move is None:
