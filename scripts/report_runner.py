@@ -22,7 +22,7 @@ import os
 import sys
 from typing import Dict, List, Optional, Tuple
 
-__version__ = "v3.0.7"
+__version__ = "v3.0.9"
 
 try:
     from zoneinfo import ZoneInfo
@@ -122,8 +122,8 @@ def run_analyst_catalyst_builder(report: int, reports_dir: str = 'reports') -> N
     except Exception as e:
         print(f"[WARN] analyst_catalyst_builder crashed: {e}")
 
-DEFAULT_SCRIPT_VERSION = "v3.0.7-biblia-prep-yahoo-fallback-coveragefix-mw-off"
-AH_PM_MODE = "spark"  # alapértelmezett: Yahoo quote/spark alapú AH/PM
+DEFAULT_SCRIPT_VERSION = "v3.0.9-biblia-ah-pm-friday-fix"
+AH_PM_MODE = "chart"  # alapértelmezett: Yahoo quote/spark alapú AH/PM
 
 
 WATCHLIST_DEFAULT_PATH = "reports/master.csv"
@@ -450,7 +450,7 @@ def generate_model_report(
                     rth_close, ah_pct, pm_pct = qt
 
             # 2) Ha nincs értelmezhető adat a quote feedből, próbáljuk meg a chartot
-            if rth_close is None and ah_pct is None and pm_pct is None:
+            if rth_close is None or ah_pct is None or pm_pct is None:
                 meta, ts, closes = fetch_chart(sym)
                 rth_close_chart, ah_from_chart, pm_from_chart = compute_ah_pm_move(meta, ts, closes)
                 rth_close = rth_close_chart
@@ -464,7 +464,7 @@ def generate_model_report(
             continue
 
         # Ha sem bázisár, sem AH/PM % nem állt elő, ez lefedettségi hiba (ne fusson át csendben).
-        if rth_close is None and ah_pct is None and pm_pct is None:
+        if rth_close is None or ah_pct is None or pm_pct is None:
             missing[sym] = "nincs AH/PM adat (Yahoo quote+chart nem adott értelmezhető értéket)"
             continue
 
