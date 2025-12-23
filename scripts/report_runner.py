@@ -26,7 +26,7 @@ import sys
 POSITION_LOT_NOTES = {}  # ticker -> " (N lot: BROKER+...)"
 from typing import Dict, List, Optional, Tuple
 
-__version__ = "v3.0.20"
+__version__ = "v3.0.21"
 
 try:
     from zoneinfo import ZoneInfo
@@ -713,10 +713,13 @@ def generate_model_report(
             )
 
     if macro_text_final:
-        macro_block = build_macro_block_report1(macro_text_final, now_bud=dt.datetime.now(ZoneInfo("Europe/Budapest")))
+        macro_block = build_macro_block_report1(
+        macro_text_final,
+        now_bud=dt.datetime.now(ZoneInfo("Europe/Budapest")),
+    )))
     else:
         macro_block = build_macro_block_report1("", now_bud=dt.datetime.now(ZoneInfo("Europe/Budapest")))
-(macro_text_final, now_bud=dt.datetime.now(ZoneInfo("Europe/Budapest")))
+
     else:
         macro_block = build_macro_block_report1("", now_bud=dt.datetime.now(ZoneInfo("Europe/Budapest")))
 
