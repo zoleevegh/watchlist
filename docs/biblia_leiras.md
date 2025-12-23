@@ -42,7 +42,6 @@ repo/
 │  ├─ summary_report_2.md
 │  └─ summary_report_3.md
 └─ scripts/
-   ├─ macro_fetcher.py
    ├─ sec_edgar_fetcher.py
    ├─ crawler_analyst_catalyst.py
    ├─ events_fetcher.py
@@ -59,7 +58,7 @@ repo/
    └─ biblia_helper.py
 ```
 
-A fenti lista **előírás**: ami itt szerepel, annak léteznie és futnia kell. Ami nem szerepel, az nem része a rendszernek.
+A fenti lista a **kanonikus repo-szerkezet**. A benne szereplő fájlok a futó pipeline által elvárt komponensek. Ha egy fájl **DEPRECATED / LEGACY** státuszú, azt a dokumentum külön jelzi; ezek nem kötelezőek a futáshoz.
 
 Ez a dokumentum a **Részvények projekt egyetlen kanonikus szabálykönyve**.
 
@@ -67,7 +66,7 @@ Ha bármely workflow, script, README vagy komment ellentmond ennek a dokumentumn
 akkor **EZ A DOKUMENTUM AZ IRÁNYADÓ**, és az eltérést hibának kell tekinteni.
 
 
-**Verzió:** v3.7.4  
+**Verzió:** v3.8.1  
 
 
 
@@ -99,61 +98,39 @@ A konkrét logika:
 - `--report 2` → Open→Close (előző napi intraday) (#2 riport),
 - `--report 3` → Open→Most (mai intraday, #3 jelentés előkészítése).
 
-### 2.3 macro_fetcher.py
+### 2.3 Makró feed (Apps Script webapp + workflow letöltés)
 
-- MACRO_FEED_URL_1/2/3 Apps Script webapp hívása,
-- a webapp által visszaadott makró / FED / piaci hangulat blokkok letöltése,
-- eredmény: `macro_news_1.json`, `macro_news_2.json`, `macro_news_3.json`.
+- A makró / FED / politika feedet **kizárólag** a Google Apps Script webapp szolgáltatja.
+- Kötelező források: **Yahoo Finance + Reuters + AP**.
+- Endpointok:
+  - `.../exec?type=macro&report={1|2|3}` → makró JSON (A‑mód: konzervatív, nem piaci vélemény)
+  - `.../exec?type=health` → forrásonkénti lefedettség-ellenőrzés (`ok/httpStatus/error`)
+- A workflow **curl-lel** tölti le a JSON-t ide:
+  - `reports/macro_news_1.json`, `reports/macro_news_2.json`, `reports/macro_news_3.json`
+- A `report_runner.py` ezeket **csak beolvassa és megjeleníti**, hírt soha nem talál ki.
 
-Ezeket később a postprocess lépés fűzi be a summary_report_X.md elejére.
+### 2.4 crawler_analyst_catalyst.py
 
-### 2.4 analyst_feed_parser.py
+- Webes forrásokból (Python környezet) összegyűjti a nyers analyst és catalyst eseményeket.
+- Kimenet (nyers): `reports/raw_analyst_{N}.json`, `reports/raw_catalysts_{N}.json`.
 
-- ANALYST_FEED_URL_1/2/3 és CATALYST_FEED_URL_1/2/3 hívása (Apps Script webapp),
-- a kapott JSON feedek feldolgozása egységes formára,
-- fájlok:
+### 2.5 events_fetcher.py
 
-  - `reports/analyst_1.json`, `reports/catalysts_1.json` (#1),
-  - `reports/analyst_2.json`, `reports/catalysts_2.json` (#2),
-  - `reports/analyst_3.json`, `reports/catalysts_3.json` (#3 – opcionális).
+- Normalizálja a nyers eseményeket egységes formára.
+- Kimenet: `reports/analyst_{N}.json`, `reports/catalysts_{N}.json` (+ opcionális `reports/health_analyst_{N}.json`).
 
-### 2.5 highconv_builder.py
+### 2.6 sec_edgar_fetcher.py
 
-- A globalis high-conv jelöltek gyártója,
-- bemenet: analyst/catalyst feedek + piaci teljesítmény,
-- kimenet: `reports/high_conv_1.json`,
-- a BIBLIA szerinti kritériumok alapján pontoz:
+- SEC EDGAR filing réteg (tény-alapú catalyst).
+- Kötelező env: `SEC_USER_AGENT`.
 
-  - 2–3+ friss felminősítés / céláremelés,
-  - iránymutatás-emelés / pozitív guide,
-  - konszenzus EPS/árbevétel felfelé módosul,
-  - 3–12 hónapos konkrét katalizátor,
-  - relatív erő (52w high közeli árfolyam).
+### 2.7 yahoo_analyst_events_fetcher.py (kiegészítő)
 
-Kritikus: **portfólió- és watchlist-tickerek kizárása** – a high-conv blokk „listán kívüli” jelölteket tartalmaz.
+- Aktív step esetén Yahoo-alapú analyst esemény kiegészítés.
 
-### 2.6 analyst_block_builder.py
+### 2.8 earnings_fetcher.py (kiegészítő)
 
-- Az analyst/catalyst feed alapú „Bejelentések & fel/lemínősítések” blokk építője (#1/#2),
-- bemenet: `analyst_X.json`, `catalysts_X.json`, MASTER-univerzum,
-- szűrés:
-
-  - darabszámos tickerek → mindig bekerüljenek, ha van anyagilag lényeges esemény,
-  - watchlist-tickerek → csak lényeges hír vagy >= ±3% árhatás esetén,
-  - listán kívüli tickerek → csak ha high-conv jellegű.
-
-### 2.7 highconv_block_builder.py
-
-- A high-conv jelöltek markdown blokkja (#1/#2),
-- bemenet: `high_conv_1.json`,
-- kimenet: „Listán kívüli, 3–12 hónapos high-conviction jelöltek” blokk,
-- a blokk **soha nem tartalmazhat portfólió- vagy watchlist-tickereket**.
-
-### 2.8 macro_highconv_helpers_v2.py
-
-- kiegészítő helper a macro + high-conv blokkok beszúrásához,
-- segédfüggvények a `postprocess_report.py` számára,
-- biztosítja, hogy a makró és a high-conv blokkok BIBLIA-kompatibilis sorrendben jelenjenek meg.
+- Earnings / esemény jellegű katalizátorok kiegészítése (ha be van kötve a workflow-ba).
 
 ### 2.9 postprocess_report.py
 
@@ -427,7 +404,7 @@ A `validate_run.py` a workflow-ban **postprocess után, Gist frissítés előtt*
 
 ### Verzió
 
-- **v3.8.0** – Makró adatút tisztázva, `macro_fetcher.py` deprecated.
+- **v3.8.1** – Makró blokk: Apps Script webapp (Yahoo+Reuters+AP) + runner "A‑mód" (konzervatív értelmezés). `macro_fetcher.py` eltávolítva a kanonikus rendszerből.
 zás
 A `validate_run.py` és a workflow módosításai is a kötelező verziófolytatás hatálya alá esnek.
 
@@ -845,9 +822,7 @@ működési keretét. Kódoldali módosításnál mindig ez legyen az igazodási
 
 Az alábbi fájlok **nincsenek hívva** a `run_report.yml` jelenlegi futásában, és a jelenlegi pipeline-hoz nem szükségesek:
 
-- `scripts/analyst_feed_parser.py`
-- `scripts/macro_fetcher.py`
-- `scripts/macro_news_fetcher.py`
+- `scripts/analyst_feed_parser.py`- `scripts/macro_news_fetcher.py`
 - `scripts/export_biblia_md.py` *(csak akkor kell, ha külön “update_biblia_docs.yml” workflow használja)*
 
 **Megjegyzés:** ha később bevezeted az `update_biblia_docs.yml` automatát, akkor az `export_biblia_md.py` visszakerülhet.
@@ -856,8 +831,14 @@ Az alábbi fájlok **nincsenek hívva** a `run_report.yml` jelenlegi futásában
 
 ## Makró / FED / Politika – KANONIKUS ADATÚT (AKTÍV)
 
+**A‑mód (konzervatív használat – kötelező):**
+- A makró blokk **nem piaci előrejelzés** és nem tartalmazhat olyan állítást, hogy „a piac kamatcsökkentést áraz”, „Nasdaq-pozitív”, stb.
+- A blokk célja: **headline‑kockázat / zajszint jelzés** (van/nincs piacmozgató makró‑FED‑politikai input).
+- Ha nincs releváns tétel: a fix mondat kerül be (nincs halandzsa, nincs kitalálás).
+
+
 1. **Google Apps Script macro webapp**
-   - Endpoint: `/exec?type=macro&report=1`
+   - Endpoint: `/exec?type=macro&report={1|2|3}`
    - Források: Reuters / AP (Biblia szerinti market-moving szűrés)
    - Kimenet: JSON
 
