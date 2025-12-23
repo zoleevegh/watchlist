@@ -18,13 +18,34 @@ import datetime as dt
 import json
 
 def load_macro_from_json(path: str) -> str:
-    """Load macro items from GAS JSON (reports/macro_news_1.json) and format to bullet lines."""
+    """Load macro output from GAS JSON (reports/macro_news_1.json).
+
+    Supports two schemas:
+      - narrative mode: { mode: "narrative", narrative: [ "...", ... ] }
+      - legacy items mode: { items: [ {title, source, ...}, ... ] }
+
+    Returns a single text blob with one line per narrative sentence / item.
+    """
     try:
         import os
         if not path or not os.path.exists(path):
             return ""
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
+
+        # 1) Narrative mode (Word/Biblia): prefer narrative lines (HU, 3–6 max, incl. mandatory closing line)
+        mode = (data.get("mode") or "").strip().lower()
+        narrative = data.get("narrative")
+        if mode == "narrative" and isinstance(narrative, list):
+            out_lines = []
+            for s in narrative[:6]:
+                if isinstance(s, str):
+                    s = s.strip()
+                    if s:
+                        out_lines.append(s)
+            return "\\n".join(out_lines)
+
+        # 2) Legacy items list
         items = data.get("items") or []
         lines_out = []
         for it in items[:6]:
@@ -33,13 +54,15 @@ def load_macro_from_json(path: str) -> str:
                 continue
             src = (it.get("source") or "").strip()
             lines_out.append(f"- {title}" + (f" ({src})" if src else ""))
-        return "\n".join(lines_out)
+        return "\\n".join(lines_out)
+
     except Exception as e:
         try:
             debug(f"[MACRO_JSON] error: {e}")
         except Exception:
             pass
         return ""
+
 
 import re
 import math
@@ -51,7 +74,7 @@ import sys
 POSITION_LOT_NOTES = {}  # ticker -> " (N lot: BROKER+...)"
 from typing import Dict, List, Optional, Tuple
 
-__version__ = "v3.0.24"
+__version__ = "v3.0.25"
 try:
     from zoneinfo import ZoneInfo
 except ImportError:
