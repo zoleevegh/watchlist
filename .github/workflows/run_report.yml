@@ -32,10 +32,11 @@ jobs:
       ANALYST_FEED_URL_3: "https://script.google.com/macros/s/AKfycbxymtqVk8S_3v2US990K8R8zC-vV3xMrm3uFuKWA38gsVBkx8YZiL7cuH8-swiIQPOKsg/exec?type=analyst&report=3"
       CATALYST_FEED_URL_3: "https://script.google.com/macros/s/AKfycbxymtqVk8S_3v2US990K8R8zC-vV3xMrm3uFuKWA38gsVBkx8YZiL7cuH8-swiIQPOKsg/exec?type=catalyst&report=3"
 
-      # Makró / FED / Politika – narratíva alapú feed (Apps Script)
-      MACRO_FEED_URL_1: "https://script.google.com/macros/s/AKfycbzOOZ7zvci8Rj6AbE8DvltOZB-QsgcHoEwj5eSd-ZleLQG6zIiq8tbSiIwAmXcRIlEyQQ/exec?type=macro&report=1"
-      MACRO_FEED_URL_2: "https://script.google.com/macros/s/AKfycbzOOZ7zvci8Rj6AbE8DvltOZB-QsgcHoEwj5eSd-ZleLQG6zIiq8tbSiIwAmXcRIlEyQQ/exec?type=macro&report=2"
-      MACRO_FEED_URL_3: "https://script.google.com/macros/s/AKfycbzOOZ7zvci8Rj6AbE8DvltOZB-QsgcHoEwj5eSd-ZleLQG6zIiq8tbSiIwAmXcRIlEyQQ/exec?type=macro&report=3"
+      # Makró / FED / Politika – narratív feed (GAS)
+      MACRO_FEED_URL_1: "https://script.google.com/macros/s/AKfycbzOOZ7zvci8Rj6AbE8DvltOZB-QsgcHoEwj5eSd-ZleLQG6zIiq8tbSiIwAmXcRIlEyQQ/exec?report=1"
+      MACRO_FEED_URL_2: "https://script.google.com/macros/s/AKfycbzOOZ7zvci8Rj6AbE8DvltOZB-QsgcHoEwj5eSd-ZleLQG6zIiq8tbSiIwAmXcRIlEyQQ/exec?report=2"
+      MACRO_FEED_URL_3: "https://script.google.com/macros/s/AKfycbzOOZ7zvci8Rj6AbE8DvltOZB-QsgcHoEwj5eSd-ZleLQG6zIiq8tbSiIwAmXcRIlEyQQ/exec?report=3"
+
 
 
 
