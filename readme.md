@@ -1,3 +1,15 @@
+
+### Makró / FED / Politika – A-mód (kanonikus)
+
+A makró blokk konzervatív (A-mód) szerint működik:
+- nem ad piaci iránymutatást,
+- nem értelmez kamatpályát,
+- kizárólag jelzi, hogy érkezett-e a piac egészét érintő makró/FED/politikai esemény.
+
+Ha nincs érdemi hír, kötelezően az alábbi mondat jelenik meg:
+„Az előző piaczárás óta nem érkezett a piac egészét érdemben befolyásoló makró, Fed vagy politikai hír.”
+
+
 # Részvények – #1/#2/#3 riport pipeline (rövid)
 
 Igazságforrások:
@@ -90,7 +102,6 @@ A #3 futást a következő modulok valósítják meg:
 GitHub Action: `.github/workflows/run_report.yml`  
 
 1. `report_runner.py` (#1/#2/#3 futás – árak, AH/PM, Open→Close, Intraday)  
-2. `macro_fetcher.py` (macro_news_X.json)  
 3. `analyst_feed_parser.py` (analyst_X.json, catalysts_X.json)  
 4. `highconv_builder.py` (high_conv_1.json)  
 5. `postprocess_report.py` / `postprocess_report_2.py` / `postprocess_report_3.py`  
@@ -123,7 +134,6 @@ repo/
     - analyst_block_builder.py
     - highconv_builder.py
     - highconv_block_builder.py
-    - macro_fetcher.py
     - macro_highconv_helpers_v2.py
     - export_biblia_md.py
     - biblia_helper.py
@@ -209,10 +219,7 @@ A workflow csak akkor áll PIROSRA, ha:
 - kötelező blokk‑header hiányzik,
 - vagy a jelentés nem felel meg a BIBLIA blokk‑sorrendjének.
 
-## Legacy / ne használd a fő útban
-
-Az alábbiak **nem** részei a fő pipeline-nak (csak régi kísérletek / fallback):
-- `analyst_feed_parser.py`
 
 
-#1 időkapu: hírek/indoklások csak AH (22:00–02:00) és PM (10:00–15:30) sávból.
+---
+README frissítve: v1.3.0 – 2025-12-23
