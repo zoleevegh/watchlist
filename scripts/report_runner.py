@@ -26,7 +26,7 @@ import sys
 POSITION_LOT_NOTES = {}  # ticker -> " (N lot: BROKER+...)"
 from typing import Dict, List, Optional, Tuple
 
-__version__ = "v3.0.19"
+__version__ = "v3.0.20"
 
 try:
     from zoneinfo import ZoneInfo
@@ -134,6 +134,31 @@ def _prev_close_bud(now_bud: dt.datetime) -> dt.datetime:
         return base.replace(hour=22, minute=0, second=0, microsecond=0)
     # After close: today's close
     return now_bud.replace(hour=22, minute=0, second=0, microsecond=0)
+
+
+
+def load_macro_from_json(path: str) -> str:
+    """Load macro items from GAS JSON (reports/macro_news_1.json) and format to text lines."""
+    try:
+        if not path or not os.path.exists(path):
+            return ""
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        items = data.get("items") or []
+        lines = []
+        for it in items[:6]:
+            title = (it.get("title") or "").strip()
+            if not title:
+                continue
+            src = it.get("source")
+            if src:
+                lines.append(f"- {title} ({src})")
+            else:
+                lines.append(f"- {title}")
+        return "\n".join(lines)
+    except Exception as e:
+        debug(f"[MACRO_JSON] read error: {e}")
+        return ""
 
 
 def _sanitize_macro_lines(macro_text: str) -> List[str]:
@@ -672,18 +697,26 @@ def generate_model_report(
 
 
     # Makró / FED / piaci hangulat blokk (#1)
-    if macro_text and macro_text.strip():
-        macro_text_final = macro_text
-    else:
-        macro_text_final = fetch_macro_text(
-            report=1,
-            out_path="reports/macro_1.txt",
-            base_url_env="MACRO_FEED_URL_1",
-        )
+    macro_text_final = ""
+    # 1) Prefer GAS JSON output if exists
+    macro_text_final = load_macro_from_json("reports/macro_news_1.json")
+
+    # 2) Fallback to legacy text fetcher (if any)
+    if not macro_text_final:
+        if macro_text and macro_text.strip():
+            macro_text_final = macro_text
+        else:
+            macro_text_final = fetch_macro_text(
+                report=1,
+                out_path="reports/macro_1.txt",
+                base_url_env="MACRO_FEED_URL_1",
+            )
 
     if macro_text_final:
-        # A Yahoo-makró híreket itt nem keverjük hozzá, a webapp már tartalmazza az összefoglalót.
         macro_block = build_macro_block_report1(macro_text_final, now_bud=dt.datetime.now(ZoneInfo("Europe/Budapest")))
+    else:
+        macro_block = build_macro_block_report1("", now_bud=dt.datetime.now(ZoneInfo("Europe/Budapest")))
+(macro_text_final, now_bud=dt.datetime.now(ZoneInfo("Europe/Budapest")))
     else:
         macro_block = build_macro_block_report1("", now_bud=dt.datetime.now(ZoneInfo("Europe/Budapest")))
 
