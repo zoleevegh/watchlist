@@ -18,22 +18,27 @@ import datetime as dt
 import json
 
 def load_macro_from_json(path: str) -> str:
+    """Load macro items from GAS JSON (reports/macro_news_1.json) and format to bullet lines."""
     try:
+        import os
         if not path or not os.path.exists(path):
             return ""
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
         items = data.get("items") or []
-        lines = []
+        lines_out = []
         for it in items[:6]:
             title = (it.get("title") or "").strip()
-            if title:
-                src = it.get("source")
-                lines.append(f"- {title}" + (f" ({src})" if src else ""))
-        return "
-".join(lines)
+            if not title:
+                continue
+            src = (it.get("source") or "").strip()
+            lines_out.append(f"- {title}" + (f" ({src})" if src else ""))
+        return "\n".join(lines_out)
     except Exception as e:
-        debug(f"[MACRO_JSON] error: {e}")
+        try:
+            debug(f"[MACRO_JSON] error: {e}")
+        except Exception:
+            pass
         return ""
 
 import re
@@ -46,8 +51,7 @@ import sys
 POSITION_LOT_NOTES = {}  # ticker -> " (N lot: BROKER+...)"
 from typing import Dict, List, Optional, Tuple
 
-__version__ = "v3.0.22"
-
+__version__ = "v3.0.24"
 try:
     from zoneinfo import ZoneInfo
 except ImportError:
@@ -692,7 +696,10 @@ def generate_model_report(
 
 
     # Makró / FED / piaci hangulat blokk (#1)
-    if macro_text and macro_text.strip():
+    macro_text_json = load_macro_from_json("reports/macro_news_1.json")
+    if macro_text_json:
+        macro_text_final = macro_text_json
+    elif macro_text and macro_text.strip():
         macro_text_final = macro_text
     else:
         macro_text_final = fetch_macro_text(
