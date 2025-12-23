@@ -2,7 +2,7 @@
 
 ## Alapelvek és hatáskör
 
-## Könyvtárszerkezet (KANONIKUS – FUTÓ ÁLLAPOT)
+## Könyvtárszerkezet (FRISSÍTETT)
 
 ```
 repo/
@@ -425,7 +425,10 @@ A `validate_run.py` a workflow-ban **postprocess után, Gist frissítés előtt*
 - A workflow **nem lehet zöld**, ha a jelentés hibás.
 - Ez megszünteti a „kamu siker” állapotot.
 
-### Verziózás
+### Verzió
+
+- **v3.8.0** – Makró adatút tisztázva, `macro_fetcher.py` deprecated.
+zás
 A `validate_run.py` és a workflow módosításai is a kötelező verziófolytatás hatálya alá esnek.
 
 ---
@@ -848,3 +851,22 @@ Az alábbi fájlok **nincsenek hívva** a `run_report.yml` jelenlegi futásában
 - `scripts/export_biblia_md.py` *(csak akkor kell, ha külön “update_biblia_docs.yml” workflow használja)*
 
 **Megjegyzés:** ha később bevezeted az `update_biblia_docs.yml` automatát, akkor az `export_biblia_md.py` visszakerülhet.
+
+
+
+## Makró / FED / Politika – KANONIKUS ADATÚT (AKTÍV)
+
+1. **Google Apps Script macro webapp**
+   - Endpoint: `/exec?type=macro&report=1`
+   - Források: Reuters / AP (Biblia szerinti market-moving szűrés)
+   - Kimenet: JSON
+
+2. **Workflow (run_report.yml)**
+   - Letölti a JSON-t ide: `reports/macro_news_1.json`
+
+3. **report_runner.py**
+   - Beolvassa a `macro_news_1.json` fájlt
+   - Ha üres → korrekt „nem érkezett érdemi hír” szöveg
+   - Soha nem talál ki hírt
+
+**Megjegyzés:** A `macro_fetcher.py` Python script **DEPRECATED**, nincs használatban.
