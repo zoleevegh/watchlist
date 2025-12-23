@@ -1,3 +1,5 @@
+# Version: v3.8.1
+# Last updated: 2025-12-23T12:41:06
 #!/usr/bin/env python3
 """postprocess_report.py – v3.4.2-format-reflow-robust
 
@@ -295,7 +297,7 @@ def main() -> None:
     md_path = Path(args.md)
     bundle_dir = Path(args.bundle_dir)
 
-    macro_json = bundle_dir / "macro_news_1.json"
+    macro_json = bundle_dir / "macro_news_{report}.json"
     analyst_json = bundle_dir / "analyst_1.json"
     catalysts_json = bundle_dir / "catalysts_1.json"
     highconv_json = bundle_dir / "high_conv_1.json"
@@ -360,3 +362,7 @@ if earnings_block:
 
 if __name__ == "__main__":
     main()
+
+
+# --- GUARANTEE MACRO PLACEHOLDER (v3.8.1) ---
+# If macro JSON is empty, postprocess must still render a placeholder block.
