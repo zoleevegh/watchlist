@@ -1,3 +1,5 @@
+# Version: v3.8.1
+# Last updated: 2025-12-23T12:41:06
 # PATCH v4.0.3: master url fix + macro debug
 name: Run Report (Windows) # v4.0.2-noblock-valid
 
@@ -119,7 +121,7 @@ jobs:
       - name: Debug macro feed file (count + size)
         shell: pwsh
         run: |
-          $p = "reports\macro_news_${{ steps.inputs.outputs.report }}.json"
+          $p = "reports\macro_news_${{ steps.vars.outputs.report }}.json"
           if (Test-Path $p) {
             $len = (Get-Item $p).Length
             Write-Host "MACRO_FILE: $p (bytes=$len)"
