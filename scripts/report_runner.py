@@ -26,7 +26,7 @@ import sys
 POSITION_LOT_NOTES = {}  # ticker -> " (N lot: BROKER+...)"
 from typing import Dict, List, Optional, Tuple
 
-__version__ = "v3.0.18"
+__version__ = "v3.0.19"
 
 try:
     from zoneinfo import ZoneInfo
@@ -194,7 +194,7 @@ def run_analyst_catalyst_builder(report: int, reports_dir: str = 'reports') -> N
     except Exception as e:
         print(f"[WARN] analyst_catalyst_builder crashed: {e}")
 
-DEFAULT_SCRIPT_VERSION = "v3.0.18-biblia-positions-lotnote-A-rowsrawfix"
+DEFAULT_SCRIPT_VERSION = "v3.0.19-biblia-coverage-premarketfix"
 AH_PM_MODE = "chart"  # alapértelmezett: Yahoo quote/spark alapú AH/PM
 
 
@@ -617,8 +617,8 @@ def generate_model_report(
                 continue
 
         # Ha sem bázisár, sem AH/PM % nem állt elő, ez lefedettségi hiba (ne fusson át csendben).
-        if rth_close is None or ah_pct is None or pm_pct is None:
-            missing[sym] = "nincs AH/PM adat (Yahoo quote+chart nem adott értelmezhető értéket)"
+        if rth_close is None and ah_pct is None and pm_pct is None:
+            missing[sym] = "nincs RTH/AH/PM adat (Yahoo quote+chart nem adott értelmezhető értéket)"
             continue
 
         is_position = sym in positions and positions[sym].get("quantity", 0) > 0
