@@ -1,5 +1,5 @@
-# Version: v3.8.4
-# Last updated: 2025-12-23T13:25:05
+# Version: v3.8.5
+P25-12-25T16:43:00
 # PATCH v4.0.3: master url fix + macro debug
 name: Run Report (Windows) # v4.0.2-noblock-valid
 
@@ -23,19 +23,19 @@ jobs:
       DEFAULT_CSV_URL: https://docs.google.com/spreadsheets/d/e/2PACX-1vQkgyw0ONwSfc2KnrmWGqf8fWVQxS-R08RySndB69KDJ8L1Cz-H2F1AZtyDfhBGedC0qdC1SFo_aDye/pub?output=csv
 
       # Analyst / Catalyst feed webapp (Apps Script – ÚJ ID)
-      ANALYST_FEED_URL_1: "https://script.google.com/macros/s/AKfycbxymtqVk8S_3v2US990K8R8zC-vV3xMrm3uFuKWA38gsVBkx8YZiL7cuH8-swiIQPOKsg/exec?type=analyst&report=1"
-      CATALYST_FEED_URL_1: "https://script.google.com/macros/s/AKfycbxymtqVk8S_3v2US990K8R8zC-vV3xMrm3uFuKWA38gsVBkx8YZiL7cuH8-swiIQPOKsg/exec?type=catalyst&report=1"
+      ANALYST_FEED_URL_1: "https://script.google.com/macros/s/AKfycbzIFabRIEMeYs5EXbsUbBtVwLcA7tSO7R8o3ms4z2Tayzh02ZHqEZyRRTf73kzXj_0J-Q/exec?type=analyst&report=1"
+      CATALYST_FEED_URL_1: "https://script.google.com/macros/s/AKfycbzIFabRIEMeYs5EXbsUbBtVwLcA7tSO7R8o3ms4z2Tayzh02ZHqEZyRRTf73kzXj_0J-Q/exec?type=catalyst&report=1"
 
-      ANALYST_FEED_URL_2: "https://script.google.com/macros/s/AKfycbxymtqVk8S_3v2US990K8R8zC-vV3xMrm3uFuKWA38gsVBkx8YZiL7cuH8-swiIQPOKsg/exec?type=analyst&report=2"
-      CATALYST_FEED_URL_2: "https://script.google.com/macros/s/AKfycbxymtqVk8S_3v2US990K8R8zC-vV3xMrm3uFuKWA38gsVBkx8YZiL7cuH8-swiIQPOKsg/exec?type=catalyst&report=2"
+      ANALYST_FEED_URL_2: "https://script.google.com/macros/s/AKfycbzIFabRIEMeYs5EXbsUbBtVwLcA7tSO7R8o3ms4z2Tayzh02ZHqEZyRRTf73kzXj_0J-Q/exec?type=analyst&report=2"
+      CATALYST_FEED_URL_2: "https://script.google.com/macros/s/AKfycbzIFabRIEMeYs5EXbsUbBtVwLcA7tSO7R8o3ms4z2Tayzh02ZHqEZyRRTf73kzXj_0J-Q/exec?type=catalyst&report=2"
 
-      ANALYST_FEED_URL_3: "https://script.google.com/macros/s/AKfycbxymtqVk8S_3v2US990K8R8zC-vV3xMrm3uFuKWA38gsVBkx8YZiL7cuH8-swiIQPOKsg/exec?type=analyst&report=3"
-      CATALYST_FEED_URL_3: "https://script.google.com/macros/s/AKfycbxymtqVk8S_3v2US990K8R8zC-vV3xMrm3uFuKWA38gsVBkx8YZiL7cuH8-swiIQPOKsg/exec?type=catalyst&report=3"
+      ANALYST_FEED_URL_3: "https://script.google.com/macros/s/AKfycbzIFabRIEMeYs5EXbsUbBtVwLcA7tSO7R8o3ms4z2Tayzh02ZHqEZyRRTf73kzXj_0J-Q/exec?type=analyst&report=3"
+      CATALYST_FEED_URL_3: "https://script.google.com/macros/s/AKfycbzIFabRIEMeYs5EXbsUbBtVwLcA7tSO7R8o3ms4z2Tayzh02ZHqEZyRRTf73kzXj_0J-Q/exec?type=catalyst&report=3"
 
       # Makró / FED / Politika – narratív feed (GAS)
-      MACRO_FEED_URL_1: "https://script.google.com/macros/s/AKfycbzOOZ7zvci8Rj6AbE8DvltOZB-QsgcHoEwj5eSd-ZleLQG6zIiq8tbSiIwAmXcRIlEyQQ/exec?report=1"
-      MACRO_FEED_URL_2: "https://script.google.com/macros/s/AKfycbzOOZ7zvci8Rj6AbE8DvltOZB-QsgcHoEwj5eSd-ZleLQG6zIiq8tbSiIwAmXcRIlEyQQ/exec?report=2"
-      MACRO_FEED_URL_3: "https://script.google.com/macros/s/AKfycbzOOZ7zvci8Rj6AbE8DvltOZB-QsgcHoEwj5eSd-ZleLQG6zIiq8tbSiIwAmXcRIlEyQQ/exec?report=3"
+      MACRO_FEED_URL_1: "https://script.google.com/macros/s/AKfycbyxy6iUXVuvWdRrRigTjhjsnk23DpqubWlqSI-ew5Z2SLtN4HTM_mXCtsrDcipAXCTZrw/exec?report=1"
+      MACRO_FEED_URL_2: "https://script.google.com/macros/s/AKfycbyxy6iUXVuvWdRrRigTjhjsnk23DpqubWlqSI-ew5Z2SLtN4HTM_mXCtsrDcipAXCTZrw/exec?report=2"
+      MACRO_FEED_URL_3: "https://script.google.com/macros/s/AKfycbyxy6iUXVuvWdRrRigTjhjsnk23DpqubWlqSI-ew5Z2SLtN4HTM_mXCtsrDcipAXCTZrw/exec?report=3"
 
 
 
