@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 events_fetcher.py
+Version: v1.0.1
 
 Szerep:
 - A #1/#2/#3 jelentésekhez tartozó 5-ös és 6-os blokk (elemzői lépések, közeli katalizátorok)
@@ -82,12 +83,28 @@ def load_raw_events(path: str, default_scope: str) -> List[RawEvent]:
 
     Elfogadott formátumok:
     - lista dict-ekkel (RawEvent-séma)
-    - vagy lista plain stringekkel (ticker/scope nélkül, 'other'-ként kezeljük)
+    - lista plain stringekkel
+    - dict, ami tartalmaz listát: events/data/items/content (Apps Script kompatibilis)
+    - egyetlen dict event (fallback) → [dict]
     """
     data = _load_json(path)
     events: List[RawEvent] = []
     if data is None:
         return events
+
+    # normalizáljuk listává
+    if isinstance(data, dict):
+        extracted = None
+        for key in ("events", "data", "items", "content"):
+            v = data.get(key)
+            if isinstance(v, list):
+                extracted = v
+                break
+        if extracted is not None:
+            data = extracted
+        else:
+            # ha maga a dict eventnek néz ki
+            data = [data]
 
     if isinstance(data, list):
         for item in data:
@@ -104,22 +121,22 @@ def load_raw_events(path: str, default_scope: str) -> List[RawEvent]:
                     )
                 )
             elif isinstance(item, dict):
-                ticker = item.get("ticker", "")
+                ticker = item.get("ticker", "") or item.get("symbol", "")
                 scope = item.get("scope") or default_scope or "other"
-                ev_type = item.get("event_type", "unknown")
-                headline = item.get("headline") or item.get("text") or ""
+                ev_type = item.get("event_type") or item.get("type") or "unknown"
+                headline = item.get("headline") or item.get("title") or item.get("text") or ""
                 summary = item.get("summary", "")
                 source = item.get("source", "")
-                ts_raw = item.get("ts") or item.get("time") or item.get("datetime") or ""
+                ts_raw = item.get("ts") or item.get("time") or item.get("datetime") or item.get("date") or ""
                 ts = _parse_ts(ts_raw) or datetime.now(timezone.utc)
                 events.append(
                     RawEvent(
-                        ticker=ticker,
-                        scope=scope,
-                        event_type=ev_type,
-                        headline=headline,
-                        summary=summary,
-                        source=source,
+                        ticker=str(ticker),
+                        scope=str(scope),
+                        event_type=str(ev_type),
+                        headline=str(headline),
+                        summary=str(summary),
+                        source=str(source),
                         ts=ts,
                     )
                 )
