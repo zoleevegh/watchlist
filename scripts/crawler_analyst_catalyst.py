@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 Analyst & catalyst "crawler" skeleton
+Version: v1.0.1
 
 Cél:
 - A #1/#2/#3 jelentésekhez tartozó *nyers* eseményfájlokat legenerálni:
@@ -108,17 +109,32 @@ def guess_format_from_url_or_content(url: str, content: str) -> str:
 
 
 def parse_json_events(text: str) -> List[Dict[str, Any]]:
-    data = json.loads(text)
-    if isinstance(data, dict):
-        # ha dict, próbáljunk listát keresni benne
-        for key in ("events", "data", "items"):
-            if key in data and isinstance(data[key], list):
-                return list(data[key])
-        raise ValueError("JSON nem lista és nem tartalmaz 'events' / 'data' / 'items' listát")
-    if isinstance(data, list):
-        return list(data)
-    raise ValueError("Ismeretlen JSON struktúra (nem lista / dict)")
+    """Rugalmas JSON parser.
 
+    Elfogad:
+    - root lista: [ {...}, ... ]
+    - dict lista-kulccsal: events/data/items/content
+    - Apps Script tipikus válasz: {status/type/report/generated_at, events:[...]} vagy {.., content:[...]}
+    - ha nincs benne lista → üres lista (nem dob hibát)
+    """
+    data = json.loads(text)
+
+    if isinstance(data, list):
+        return [x for x in data if isinstance(x, dict)]
+
+    if isinstance(data, dict):
+        for key in ("events", "data", "items", "content"):
+            v = data.get(key)
+            if isinstance(v, list):
+                return [x for x in v if isinstance(x, dict)]
+
+        # fallback: ha maga a dict egyetlen eventnek néz ki
+        if any(k in data for k in ("ticker", "symbol", "headline", "title", "event_type")):
+            return [data]  # type: ignore[list-item]
+
+        return []
+
+    return []
 
 def parse_csv_events(text: str) -> List[Dict[str, Any]]:
     lines = text.splitlines()
