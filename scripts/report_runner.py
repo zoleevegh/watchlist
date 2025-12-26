@@ -1088,7 +1088,7 @@ def main() -> None:
 
     mode = args.mode or args.report or 1
 
-analyst_events_path, catalyst_events_path, highconv_events_path = get_event_paths(int(mode))
+    analyst_events_path, catalyst_events_path, highconv_events_path = get_event_paths(int(mode))
 
     watchlist_path = args.watchlist or args.csv or "reports/master.csv"
     script_version = args.script_version or DEFAULT_SCRIPT_VERSION
