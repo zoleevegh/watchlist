@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""report_runner.py – v3.0.27-biblia-ahpm-sessionfix-5d
+"""report_runner.py – v3.0.28-biblia-ahpm-sessionfix-5d
 
 Megjegyzés: Ez a verzió a korábbi teljes runner logikát megtartja.
 A bibliás formátum finomhangolása külön lépésekben történik.
@@ -148,12 +148,6 @@ def _get_requests_session():
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36",
             "Accept": "application/json,text/plain,*/*",
             "Accept-Language": "en-US,en;q=0.9,hu;q=0.8",
-            "Connection": "keep-alive",
-        })
-SESSION.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-            "Accept": "application/json, text/plain, */*",
-            "Accept-Encoding": "gzip, deflate, br",
             "Connection": "keep-alive",
         })
     return SESSION
