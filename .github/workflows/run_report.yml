@@ -1,5 +1,5 @@
-# Version: v3.8.14
-# Last updated: 2025-12-26T20:40:00
+# Version: v3.8.15
+# Last updated: 2025-12-26T20:08:57
 # PATCH v4.0.3: master url fix + macro debug
 name: Run Report (Windows) # v4.0.2-noblock-valid
 
@@ -25,14 +25,14 @@ jobs:
 
       # Analyst / Catalyst feed webapp (Apps Script – ÚJ ID)
 
-      ANALYST_FEED_URL_1: "https://script.google.com/macros/s/AKfycbzKea8pYciU4LgAwaSy0ELHsHFzWM4czionANpCdGucIghF8iORcF8eOPPzPprOV7ak5g/exec?type=analyst&report=1&run=${{ github.run_id }}"
-      CATALYST_FEED_URL_1: "https://script.google.com/macros/s/AKfycbzKea8pYciU4LgAwaSy0ELHsHFzWM4czionANpCdGucIghF8iORcF8eOPPzPprOV7ak5g/exec?type=catalyst&report=1&run=${{ github.run_id }}"
+      ANALYST_FEED_URL_1: "https://script.google.com/macros/s/AKfycbw8Ujptv_pEMv2UbKuSas6VhLDLv3XFcWvqXV7-K1gAC8pcRziFSMErr9xRxgsn7xe5pg/exec?type=analyst&report=1&run=${{ github.run_id }}"
+      CATALYST_FEED_URL_1: "https://script.google.com/macros/s/AKfycbzKea8pYciU4LgAwaSy0ELHsHFzWM4czionANpCdGucIghF8iORcF8eOPPzPprOV7ak5g/exec?report=1&run=${{ github.run_id }}"
 
-      ANALYST_FEED_URL_2: "https://script.google.com/macros/s/AKfycbzKea8pYciU4LgAwaSy0ELHsHFzWM4czionANpCdGucIghF8iORcF8eOPPzPprOV7ak5g/exec?type=analyst&report=2&run=${{ github.run_id }}"
-      CATALYST_FEED_URL_2: "https://script.google.com/macros/s/AKfycbzKea8pYciU4LgAwaSy0ELHsHFzWM4czionANpCdGucIghF8iORcF8eOPPzPprOV7ak5g/exec?type=catalyst&report=2&run=${{ github.run_id }}"
+      ANALYST_FEED_URL_2: "https://script.google.com/macros/s/AKfycbw8Ujptv_pEMv2UbKuSas6VhLDLv3XFcWvqXV7-K1gAC8pcRziFSMErr9xRxgsn7xe5pg/exec?type=analyst&report=2&run=${{ github.run_id }}"
+      CATALYST_FEED_URL_2: "https://script.google.com/macros/s/AKfycbzKea8pYciU4LgAwaSy0ELHsHFzWM4czionANpCdGucIghF8iORcF8eOPPzPprOV7ak5g/exec?report=2&run=${{ github.run_id }}"
 
-      ANALYST_FEED_URL_3: "https://script.google.com/macros/s/AKfycbzKea8pYciU4LgAwaSy0ELHsHFzWM4czionANpCdGucIghF8iORcF8eOPPzPprOV7ak5g/exec?type=analyst&report=3&run=${{ github.run_id }}"
-      CATALYST_FEED_URL_3: "https://script.google.com/macros/s/AKfycbzKea8pYciU4LgAwaSy0ELHsHFzWM4czionANpCdGucIghF8iORcF8eOPPzPprOV7ak5g/exec?type=catalyst&report=3&run=${{ github.run_id }}"
+      ANALYST_FEED_URL_3: "https://script.google.com/macros/s/AKfycbw8Ujptv_pEMv2UbKuSas6VhLDLv3XFcWvqXV7-K1gAC8pcRziFSMErr9xRxgsn7xe5pg/exec?type=analyst&report=3&run=${{ github.run_id }}"
+      CATALYST_FEED_URL_3: "https://script.google.com/macros/s/AKfycbzKea8pYciU4LgAwaSy0ELHsHFzWM4czionANpCdGucIghF8iORcF8eOPPzPprOV7ak5g/exec?report=3&run=${{ github.run_id }}"
 
       # Makró / FED / Politika – narratív feed (GAS)
       MACRO_FEED_URL_1: "https://script.google.com/macros/s/AKfycbzG9wI-eiCx_rPeXoC7ZmHBvU1YmC-k03MAcMgayLuNu0NZgsEhXz7DOJ7wIs5GmiwP/exec?report=1&run=${{ github.run_id }}&attempt=${{ github.run_attempt }}"
@@ -195,7 +195,6 @@ jobs:
           else {
             python -X utf8 "scripts\events_fetcher.py" `
               --report $report `
-            --analyst-out "$analystOut" `
               --universe-json "reports\latest_${report}.json"
           }
 
@@ -233,7 +232,6 @@ jobs:
 
           python -u -X utf8 "scripts\report_runner.py" `
             --report $report `
-            --analyst-out "$analystOut" `
             --csv "$csv" `
             --summary "$summaryPath"
 
@@ -281,7 +279,6 @@ jobs:
           if (Test-Path "scripts\analyst_catalyst_builder.py") {
             python -X utf8 "scripts\analyst_catalyst_builder.py" `
               --report $report `
-            --analyst-out "$analystOut" `
               --catalysts-out "$catalystsOut" `
               --health-out "reports\health_analyst_${report}.json"
           }
@@ -322,7 +319,6 @@ jobs:
 
               python -u -X utf8 "scripts\postprocess_report.py" `
                 --report $report `
-            --analyst-out "$analystOut" `
                 --md "$mdPath" `
                 --bundle-dir "$bundleDir"
             }
@@ -342,7 +338,6 @@ jobs:
           if (Test-Path "scripts/analyst_catalyst_builder.py") {
             python -X utf8 "scripts/analyst_catalyst_builder.py" `
               --report $report `
-            --analyst-out "$analystOut" `
               --catalysts-out "$catalystsOut" `
               --health-out "reports\health_analyst_${report}.json"
           }
