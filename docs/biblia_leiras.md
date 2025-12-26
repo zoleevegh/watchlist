@@ -2,6 +2,9 @@
 
 ## Alapelvek és hatáskör
 
+
+**Verziózás (kötelező):** bármely fájl módosításakor a verziószámot **folytatólagosan** növelni kell (kihagyás nélkül), és a fájl tartalmában is szerepelnie kell.
+
 ## Könyvtárszerkezet (FRISSÍTETT)
 
 ```
@@ -66,10 +69,12 @@ Ha bármely workflow, script, README vagy komment ellentmond ennek a dokumentumn
 akkor **EZ A DOKUMENTUM AZ IRÁNYADÓ**, és az eltérést hibának kell tekinteni.
 
 
-**Verzió:** v3.8.1  
+**Verzió:** v3.8.2  
 
 
 
+
+**Frissítve:** 2025-12-26 (Europe/Budapest)
 
 ## 2. Scripts – szerepek és felelősségek
 
@@ -98,6 +103,15 @@ A konkrét logika:
 - `--report 2` → Open→Close (előző napi intraday) (#2 riport),
 - `--report 3` → Open→Most (mai intraday, #3 jelentés előkészítése).
 
+
+## Két Apps Script – kanonikus szétválasztás (KÖTELEZŐ)
+
+1) **MACRO webapp** (Makró/FED/Politika) → `MACRO_FEED_URL_{1|2|3}` → `reports/macro_news_{report}.json`
+
+2) **EVENTS webapp** (Analyst/Catalyst) → `ANALYST_FEED_URL_{1|2|3}` + `CATALYST_FEED_URL_{1|2|3}` → `reports/raw_analyst_{report}.json` + `reports/raw_catalysts_{report}.json` → `events_fetcher.py` → `reports/analyst_{report}.json` + `reports/catalysts_{report}.json`
+
+**Fontos:** a két webapp **külön GAS projekt**, mindkettő aktív, és a workflow mindkettőt használja.
+
 ### 2.3 Makró feed (Apps Script webapp + workflow letöltés)
 
 - A makró / FED / politika feedet **kizárólag** a Google Apps Script webapp szolgáltatja.
@@ -109,9 +123,15 @@ A konkrét logika:
   - `reports/macro_news_1.json`, `reports/macro_news_2.json`, `reports/macro_news_3.json`
 - A `report_runner.py` ezeket **csak beolvassa és megjeleníti**, hírt soha nem talál ki.
 
+
+**Cache-bust (kötelező):** a workflow minden makró URL-re ráteszi: `&run=${GITHUB_RUN_ID}` (vagy `github.run_id`), hogy ne kapjunk CDN-cache-elt, ismétlődő szöveget.
+
+**ANALYST/CATALYST cache-bust (ajánlott):** a workflow az analyst/catalyst URL-ekre is ráteszi: `&run=${GITHUB_RUN_ID}`, hogy biztosan friss JSON jöjjön vissza.
+
+
 ### 2.4 crawler_analyst_catalyst.py
 
-- Webes forrásokból (Python környezet) összegyűjti a nyers analyst és catalyst eseményeket.
+- A Google Apps Script **Analyst/Catalyst** webapp endpointjait hívja (strukturált `events[]` JSON), majd ezekből épít nyers eseménylistát. a nyers analyst és catalyst eseményeket.
 - Kimenet (nyers): `reports/raw_analyst_{N}.json`, `reports/raw_catalysts_{N}.json`.
 
 ### 2.5 events_fetcher.py
@@ -423,48 +443,17 @@ scripts/
 
 
 
-- scripts/analyst_catalyst_builder.py – MarketBeat/MarketWatch analyst+catalyst builder (jina-md parser)
+## DEPRECATED: analyst_catalyst_builder.py (jelenleg NEM fut)
 
+A korábbi Python scrape builder ág (MarketBeat/MarketWatch/jina-md) **nem része** a kanonikus **A-útvonalnak**.
 
-### analyst_catalyst_builder.py (ÚJ – analyst/catalyst feed építő, Apps Script kiváltása)
+- **Alapértelmezés:** `USE_FALLBACK_BUILDER=0` → nem fut.
+- **Miért:** ütközést/duplikációt és üres riportot okozhatott (rossz sorrend / eltérő artifact path).
+- **Ha egyszer visszahozzuk:** csak külön kapcsolóval (`USE_FALLBACK_BUILDER=1`) és **ugyanazokra** a kimenetekre kell írnia, mint a kanonikus pipeline:
+  - `reports/analyst_{report}.json`
+  - `reports/catalysts_{report}.json`
 
-**Miért kellett:**
-- MarketBeat / MarketWatch / 247WallSt jellegű scrape Apps Scriptből gyakran **401/403** (blokkolás).
-- Emiatt az analyst + catalyst események előállítása **Python builder** oldalra került.
-
-**Feladat:**
-- Webes forrásokból (Python környezetből) összegyűjti és egységesíti az analyst/catalyst eseményeket.
-- Deduplikál és egységes JSON struktúrát ír.
-
-**Kimenetek:**
-- `reports/{N}/analyst_{N}.json`
-- `reports/{N}/catalysts_{N}.json`
-- (opcionális) `reports/{N}/health_analyst_{N}.json` – forrás-szintű diagnosztika (`ok/count/httpStatus/error/ms`).
-
-**Helye a pipeline-ban:**
-- `run_report.yml` futtatja postprocess előtt, hogy a #1/#2/#3 riportok „Bejelentések & fel/lemínősítések” és „Közeli katalizátorok” blokkjai ne maradjanak üresek forrás-blokkolás miatt.
-
-
-### Apps Script webapp szerepe (pontosítás)
-
-- Apps Script webapp **CSAK** a **Makró / FED / piaci hangulat** feedet szolgáltatja.
-- Analyst/Catalyst jellegű scrape **nem** Apps Scriptből megy (401/403 blokkolás miatt), hanem a `analyst_catalyst_builder.py` építi.
-- A macro webapp-hoz van `?type=health` endpoint, ami forrásonként jelzi, ha valamelyik feed nem ad adatot.
-
-#### Makró blokk – üres adat kezelése (pontosítás)
-
-A Makró / Politika / FED blokk a #1 jelentésben **strukturálisan kötelező**.
-
-Amennyiben a `macro_news_1.json` az adott futás során üres,
-vagy nem tartalmaz piaci relevanciájú makró / FED / politikai eseményt,
-a `postprocess_report.py` **kötelezően beszúr egy üres (placeholder) makró blokkot**
-a jelentés elejére.
-
-Ez biztosítja, hogy:
-- a #1 jelentés blokkstruktúrája minden futásnál azonos maradjon,
-- az „adat = 0” állapot **nem minősül hibának**,
-- a `validate_run.py` guard BIBLIA-konform módon működjön.
-
+Jelen állapotban az analyst/catalyst események **forrása** a külön **EVENTS Apps Script webapp** + `crawler_analyst_catalyst.py` + `events_fetcher.py`.
 ### Artifact-szabály: minden jelentés külön fájlokat használ (kötelező)
 
 A #1 / #2 / #3 jelentések **nem osztoznak** artifact fájlokon: minden jelentéstípus a saját, azonos sorszámú JSON-okat használja.
