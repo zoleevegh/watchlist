@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""report_runner.py – v3.0.10-biblia-ahpm-sessionfix-5d
+"""report_runner.py – v3.0.27-biblia-ahpm-sessionfix-5d
 
 Megjegyzés: Ez a verzió a korábbi teljes runner logikát megtartja.
 A bibliás formátum finomhangolása külön lépésekben történik.
@@ -74,7 +74,7 @@ import sys
 POSITION_LOT_NOTES = {}  # ticker -> " (N lot: BROKER+...)"
 from typing import Dict, List, Optional, Tuple
 
-__version__ = "v3.0.26"
+__version__ = "v3.0.25"
 try:
     from zoneinfo import ZoneInfo
 except ImportError:
@@ -138,19 +138,54 @@ except ImportError:  # pragma: no cover - optional helper
         return ""
 
 
-SESSION = None  # lazy init (v3.0.10)
+SESSION = None  # lazy init (v3.0.27)
 def _get_requests_session():
-    """Lazy requests.Session"""
+    """Lazy requests.Session + alap header (Yahoo 429 ellen)"""
     global SESSION
     if SESSION is None:
         SESSION = requests.Session()
         SESSION.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36",
+            "Accept": "application/json,text/plain,*/*",
+            "Accept-Language": "en-US,en;q=0.9,hu;q=0.8",
+            "Connection": "keep-alive",
+        })
+SESSION.headers.update({
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
             "Accept": "application/json, text/plain, */*",
             "Accept-Encoding": "gzip, deflate, br",
             "Connection": "keep-alive",
         })
     return SESSION
+
+def _get_json_with_retries(url: str, params: dict, timeout: int = 12, max_tries: int = 4):
+    """GET JSON retries (főleg Yahoo 429 / 5xx)."""
+    sess = _get_requests_session()
+    backoffs = [1.5, 3.0, 6.0, 12.0]
+    last_err = None
+    for i in range(max_tries):
+        try:
+            resp = sess.get(url, params=params, timeout=timeout)
+            if resp.status_code in (429, 500, 502, 503, 504):
+                # backoff + jitter
+                import time, random
+                wait = backoffs[min(i, len(backoffs)-1)] + random.random()
+                time.sleep(wait)
+                last_err = f"HTTP_{resp.status_code}"
+                continue
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            last_err = str(e)
+            try:
+                import time, random
+                wait = backoffs[min(i, len(backoffs)-1)] + random.random()
+                time.sleep(wait)
+            except Exception:
+                pass
+            continue
+    raise RuntimeError(f"GET JSON failed after retries: {last_err}")
+
 
 
 DEFAULT_K = 3.0
@@ -225,9 +260,6 @@ def build_macro_block_report1(macro_text: str, now_bud: dt.datetime) -> str:
 
 def run_analyst_catalyst_builder(report: int, reports_dir: str = 'reports') -> None:
     """Build analyst/catalyst artifacts via scripts/analyst_catalyst_builder.py (noblock)."""
-    if os.environ.get("USE_FALLBACK_BUILDER", "0") != "1":
-        print("[skip] USE_FALLBACK_BUILDER=0 → analyst_catalyst_builder kihagyva (Apps Script feed az elsődleges).")
-        return
     builder = os.path.join('scripts', 'analyst_catalyst_builder.py')
     if not os.path.exists(builder):
         print(f"[WARN] missing: {builder} (skipping analyst/catalyst build)")
@@ -447,9 +479,7 @@ def fetch_yahoo_quote_single(symbol: str) -> Tuple[Optional[float], Optional[flo
     url = "https://query1.finance.yahoo.com/v7/finance/quote"
     params = {"symbols": symbol}
     try:
-        resp = _get_requests_session().get(url, params=params, timeout=12)
-        resp.raise_for_status()
-        data = resp.json()
+        data = _get_json_with_retries(url, params=params, timeout=12, max_tries=4)
         items = (data.get("quoteResponse", {}) or {}).get("result", []) or []
         if not items:
             return (None, None, None)
