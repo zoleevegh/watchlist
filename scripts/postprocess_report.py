@@ -1,5 +1,5 @@
-# Version: v3.8.2
-# Last updated: 2025-12-26T13:58:52
+# Version: v3.8.10
+# Last updated: 2025-12-26T15:20:12
 #!/usr/bin/env python3
 """postprocess_report.py – v3.4.2-format-reflow-robust
 
@@ -70,26 +70,57 @@ def _force_reflow(raw: str) -> str:
 
     return s.strip() + "\n"
 
+
 def _build_macro_block(macro_json_path: Path) -> str:
+    """
+    Makró blokk builder.
+
+    Támogatott JSON formátumok:
+    - dict: { narrative: "..." }  (elsődleges, 3–6 soros narratíva)
+    - dict: { headlines/items/news/macro: [...] }
+    - list: [ ... ]
+    """
     data = _load_json(macro_json_path)
 
-    if isinstance(data, list):
-        items = data
-    elif isinstance(data, dict):
-        items = (
+    narrative = ""
+    items = []
+
+    if isinstance(data, dict):
+        n = data.get("narrative") or data.get("text") or data.get("summary_text") or ""
+        if isinstance(n, str):
+            narrative = n.strip()
+
+        cand = (
             data.get("headlines")
             or data.get("items")
             or data.get("news")
             or data.get("macro")
+            or data.get("data")
+            or data.get("events")
         )
-        if not isinstance(items, list):
-            items = []
-    else:
-        items = []
+        if isinstance(cand, list):
+            items = cand
+    elif isinstance(data, list):
+        items = data
 
     lines: list[str] = ["### Makró / Politika / FED", ""]
-    count = 0
 
+    # 1) Ha van narratíva: 3–6 sor max (te kérted: piacmozgató narratíva)
+    if narrative:
+        for ln in [x.strip() for x in narrative.replace("\r", "").split("\n") if x.strip()]:
+            # ne engedjük elszállni a hosszát
+            if len(lines) >= 2 + 6:
+                break
+            # ha már bullet, hagyjuk; ha nem, bullet-ezzük
+            if ln.startswith("-"):
+                lines.append(ln)
+            else:
+                lines.append(f"- {ln}")
+        lines.append("")
+        return "\n".join(lines)
+
+    # 2) Fallback: listás headline-ok (max 8)
+    count = 0
     for raw in items:
         if isinstance(raw, str):
             txt = raw.strip()
@@ -98,9 +129,9 @@ def _build_macro_block(macro_json_path: Path) -> str:
             lines.append(f"- {txt}")
         elif isinstance(raw, dict):
             h = (raw.get("headline") or raw.get("title") or "").strip()
-            s = (raw.get("summary") or "").strip()
+            s = (raw.get("summary") or raw.get("text") or "").strip()
             src = (raw.get("source") or "").strip()
-            ts = (raw.get("time_str") or raw.get("time") or "").strip()
+            ts = (raw.get("time_str") or raw.get("time") or raw.get("ts") or "").strip()
             parts = [p for p in (h, s, ts, src) if p]
             if parts:
                 lines.append(f"- {' – '.join(parts)}")
@@ -116,6 +147,7 @@ def _build_macro_block(macro_json_path: Path) -> str:
 
     lines.append("")
     return "\n".join(lines)
+
 
 def _ensure_block(block: str, title: str, empty_line: str) -> str:
     b = (block or "").strip()
@@ -196,7 +228,6 @@ def _insert_macro_after_coverage(lines: List[str], macro_block: str) -> List[str
 
     # 4) végső fallback: elejére
     return macro_lines + [""] + lines
-    return lines[:idx+1] + [""] + macro_lines + [""] + lines[idx+1:]
 
 def _append_blocks(lines: List[str], blocks: List[str]) -> List[str]:
     out = lines[:]
@@ -340,19 +371,20 @@ def main() -> None:
         if final_lines and final_lines[-1].strip() != "":
             final_lines.append("")
         final_lines.extend(job_lines)
-# --- Earnings (v3) block injection (from reports/earnings_1.json) ---
-try:
-    earnings_json = Path("reports/earnings_1.json")
-    earnings_payload = _safe_json_load(earnings_json)
-    earnings_block = build_earnings_block_from_file(earnings_payload) if earnings_payload is not None else ""
-except Exception:
+
+    # --- Earnings block injection (optional) ---
     earnings_block = ""
-if earnings_block:
-    # beszúrjuk a riport végére, a Job summary ELÉ (hogy mindig látszódjon)
-    if final_lines and final_lines[-1].strip() != "":
+    try:
+        earnings_block = build_earnings_block_from_file(earnings_json)
+    except Exception:
+        earnings_block = ""
+
+    if earnings_block:
+        # beszúrjuk a riport végére, a Job summary ELÉ (hogy mindig látszódjon)
+        if final_lines and final_lines[-1].strip() != "":
+            final_lines.append("")
+        final_lines.append(earnings_block.rstrip())
         final_lines.append("")
-    final_lines.append(earnings_block.rstrip())
-    final_lines.append("")
 
 
     _write_md(md_path, "\n".join(final_lines).rstrip() + "\n")
