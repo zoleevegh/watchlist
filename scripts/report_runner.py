@@ -277,6 +277,17 @@ AH_PM_MODE = "chart"  # alapértelmezett: Yahoo quote/spark alapú AH/PM
 WATCHLIST_DEFAULT_PATH = "reports/master.csv"
 ANALYST_EVENTS_PATH_TEMPLATE = "reports/analyst_{report}.json"
 CATALYST_EVENTS_PATH_TEMPLATE = "reports/catalysts_{report}.json"
+
+# Optional overrides (set from CLI args). If set, report number formatting is ignored.
+ANALYST_EVENTS_PATH_OVERRIDE = None
+CATALYST_EVENTS_PATH_OVERRIDE = None
+
+def get_analyst_events_path(report: str) -> str:
+    return ANALYST_EVENTS_PATH_OVERRIDE or get_analyst_events_path(report)
+
+def get_catalyst_events_path(report: str) -> str:
+    return CATALYST_EVENTS_PATH_OVERRIDE or get_catalyst_events_path(report)
+
 HIGHCONV_EVENTS_PATH = "reports/high_conv_1.json"
 
 
@@ -765,10 +776,10 @@ def generate_model_report(
         macro_block = build_macro_block_report1("", now_bud=dt.datetime.now(ZoneInfo("Europe/Budapest")))
 
         # Elemzői lépések / közeli katalizátorok / high-conviction események (5/6/7. blokk)
-    analyst_events = fetch_analyst_events(ANALYST_EVENTS_PATH_TEMPLATE.format(report=report))
+    analyst_events = fetch_analyst_events(get_analyst_events_path(report))
     analyst_block = format_analyst_block(analyst_events)
 
-    catalyst_events = fetch_catalyst_events(CATALYST_EVENTS_PATH_TEMPLATE.format(report=report))
+    catalyst_events = fetch_catalyst_events(get_catalyst_events_path(report))
     catalyst_block = format_catalyst_block(catalyst_events)
 
     highconv_events = fetch_highconviction_events(HIGHCONV_EVENTS_PATH)
@@ -900,10 +911,10 @@ def generate_report2_macro_only(
     yahoo_macro_news = fetch_yahoo_macro_news(report_type=2, now_cet=now)
     macro_block = format_macro_block(macro_text or "", yahoo_macro_news)
 
-    analyst_events = fetch_analyst_events(ANALYST_EVENTS_PATH_TEMPLATE.format(report=report))
+    analyst_events = fetch_analyst_events(get_analyst_events_path(report))
     analyst_block = format_analyst_block(analyst_events)
 
-    catalyst_events = fetch_catalyst_events(CATALYST_EVENTS_PATH_TEMPLATE.format(report=report))
+    catalyst_events = fetch_catalyst_events(get_catalyst_events_path(report))
     catalyst_block = format_catalyst_block(catalyst_events)
 
     highconv_events = fetch_highconviction_events(HIGHCONV_EVENTS_PATH)
@@ -987,10 +998,10 @@ def generate_report3_macro_only(
     yahoo_macro_news = fetch_yahoo_macro_news(report_type=3, now_cet=now)
     macro_block = format_macro_block(macro_text or "", yahoo_macro_news)
 
-    analyst_events = fetch_analyst_events(ANALYST_EVENTS_PATH_TEMPLATE.format(report=report))
+    analyst_events = fetch_analyst_events(get_analyst_events_path(report))
     analyst_block = format_analyst_block(analyst_events)
 
-    catalyst_events = fetch_catalyst_events(CATALYST_EVENTS_PATH_TEMPLATE.format(report=report))
+    catalyst_events = fetch_catalyst_events(get_catalyst_events_path(report))
     catalyst_block = format_catalyst_block(catalyst_events)
 
     highconv_events = fetch_highconviction_events(HIGHCONV_EVENTS_PATH)
@@ -1074,8 +1085,18 @@ def main() -> None:
     parser.add_argument("--csv", help="Alias of --watchlist (legacy)")
     parser.add_argument("--summary", help="Kimeneti summary path (legacy, opcionális)")
     parser.add_argument("--macro", help="Makró szöveg Politika/FED/piaci hangulat blokkokhoz")
+    parser.add_argument("--analyst-out", dest="analyst_out", default="", help="(optional) Analyst events JSON input path (overrides default reports/analyst_{report}.json)")
+    parser.add_argument("--catalyst-out", dest="catalyst_out", default="", help="(optional) Catalyst events JSON input path (overrides default reports/catalysts_{report}.json)")
 
     args = parser.parse_args()
+
+    # Wire optional input paths (keeps workflow backwards compatible if it passes these flags).
+    global ANALYST_EVENTS_PATH_OVERRIDE, CATALYST_EVENTS_PATH_OVERRIDE
+    if getattr(args, 'analyst_out', ''):
+        ANALYST_EVENTS_PATH_OVERRIDE = args.analyst_out
+    if getattr(args, 'catalyst_out', ''):
+        CATALYST_EVENTS_PATH_OVERRIDE = args.catalyst_out
+
 
     mode = args.mode or args.report or 1
     watchlist_path = args.watchlist or args.csv or "reports/master.csv"
