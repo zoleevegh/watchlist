@@ -1,5 +1,5 @@
-# Version: v3.8.15
-# Last updated: 2025-12-26T20:08:57
+# Version: v3.8.16
+# Last updated: 2025-12-26T21:00:00
 # PATCH v4.0.3: master url fix + macro debug
 name: Run Report (Windows) # v4.0.2-noblock-valid
 
@@ -25,14 +25,14 @@ jobs:
 
       # Analyst / Catalyst feed webapp (Apps Script – ÚJ ID)
 
-      ANALYST_FEED_URL_1: "https://script.google.com/macros/s/AKfycbw8Ujptv_pEMv2UbKuSas6VhLDLv3XFcWvqXV7-K1gAC8pcRziFSMErr9xRxgsn7xe5pg/exec?type=analyst&report=1&run=${{ github.run_id }}"
-      CATALYST_FEED_URL_1: "https://script.google.com/macros/s/AKfycbzKea8pYciU4LgAwaSy0ELHsHFzWM4czionANpCdGucIghF8iORcF8eOPPzPprOV7ak5g/exec?report=1&run=${{ github.run_id }}"
+      ANALYST_FEED_URL_1: "https://script.google.com/macros/s/AKfycbzKea8pYciU4LgAwaSy0ELHsHFzWM4czionANpCdGucIghF8iORcF8eOPPzPprOV7ak5g/exec?type=analyst&report=1&run=${{ github.run_id }}"
+      CATALYST_FEED_URL_1: "https://script.google.com/macros/s/AKfycbzKea8pYciU4LgAwaSy0ELHsHFzWM4czionANpCdGucIghF8iORcF8eOPPzPprOV7ak5g/exec?type=catalyst&report=1&run=${{ github.run_id }}"
 
-      ANALYST_FEED_URL_2: "https://script.google.com/macros/s/AKfycbw8Ujptv_pEMv2UbKuSas6VhLDLv3XFcWvqXV7-K1gAC8pcRziFSMErr9xRxgsn7xe5pg/exec?type=analyst&report=2&run=${{ github.run_id }}"
-      CATALYST_FEED_URL_2: "https://script.google.com/macros/s/AKfycbzKea8pYciU4LgAwaSy0ELHsHFzWM4czionANpCdGucIghF8iORcF8eOPPzPprOV7ak5g/exec?report=2&run=${{ github.run_id }}"
+      ANALYST_FEED_URL_2: "https://script.google.com/macros/s/AKfycbzKea8pYciU4LgAwaSy0ELHsHFzWM4czionANpCdGucIghF8iORcF8eOPPzPprOV7ak5g/exec?type=analyst&report=2&run=${{ github.run_id }}"
+      CATALYST_FEED_URL_2: "https://script.google.com/macros/s/AKfycbzKea8pYciU4LgAwaSy0ELHsHFzWM4czionANpCdGucIghF8iORcF8eOPPzPprOV7ak5g/exec?type=catalyst&report=2&run=${{ github.run_id }}"
 
-      ANALYST_FEED_URL_3: "https://script.google.com/macros/s/AKfycbw8Ujptv_pEMv2UbKuSas6VhLDLv3XFcWvqXV7-K1gAC8pcRziFSMErr9xRxgsn7xe5pg/exec?type=analyst&report=3&run=${{ github.run_id }}"
-      CATALYST_FEED_URL_3: "https://script.google.com/macros/s/AKfycbzKea8pYciU4LgAwaSy0ELHsHFzWM4czionANpCdGucIghF8iORcF8eOPPzPprOV7ak5g/exec?report=3&run=${{ github.run_id }}"
+      ANALYST_FEED_URL_3: "https://script.google.com/macros/s/AKfycbzKea8pYciU4LgAwaSy0ELHsHFzWM4czionANpCdGucIghF8iORcF8eOPPzPprOV7ak5g/exec?type=analyst&report=3&run=${{ github.run_id }}"
+      CATALYST_FEED_URL_3: "https://script.google.com/macros/s/AKfycbzKea8pYciU4LgAwaSy0ELHsHFzWM4czionANpCdGucIghF8iORcF8eOPPzPprOV7ak5g/exec?type=catalyst&report=3&run=${{ github.run_id }}"
 
       # Makró / FED / Politika – narratív feed (GAS)
       MACRO_FEED_URL_1: "https://script.google.com/macros/s/AKfycbzG9wI-eiCx_rPeXoC7ZmHBvU1YmC-k03MAcMgayLuNu0NZgsEhXz7DOJ7wIs5GmiwP/exec?report=1&run=${{ github.run_id }}&attempt=${{ github.run_attempt }}"
@@ -204,7 +204,7 @@ jobs:
           $report = "${{ steps.vars.outputs.report }}"
           if (-not $report) { $report = "1" }
 
-          $rdir = "reports\$report"
+          $rdir = "reports"
           if (!(Test-Path $rdir)) { New-Item -ItemType Directory -Path $rdir | Out-Null }
 
           # A postprocess / runner a per-report mappából olvas, ezért ide is kimásoljuk a normalizált fájlokat
