@@ -270,14 +270,23 @@ def run_analyst_catalyst_builder(report: int, reports_dir: str = 'reports') -> N
     except Exception as e:
         print(f"[WARN] analyst_catalyst_builder crashed: {e}")
 
-DEFAULT_SCRIPT_VERSION = "v3.0.29"
+DEFAULT_SCRIPT_VERSION = "v3.0.30"
 AH_PM_MODE = "chart"  # alapértelmezett: Yahoo quote/spark alapú AH/PM
 
 
 WATCHLIST_DEFAULT_PATH = "reports/master.csv"
-ANALYST_EVENTS_PATH = "reports/analyst_1.json"
-CATALYST_EVENTS_PATH = "reports/catalysts_1.json"
-HIGHCONV_EVENTS_PATH = "reports/high_conv_1.json"
+ANALYST_EVENTS_TPL = "reports/analyst_{mode}.json"
+CATALYST_EVENTS_TPL = "reports/catalysts_{mode}.json"
+HIGHCONV_EVENTS_TPL = "reports/high_conv_{mode}.json"
+
+def get_event_paths(mode: int) -> Tuple[str, str, str]:
+    """Return analyst/catalyst/highconv json paths for this mode (1/2/3) under reports/."""
+    return (
+        ANALYST_EVENTS_TPL.format(mode=mode),
+        CATALYST_EVENTS_TPL.format(mode=mode),
+        HIGHCONV_EVENTS_TPL.format(mode=mode),
+    )
+
 
 
 def debug(msg: str) -> None:
@@ -765,13 +774,13 @@ def generate_model_report(
         macro_block = build_macro_block_report1("", now_bud=dt.datetime.now(ZoneInfo("Europe/Budapest")))
 
         # Elemzői lépések / közeli katalizátorok / high-conviction események (5/6/7. blokk)
-    analyst_events = fetch_analyst_events(ANALYST_EVENTS_PATH)
+    analyst_events = fetch_analyst_events(analyst_events_path)
     analyst_block = format_analyst_block(analyst_events)
 
-    catalyst_events = fetch_catalyst_events(CATALYST_EVENTS_PATH)
+    catalyst_events = fetch_catalyst_events(catalyst_events_path)
     catalyst_block = format_catalyst_block(catalyst_events)
 
-    highconv_events = fetch_highconviction_events(HIGHCONV_EVENTS_PATH)
+    highconv_events = fetch_highconviction_events(highconv_events_path)
     highconv_block = format_highconviction_block(highconv_events)
 
     lines: List[str] = []
@@ -900,13 +909,13 @@ def generate_report2_macro_only(
     yahoo_macro_news = fetch_yahoo_macro_news(report_type=2, now_cet=now)
     macro_block = format_macro_block(macro_text or "", yahoo_macro_news)
 
-    analyst_events = fetch_analyst_events(ANALYST_EVENTS_PATH)
+    analyst_events = fetch_analyst_events(analyst_events_path)
     analyst_block = format_analyst_block(analyst_events)
 
-    catalyst_events = fetch_catalyst_events(CATALYST_EVENTS_PATH)
+    catalyst_events = fetch_catalyst_events(catalyst_events_path)
     catalyst_block = format_catalyst_block(catalyst_events)
 
-    highconv_events = fetch_highconviction_events(HIGHCONV_EVENTS_PATH)
+    highconv_events = fetch_highconviction_events(highconv_events_path)
     highconv_block = format_highconviction_block(highconv_events)
 
     lines: List[str] = []
@@ -987,13 +996,13 @@ def generate_report3_macro_only(
     yahoo_macro_news = fetch_yahoo_macro_news(report_type=3, now_cet=now)
     macro_block = format_macro_block(macro_text or "", yahoo_macro_news)
 
-    analyst_events = fetch_analyst_events(ANALYST_EVENTS_PATH)
+    analyst_events = fetch_analyst_events(analyst_events_path)
     analyst_block = format_analyst_block(analyst_events)
 
-    catalyst_events = fetch_catalyst_events(CATALYST_EVENTS_PATH)
+    catalyst_events = fetch_catalyst_events(catalyst_events_path)
     catalyst_block = format_catalyst_block(catalyst_events)
 
-    highconv_events = fetch_highconviction_events(HIGHCONV_EVENTS_PATH)
+    highconv_events = fetch_highconviction_events(highconv_events_path)
     highconv_block = format_highconviction_block(highconv_events)
 
     lines: List[str] = []
@@ -1078,6 +1087,9 @@ def main() -> None:
     args = parser.parse_args()
 
     mode = args.mode or args.report or 1
+
+analyst_events_path, catalyst_events_path, highconv_events_path = get_event_paths(int(mode))
+
     watchlist_path = args.watchlist or args.csv or "reports/master.csv"
     script_version = args.script_version or DEFAULT_SCRIPT_VERSION
     k_default = args.k_default or DEFAULT_K
