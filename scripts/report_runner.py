@@ -74,7 +74,7 @@ import sys
 POSITION_LOT_NOTES = {}  # ticker -> " (N lot: BROKER+...)"
 from typing import Dict, List, Optional, Tuple
 
-__version__ = "v3.0.25"
+__version__ = "v3.0.26"
 try:
     from zoneinfo import ZoneInfo
 except ImportError:
@@ -225,6 +225,9 @@ def build_macro_block_report1(macro_text: str, now_bud: dt.datetime) -> str:
 
 def run_analyst_catalyst_builder(report: int, reports_dir: str = 'reports') -> None:
     """Build analyst/catalyst artifacts via scripts/analyst_catalyst_builder.py (noblock)."""
+    if os.environ.get("USE_FALLBACK_BUILDER", "0") != "1":
+        print("[skip] USE_FALLBACK_BUILDER=0 → analyst_catalyst_builder kihagyva (Apps Script feed az elsődleges).")
+        return
     builder = os.path.join('scripts', 'analyst_catalyst_builder.py')
     if not os.path.exists(builder):
         print(f"[WARN] missing: {builder} (skipping analyst/catalyst build)")
