@@ -74,7 +74,7 @@ import sys
 POSITION_LOT_NOTES = {}  # ticker -> " (N lot: BROKER+...)"
 from typing import Dict, List, Optional, Tuple
 
-__version__ = "v3.0.25"
+__version__ = "v3.0.29"
 try:
     from zoneinfo import ZoneInfo
 except ImportError:
@@ -270,7 +270,7 @@ def run_analyst_catalyst_builder(report: int, reports_dir: str = 'reports') -> N
     except Exception as e:
         print(f"[WARN] analyst_catalyst_builder crashed: {e}")
 
-DEFAULT_SCRIPT_VERSION = "v3.0.19-biblia-coverage-premarketfix"
+DEFAULT_SCRIPT_VERSION = "v3.0.29"
 AH_PM_MODE = "chart"  # alapértelmezett: Yahoo quote/spark alapú AH/PM
 
 
