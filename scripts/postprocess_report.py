@@ -1,10 +1,9 @@
-# Version: v3.8.1
-# Last updated: 2025-12-23T12:41:06
+# Version: v3.8.2
+# Last updated: 2025-12-26T13:58:52
 #!/usr/bin/env python3
 """postprocess_report.py – v3.4.2-format-reflow-robust
 
 Bocsáss meg Uram, mert balfék voltam; add Uram, hogy ne legyen hibás ez a módosítás.
-Áldd meg a futást, hogy a riport tiszta és igaz legyen.
 
 #1: kényszerített tördelés akkor is, ha a runner 1 sorba lapította a teljes jelentést.
 
@@ -297,12 +296,12 @@ def main() -> None:
     md_path = Path(args.md)
     bundle_dir = Path(args.bundle_dir)
 
-    macro_json = bundle_dir / "macro_news_{report}.json"
-    analyst_json = bundle_dir / "analyst_1.json"
-    catalysts_json = bundle_dir / "catalysts_1.json"
-    highconv_json = bundle_dir / "high_conv_1.json"
-    earnings_json = bundle_dir / "earnings_1.json"
-    yahoo_analyst_json = bundle_dir / "yahoo_analyst_1.json"
+    macro_json = bundle_dir / f"macro_news_{args.report}.json"
+    analyst_json = bundle_dir / f"analyst_{args.report}.json"
+    catalysts_json = bundle_dir / f"catalysts_{args.report}.json"
+    highconv_json = bundle_dir / f"high_conv_{args.report}.json"
+    earnings_json = bundle_dir / f"earnings_{args.report}.json"
+    yahoo_analyst_json = bundle_dir / f"yahoo_analyst_{args.report}.json"
 
     raw = _read_md(md_path)
     raw = _force_reflow(raw)
