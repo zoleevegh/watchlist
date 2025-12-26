@@ -1,5 +1,5 @@
-# Version: v3.8.9
-# Last updated: 2025-12-26T15:54:47
+# Version: v3.8.10
+# Last updated: 2025-12-26T16:10:00
 # PATCH v4.0.3: master url fix + macro debug
 name: Run Report (Windows) # v4.0.2-noblock-valid
 
@@ -202,6 +202,20 @@ jobs:
               --report $report `
               --universe-json "reports\latest_${report}.json"
           }
+
+      - name: Sync analyst/catalyst JSON into per-report folder
+        shell: pwsh
+        run: |
+          $report = "${{ steps.vars.outputs.report }}"
+          if (-not $report) { $report = "1" }
+
+          $rdir = "reports\$report"
+          if (!(Test-Path $rdir)) { New-Item -ItemType Directory -Path $rdir | Out-Null }
+
+          # A postprocess / runner a per-report mappából olvas, ezért ide is kimásoljuk a normalizált fájlokat
+          if (Test-Path "reports\analyst_${report}.json") { Copy-Item -Force "reports\analyst_${report}.json" "$rdir\analyst_${report}.json" }
+          if (Test-Path "reports\catalysts_${report}.json") { Copy-Item -Force "reports\catalysts_${report}.json" "$rdir\catalysts_${report}.json" }
+
 
       - name: Run report (#1/#2/#3)
         shell: pwsh
