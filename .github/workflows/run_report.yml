@@ -35,9 +35,10 @@ jobs:
       CATALYST_FEED_URL_3: "https://script.google.com/macros/s/AKfycbw8Ujptv_pEMv2UbKuSas6VhLDLv3XFcWvqXV7-K1gAC8pcRziFSMErr9xRxgsn7xe5pg/exec?type=catalyst&report=3&run=${{ github.run_id }}"
 
       # Makró / FED / Politika – narratív feed (GAS)
-      MACRO_FEED_URL_1: "https://script.google.com/macros/s/AKfycbyxy6iUXVuvWdRrRigTjhjsnk23DpqubWlqSI-ew5Z2SLtN4HTM_mXCtsrDcipAXCTZrw/exec?report=1&run=${{ github.run_id }}&attempt=${{ github.run_attempt }}&sha=${{ github.sha }}"
-      MACRO_FEED_URL_2: "https://script.google.com/macros/s/AKfycbyxy6iUXVuvWdRrRigTjhjsnk23DpqubWlqSI-ew5Z2SLtN4HTM_mXCtsrDcipAXCTZrw/exec?report=2&run=${{ github.run_id }}&attempt=${{ github.run_attempt }}&sha=${{ github.sha }}"
-      MACRO_FEED_URL_3: "https://script.google.com/macros/s/AKfycbyxy6iUXVuvWdRrRigTjhjsnk23DpqubWlqSI-ew5Z2SLtN4HTM_mXCtsrDcipAXCTZrw/exec?report=3&run=${{ github.run_id }}&attempt=${{ github.run_attempt }}&sha=${{ github.sha }}"
+      MACRO_FEED_URL_1: "https://script.google.com/macros/s/AKfycbyxy6iUXVuvWdRrRigTjhjsnk23DpqubWlqSI-ew5Z2SLtN4HTM_mXCtsrDcipAXCTZrw/exec?report=1&run=${{ github.run_id }}&a=${{ github.run_attempt }}"
+      MACRO_FEED_URL_2: "https://script.google.com/macros/s/AKfycbyxy6iUXVuvWdRrRigTjhjsnk23DpqubWlqSI-ew5Z2SLtN4HTM_mXCtsrDcipAXCTZrw/exec?report=2&run=${{ github.run_id }}&a=${{ github.run_attempt }}"
+      MACRO_FEED_URL_3: "https://script.google.com/macros/s/AKfycbyxy6iUXVuvWdRrRigTjhjsnk23DpqubWlqSI-ew5Z2SLtN4HTM_mXCtsrDcipAXCTZrw/exec?report=3&run=${{ github.run_id }}&a=${{ github.run_attempt }}"
+
 
     steps:
       - name: Checkout
