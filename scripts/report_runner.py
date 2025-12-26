@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""report_runner.py – v3.0.28-biblia-ahpm-sessionfix-5d
+"""report_runner.py – v3.0.34-biblia-ahpm-sessionfix-5d
 
 Megjegyzés: Ez a verzió a korábbi teljes runner logikát megtartja.
 A bibliás formátum finomhangolása külön lépésekben történik.
@@ -18,127 +18,83 @@ import datetime as dt
 import json
 
 def load_macro_from_json(path: str) -> str:
-    """Load macro output from GAS JSON (reports/macro_news_1.json).
+    """Load macro output written by the GAS macro feed.
 
-    Supports two schemas:
-      - narrative mode: { mode: "narrative", narrative: [ "...", ... ] }
-      - legacy items mode: { items: [ {title, source, ...}, ... ] }
+    We accept multiple shapes because the webapp can evolve:
+    - dict with 'narrative' (list of strings)
+    - dict with 'items' (list of dicts)
+    - dict with 'events' (list of dicts)
+    - list of dicts (treated as items/events)
+    - plain string (already a narrative text)
 
-    Returns a single text blob with one line per narrative sentence / item.
+    Returns a single text blob (max ~3–6 lines is enforced upstream).
     """
     try:
         import os
-        if not path or not os.path.exists(path):
+
+        if not path or (not os.path.exists(path)):
             return ""
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
 
-        # 1) Narrative mode (Word/Biblia): prefer narrative lines (HU, 3–6 max, incl. mandatory closing line)
-        mode = (data.get("mode") or "").strip().lower()
-        narrative = data.get("narrative")
-        if mode == "narrative" and isinstance(narrative, list):
-            out_lines = []
-            for s in narrative[:6]:
-                if isinstance(s, str):
-                    s = s.strip()
-                    if s:
-                        out_lines.append(s)
-            return "\\n".join(out_lines)
+        raw = open(path, "r", encoding="utf-8", errors="replace").read().strip()
+        if not raw:
+            return ""
 
-        # 2) Legacy items list
-        items = data.get("items") or []
-        lines_out = []
-        for it in items[:6]:
-            title = (it.get("title") or "").strip()
-            if not title:
+        # Try JSON first; if it fails, treat as plain text.
+        try:
+            data = json.loads(raw)
+        except Exception:
+            return raw
+
+        # Normalize to a list of line strings.
+        lines: list[str] = []
+
+        if isinstance(data, str):
+            return data.strip()
+
+        # If the top-level is a list -> treat as items
+        if isinstance(data, list):
+            items = data
+        elif isinstance(data, dict):
+            # Preferred: narrative array
+            if isinstance(data.get("narrative"), list):
+                lines = [str(x).strip() for x in data.get("narrative") if str(x).strip()]
+                return "
+".join(lines).strip()
+            # Common: items/events arrays
+            items = data.get("items")
+            if not isinstance(items, list):
+                items = data.get("events")
+            if not isinstance(items, list):
+                # Some implementations may store 'text'
+                txt = data.get("text") or data.get("message") or ""
+                return str(txt).strip()
+        else:
+            return ""
+
+        # items/events list of dicts (or strings)
+        for it in items:
+            if isinstance(it, str):
+                s = it.strip()
+                if s:
+                    lines.append(s)
                 continue
+            if not isinstance(it, dict):
+                continue
+            title = (it.get("headline") or it.get("title") or it.get("text") or "").strip()
             src = (it.get("source") or "").strip()
-            lines_out.append(f"- {title}" + (f" ({src})" if src else ""))
-        return "\\n".join(lines_out)
+            if title and src:
+                lines.append(f"{title} ({src})")
+            elif title:
+                lines.append(title)
+
+        return "
+".join([x for x in lines if x]).strip()
 
     except Exception as e:
-        try:
-            debug(f"[MACRO_JSON] error: {e}")
-        except Exception:
-            pass
+        print(f"[MACRO_JSON] error: {e}")
         return ""
 
 
-import re
-import math
-import os
-import sys
-
-
-# Built at load_positions(): ticker -> \" (2 lot: IBKR+RAIFFEISEN)\" 
-POSITION_LOT_NOTES = {}  # ticker -> " (N lot: BROKER+...)"
-from typing import Dict, List, Optional, Tuple
-
-__version__ = "v3.0.29"
-try:
-    from zoneinfo import ZoneInfo
-except ImportError:
-    # Python <3.9 fallback – treat all timestamps as UTC-equivalent
-    class ZoneInfo:  # type: ignore
-        def __init__(self, name: str) -> None:
-            self.name = name
-
-
-import requests
-import subprocess
-
-
-# Biblia checklist helper (placeholder).
-# These functions will later hold the canonical #1/#2/#3 reporting rules.
-try:
-    from biblia_helper import (
-        get_report1_checklist,
-        get_report2_checklist,
-        get_report3_checklist,
-        fetch_yahoo_macro_news,
-        format_macro_block,
-        fetch_analyst_events,
-        format_analyst_block,
-        fetch_catalyst_events,
-        format_catalyst_block,
-        fetch_highconviction_events,
-        format_highconviction_block,
-    )  # noqa: F401
-except ImportError:
-    # Optional helper; a script működik helper nélkül is, de a makró/elemző/katalizátor/high-conviction blokkok ilyenkor üresek maradnak.
-    def fetch_yahoo_macro_news(*args, **kwargs):
-        return []
-
-    def format_macro_block(macro_text, yahoo_news):
-        return ""
-
-    def fetch_analyst_events(path=None):
-        return []
-
-    def format_analyst_block(events):
-        return []
-
-    def fetch_catalyst_events(path=None):
-        return []
-
-    def format_catalyst_block(events):
-        return []
-
-    def fetch_highconviction_events(path=None):
-        return []
-
-    def format_highconviction_block(events):
-        return []
-
-# Makró feed helper (Apps Script webapp – opcionális).
-try:
-    from scripts.macro_fetcher import fetch_macro_text
-except ImportError:  # pragma: no cover - optional helper
-    def fetch_macro_text(*args, **kwargs):  # type: ignore
-        return ""
-
-
-SESSION = None  # lazy init (v3.0.27)
 def _get_requests_session():
     """Lazy requests.Session + alap header (Yahoo 429 ellen)"""
     global SESSION
@@ -270,7 +226,7 @@ def run_analyst_catalyst_builder(report: int, reports_dir: str = 'reports') -> N
     except Exception as e:
         print(f"[WARN] analyst_catalyst_builder crashed: {e}")
 
-DEFAULT_SCRIPT_VERSION = "v3.0.32"
+DEFAULT_SCRIPT_VERSION = "v3.0.34"
 AH_PM_MODE = "chart"  # alapértelmezett: Yahoo quote/spark alapú AH/PM
 
 
@@ -283,10 +239,26 @@ ANALYST_EVENTS_PATH_OVERRIDE = None
 CATALYST_EVENTS_PATH_OVERRIDE = None
 
 def get_analyst_events_path(report: str) -> str:
-    return ANALYST_EVENTS_PATH_OVERRIDE or get_analyst_events_path(report)
+    """Path to analyst-events JSON used by the report.
+
+    Convention: write/read under reports/ (NOT reports/<report>/).
+    Allow override via --analyst-events-path.
+    """
+    if ANALYST_EVENTS_PATH_OVERRIDE:
+        return ANALYST_EVENTS_PATH_OVERRIDE
+    return f"reports/analyst_{report}.json"
+
 
 def get_catalyst_events_path(report: str) -> str:
-    return CATALYST_EVENTS_PATH_OVERRIDE or get_catalyst_events_path(report)
+    """Path to catalyst-events JSON used by the report.
+
+    Convention: write/read under reports/ (NOT reports/<report>/).
+    Allow override via --catalyst-events-path.
+    """
+    if CATALYST_EVENTS_PATH_OVERRIDE:
+        return CATALYST_EVENTS_PATH_OVERRIDE
+    return f"reports/catalysts_{report}.json"
+
 
 HIGHCONV_EVENTS_PATH = "reports/high_conv_1.json"
 
