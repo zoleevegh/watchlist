@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""report_runner.py – v3.0.34-biblia-ahpm-sessionfix-5d
+"""report_runner.py – v3.0.35-biblia-ahpm-sessionfix-5d
 
 Megjegyzés: Ez a verzió a korábbi teljes runner logikát megtartja.
 A bibliás formátum finomhangolása külön lépésekben történik.
@@ -58,8 +58,7 @@ def load_macro_from_json(path: str) -> str:
             # Preferred: narrative array
             if isinstance(data.get("narrative"), list):
                 lines = [str(x).strip() for x in data.get("narrative") if str(x).strip()]
-                return "
-".join(lines).strip()
+                return "\n".join(lines).strip()
             # Common: items/events arrays
             items = data.get("items")
             if not isinstance(items, list):
@@ -87,8 +86,7 @@ def load_macro_from_json(path: str) -> str:
             elif title:
                 lines.append(title)
 
-        return "
-".join([x for x in lines if x]).strip()
+        return "\n".join([x for x in lines if x]).strip()
 
     except Exception as e:
         print(f"[MACRO_JSON] error: {e}")
@@ -226,7 +224,7 @@ def run_analyst_catalyst_builder(report: int, reports_dir: str = 'reports') -> N
     except Exception as e:
         print(f"[WARN] analyst_catalyst_builder crashed: {e}")
 
-DEFAULT_SCRIPT_VERSION = "v3.0.34"
+DEFAULT_SCRIPT_VERSION = "v3.0.35"
 AH_PM_MODE = "chart"  # alapértelmezett: Yahoo quote/spark alapú AH/PM
 
 
