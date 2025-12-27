@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""report_runner.py – v3.0.40-biblia-ahpm-sessionfix-5e
+"""report_runner.py – v3.0.41-biblia-ahpm-sessionfix-5e
 
 Megjegyzés: Ez a verzió a korábbi teljes runner logikát megtartja.
 A bibliás formátum finomhangolása külön lépésekben történik.
@@ -271,7 +271,7 @@ def run_analyst_catalyst_builder(report: int, reports_dir: str = 'reports') -> N
     except Exception as e:
         print(f"[WARN] analyst_catalyst_builder crashed: {e}")
 
-DEFAULT_SCRIPT_VERSION = "v3.0.35"
+DEFAULT_SCRIPT_VERSION = "v3.0.41"
 AH_PM_MODE = "chart"  # alapértelmezett: Yahoo quote/spark alapú AH/PM
 
 
@@ -306,6 +306,43 @@ def get_catalyst_events_path(report: str) -> str:
 
 
 HIGHCONV_EVENTS_PATH = "reports/high_conv_1.json"
+
+def fetch_analyst_events(path: str) -> List[dict]:
+    """Load analyst events JSON. Returns [] if missing/invalid."""
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        # Expected: list of dicts OR dict with 'items'/'events'
+        if isinstance(data, list):
+            return [x for x in data if isinstance(x, dict)]
+        if isinstance(data, dict):
+            items = data.get('items') if isinstance(data.get('items'), list) else data.get('events')
+            if isinstance(items, list):
+                return [x for x in items if isinstance(x, dict)]
+        return []
+    except FileNotFoundError:
+        return []
+    except Exception:
+        return []
+
+
+def fetch_catalyst_events(path: str) -> List[dict]:
+    """Load catalyst events JSON. Returns [] if missing/invalid."""
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            return [x for x in data if isinstance(x, dict)]
+        if isinstance(data, dict):
+            items = data.get('items') if isinstance(data.get('items'), list) else data.get('events')
+            if isinstance(items, list):
+                return [x for x in items if isinstance(x, dict)]
+        return []
+    except FileNotFoundError:
+        return []
+    except Exception:
+        return []
+
 
 
 def debug(msg: str) -> None:
