@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""report_runner.py – v3.0.38-biblia-ahpm-sessionfix-5e
+"""report_runner.py – v3.0.39-biblia-ahpm-sessionfix-5e
 
 Megjegyzés: Ez a verzió a korábbi teljes runner logikát megtartja.
 A bibliás formátum finomhangolása külön lépésekben történik.
@@ -18,6 +18,8 @@ import csv
 import datetime as dt
 import json
 import os
+import subprocess
+import requests
 from typing import Dict, List, Optional, Tuple
 
 def load_macro_from_json(path: str) -> str:
@@ -95,6 +97,47 @@ def load_macro_from_json(path: str) -> str:
         print(f"[MACRO_JSON] error: {e}")
         return ""
 
+
+
+def fetch_macro_text(report: int, out_path: str, base_url_env: str) -> str:
+    """
+    Macro feed fetcher (Apps Script webapp).
+    - URL comes from env var (base_url_env)
+    - Writes raw response to out_path (UTF-8)
+    - Returns text ("" on failure)
+    NOTE: Only a small helper to support existing runner flow.
+    """
+    url = (os.environ.get(base_url_env) or "").strip()
+    if not url:
+        return ""
+    # Optional param helps if the webapp supports routing by report number
+    try:
+        sep = "&" if "?" in url else "?"
+        full_url = f"{url}{sep}report={report}" if "report=" not in url else url
+        resp = requests.get(full_url, timeout=15)
+        resp.raise_for_status()
+        # If JSON, try common keys, else raw text
+        ctype = (resp.headers.get("Content-Type") or "").lower()
+        if "application/json" in ctype:
+            try:
+                data = resp.json()
+                text = (
+                    (data.get("text") if isinstance(data, dict) else None)
+                    or (data.get("macro") if isinstance(data, dict) else None)
+                    or (data.get("content") if isinstance(data, dict) else None)
+                    or ""
+                )
+            except Exception:
+                text = resp.text or ""
+        else:
+            text = resp.text or ""
+        if out_path:
+            os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+            with open(out_path, "w", encoding="utf-8") as f:
+                f.write(text)
+        return text
+    except Exception:
+        return ""
 
 def _get_requests_session():
     """Lazy requests.Session + alap header (Yahoo 429 ellen)"""
