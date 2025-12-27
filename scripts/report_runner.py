@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""report_runner.py – v3.0.35-biblia-ahpm-sessionfix-5d
+"""report_runner.py – v3.0.36-biblia-ahpm-sessionfix-5e
 
 Megjegyzés: Ez a verzió a korábbi teljes runner logikát megtartja.
 A bibliás formátum finomhangolása külön lépésekben történik.
@@ -16,6 +16,7 @@ import argparse
 import csv
 import datetime as dt
 import json
+from typing import Dict, List, Optional, Tuple
 
 def load_macro_from_json(path: str) -> str:
     """Load macro output written by the GAS macro feed.
