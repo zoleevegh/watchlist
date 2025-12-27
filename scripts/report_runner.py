@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""report_runner.py – v3.0.37-biblia-ahpm-sessionfix-5e
+"""report_runner.py – v3.0.38-biblia-ahpm-sessionfix-5e
 
 Megjegyzés: Ez a verzió a korábbi teljes runner logikát megtartja.
 A bibliás formátum finomhangolása külön lépésekben történik.
@@ -13,6 +13,7 @@ A bibliás formátum finomhangolása külön lépésekben történik.
 
 
 import argparse
+import sys
 import csv
 import datetime as dt
 import json
