@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""report_runner.py – v3.0.41-biblia-ahpm-sessionfix-5e
+"""report_runner.py – v3.0.42-biblia-ahpm-sessionfix-5e
 
 Megjegyzés: Ez a verzió a korábbi teljes runner logikát megtartja.
 A bibliás formátum finomhangolása külön lépésekben történik.
@@ -271,7 +271,7 @@ def run_analyst_catalyst_builder(report: int, reports_dir: str = 'reports') -> N
     except Exception as e:
         print(f"[WARN] analyst_catalyst_builder crashed: {e}")
 
-DEFAULT_SCRIPT_VERSION = "v3.0.41"
+DEFAULT_SCRIPT_VERSION = "v3.0.42"
 AH_PM_MODE = "chart"  # alapértelmezett: Yahoo quote/spark alapú AH/PM
 
 
@@ -306,43 +306,6 @@ def get_catalyst_events_path(report: str) -> str:
 
 
 HIGHCONV_EVENTS_PATH = "reports/high_conv_1.json"
-
-def fetch_analyst_events(path: str) -> List[dict]:
-    """Load analyst events JSON. Returns [] if missing/invalid."""
-    try:
-        with open(path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        # Expected: list of dicts OR dict with 'items'/'events'
-        if isinstance(data, list):
-            return [x for x in data if isinstance(x, dict)]
-        if isinstance(data, dict):
-            items = data.get('items') if isinstance(data.get('items'), list) else data.get('events')
-            if isinstance(items, list):
-                return [x for x in items if isinstance(x, dict)]
-        return []
-    except FileNotFoundError:
-        return []
-    except Exception:
-        return []
-
-
-def fetch_catalyst_events(path: str) -> List[dict]:
-    """Load catalyst events JSON. Returns [] if missing/invalid."""
-    try:
-        with open(path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        if isinstance(data, list):
-            return [x for x in data if isinstance(x, dict)]
-        if isinstance(data, dict):
-            items = data.get('items') if isinstance(data.get('items'), list) else data.get('events')
-            if isinstance(items, list):
-                return [x for x in items if isinstance(x, dict)]
-        return []
-    except FileNotFoundError:
-        return []
-    except Exception:
-        return []
-
 
 
 def debug(msg: str) -> None:
@@ -829,15 +792,11 @@ def generate_model_report(
     else:
         macro_block = build_macro_block_report1("", now_bud=dt.datetime.now(ZoneInfo("Europe/Budapest")))
 
-        # Elemzői lépések / közeli katalizátorok / high-conviction események (5/6/7. blokk)
-    analyst_events = fetch_analyst_events(get_analyst_events_path(report))
-    analyst_block = format_analyst_block(analyst_events)
-
-    catalyst_events = fetch_catalyst_events(get_catalyst_events_path(report))
-    catalyst_block = format_catalyst_block(catalyst_events)
-
-    highconv_events = fetch_highconviction_events(HIGHCONV_EVENTS_PATH)
-    highconv_block = format_highconviction_block(highconv_events)
+    # 5/6/7 blokkokat a postprocess_report.py állítja elő a reports/*.json fájlokból.
+    # Itt (runnerben) nem formázunk blokkot, hogy a felelősségi határ tiszta legyen.
+    analyst_block = ""
+    catalyst_block = ""
+    highconv_block = ""
 
     lines: List[str] = []
     lines.extend(header_lines)
@@ -969,10 +928,11 @@ def generate_report2_macro_only(
     analyst_block = format_analyst_block(analyst_events)
 
     catalyst_events = fetch_catalyst_events(get_catalyst_events_path(report))
-    catalyst_block = format_catalyst_block(catalyst_events)
-
-    highconv_events = fetch_highconviction_events(HIGHCONV_EVENTS_PATH)
-    highconv_block = format_highconviction_block(highconv_events)
+    # 5/6/7 blokkokat a postprocess_report.py állítja elő a reports/*.json fájlokból.
+    # Itt (runnerben) nem formázunk blokkot, hogy a felelősségi határ tiszta legyen.
+    analyst_block = ""
+    catalyst_block = ""
+    highconv_block = ""
 
     lines: List[str] = []
     lines.extend(header_lines)
@@ -1055,11 +1015,11 @@ def generate_report3_macro_only(
     analyst_events = fetch_analyst_events(get_analyst_events_path(report))
     analyst_block = format_analyst_block(analyst_events)
 
-    catalyst_events = fetch_catalyst_events(get_catalyst_events_path(report))
-    catalyst_block = format_catalyst_block(catalyst_events)
-
-    highconv_events = fetch_highconviction_events(HIGHCONV_EVENTS_PATH)
-    highconv_block = format_highconviction_block(highconv_events)
+    # 5/6/7 blokkokat a postprocess_report.py állítja elő a reports/*.json fájlokból.
+    # Itt (runnerben) nem formázunk blokkot, hogy a felelősségi határ tiszta legyen.
+    analyst_block = ""
+    catalyst_block = ""
+    highconv_block = ""
 
     lines: List[str] = []
     lines.extend(header_lines)
