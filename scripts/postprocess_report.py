@@ -387,11 +387,7 @@ def main() -> None:
             final_lines.append("")
         final_lines.extend(job_lines)
 
-    _write_md(md_path, "
-".join(final_lines).rstrip() + "
-")
-
-
+    _write_md(md_path, "\n".join(final_lines).rstrip() + "\n")
 
 if __name__ == "__main__":
     main()
