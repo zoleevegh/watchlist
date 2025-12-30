@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""report_runner.py – v3.0.46-yahoo-query2-coveragefix
+"""report_runner.py – v3.0.47-biblia-ahpm-sessionfix-5d
 
 Megjegyzés: Ez a verzió a korábbi teljes runner logikát megtartja.
 A bibliás formátum finomhangolása külön lépésekben történik.
@@ -16,7 +16,83 @@ import argparse
 import csv
 import datetime as dt
 import json
-from typing import Dict, List, Optional, Tuple
+
+
+def _load_json_events(report: str, base_name: str, reports_dir: str = "reports") -> list:
+    """
+    Load JSON list from either:
+      - reports/{report}/{base_name}_{report}.json
+      - reports/{base_name}_{report}.json
+    Returns [] if not found / invalid.
+    """
+    import os, json
+    candidates = [
+        os.path.join(reports_dir, str(report), f"{base_name}_{report}.json"),
+        os.path.join(reports_dir, f"{base_name}_{report}.json"),
+    ]
+    for p in candidates:
+        try:
+            if os.path.exists(p):
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                return data if isinstance(data, list) else []
+        except Exception:
+            continue
+    return []
+
+def fetch_macro_text(report: str, reports_dir: str = "reports") -> str:
+    """
+    Reads the macro feed JSON produced by the GAS webapp download step.
+    Expected file: reports/macro_news_{report}.json
+    JSON format: {"items":[{"text":"..."}]} OR {"text":"..."}.
+    Returns "" when no usable macro text.
+    """
+    import os, json
+    p = os.path.join(reports_dir, f"macro_news_{report}.json")
+    try:
+        if not os.path.exists(p):
+            return ""
+        with open(p, "r", encoding="utf-8") as f:
+            obj = json.load(f)
+        if isinstance(obj, dict):
+            if isinstance(obj.get("text"), str):
+                return obj["text"]
+            items = obj.get("items")
+            if isinstance(items, list) and items:
+                t = items[0].get("text")
+                return t if isinstance(t, str) else ""
+    except Exception:
+        return ""
+    return ""
+
+def format_analyst_block(report: str, reports_dir: str = "reports") -> str:
+    events = _load_json_events(report, "analyst", reports_dir=reports_dir)
+    if not events:
+        return ""
+    lines = ["### 📌 Bejelentések & fel/leminősítések (analyst)"]
+    for e in events[:12]:
+        # best-effort fields
+        ticker = e.get("ticker") or e.get("symbol") or ""
+        title = e.get("title") or e.get("headline") or ""
+        when = e.get("date") or e.get("ts") or ""
+        if ticker or title:
+            lines.append(f"- **{ticker}** – {title}".strip())
+        elif when:
+            lines.append(f"- {when}")
+    return "\n".join(lines).strip()
+
+def format_catalyst_block(report: str, reports_dir: str = "reports") -> str:
+    events = _load_json_events(report, "catalysts", reports_dir=reports_dir)
+    if not events:
+        return ""
+    lines = ["### 🔥 Katalizátorok (catalyst)"]
+    for e in events[:12]:
+        ticker = e.get("ticker") or e.get("symbol") or ""
+        title = e.get("title") or e.get("headline") or ""
+        if ticker or title:
+            lines.append(f"- **{ticker}** – {title}".strip())
+    return "\n".join(lines).strip()
+
 
 def load_macro_from_json(path: str) -> str:
     """Load macro output written by the GAS macro feed.
@@ -225,7 +301,7 @@ def run_analyst_catalyst_builder(report: int, reports_dir: str = 'reports') -> N
     except Exception as e:
         print(f"[WARN] analyst_catalyst_builder crashed: {e}")
 
-DEFAULT_SCRIPT_VERSION = "v3.0.46-yahoo-query2-coveragefix"
+DEFAULT_SCRIPT_VERSION = "v3.0.35"
 AH_PM_MODE = "chart"  # alapértelmezett: Yahoo quote/spark alapú AH/PM
 
 
@@ -407,7 +483,7 @@ def fetch_yahoo_quote_batch(symbols: List[str]) -> Dict[str, Tuple[Optional[floa
         return {}
 
     # Yahoo quote endpoint – ez hajtja a webes portfólió UI-t is.
-    url = "https://query2.finance.yahoo.com/v7/finance/quote"
+    url = "https://query1.finance.yahoo.com/v7/finance/quote"
     joined = ",".join(sorted(set(symbols)))
     params = {"symbols": joined}
 
@@ -448,14 +524,14 @@ def fetch_yahoo_quote_batch(symbols: List[str]) -> Dict[str, Tuple[Optional[floa
 
     return out
 
-
-
 def fetch_yahoo_quote_single(symbol: str) -> Tuple[Optional[float], Optional[float], Optional[float]]:
     """Single-symbol Yahoo quote fallback (prev_close, ah_pct, pm_pct). Best-effort."""
-    url = "https://query2.finance.yahoo.com/v7/finance/quote"
+    url = "https://query1.finance.yahoo.com/v7/finance/quote"
     params = {"symbols": symbol}
     try:
-        data = _get_json_with_retries(url, params=params, timeout=12, max_tries=4)
+        resp = _get_requests_session().get(url, params=params, timeout=12)
+        resp.raise_for_status()
+        data = resp.json()
         items = (data.get("quoteResponse", {}) or {}).get("result", []) or []
         if not items:
             return (None, None, None)
@@ -472,7 +548,6 @@ def fetch_yahoo_quote_single(symbol: str) -> Tuple[Optional[float], Optional[flo
     except Exception:
         return (None, None, None)
 
-
 def _chart_get(host: str, symbol: str, params: dict):
     url = f"https://{host}/v8/finance/chart/{symbol}"
     return _get_requests_session().get(url, params=params, timeout=15)
@@ -485,7 +560,7 @@ def fetch_chart(symbol: str) -> Tuple[dict, List[int], List[Optional[float]]]:
     params = {"range": rng, "interval": "5m", "includePrePost": "true"}
 
     last_err = None
-    for host in ("query2.finance.yahoo.com", "query2.finance.yahoo.com"):
+    for host in ("query1.finance.yahoo.com", "query2.finance.yahoo.com"):
         for _ in range(3):
             try:
                 resp = _chart_get(host, symbol, params)
