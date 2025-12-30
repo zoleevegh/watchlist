@@ -51,7 +51,12 @@ import random
 
 import requests
 
-VERSION = "v1.0.3-rate-limit-safe-yahoochart-fallback"
+# ima (debug után):
+# bocsáss meg uram mert balfék voltam…
+# add uram, hogy ne legyen hibás ez a módosítás.
+
+
+VERSION = "v1.0.4-rate-limit-safe-yahoochart-fallback-indentfix"
 
 # Yahoo rate-limit / retry config
 YAHOO_BATCH_SIZE = 50
@@ -357,20 +362,17 @@ def fetch_yahoo_chart_snapshot(ticker: str) -> Dict[str, Any]:
         return {}
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{t}?range=1y&interval=1d&includePrePost=false"
     try:
-        resp = requests.get(url, headers=YAHOO_HEADERS, timeout=YAHOO_TIMEOUT)
-        
-                # Ha a quote endpoint blokkol (401/403) vagy rate-limit (429), próbáljuk chart fallback-kal tickerenként.
-                if resp.status_code in (401, 403, 429):
-                    for t in batch:
-                        if t not in result:
-                            q = fetch_yahoo_chart_snapshot(t)
-                            if q:
-                                result[t] = q
-                    last_err = f"HTTP {resp.status_code}"
-                    break
-# Ha ez is blokkolt, hagyjuk üresen
+        # SESSION már tartalmaz UA/Accept headereket; itt csak a timeoutot és no-cache-t adunk meg.
+        resp = SESSION.get(
+            url,
+            timeout=20,
+            headers={"Cache-Control": "no-cache", "Pragma": "no-cache"},
+        )
+
+        # Ha ez is blokkolt, hagyjuk üresen
         if resp.status_code >= 400:
             return {}
+
         data = resp.json()
         res = (((data.get("chart") or {}).get("result") or [])[:1] or [None])[0] or {}
         meta = res.get("meta") or {}
@@ -381,12 +383,14 @@ def fetch_yahoo_chart_snapshot(ticker: str) -> Dict[str, Any]:
             max_close = max([c for c in close_list if isinstance(c, (int, float))])
         except Exception:
             max_close = None
+
         # Biztonság: ha nincs meta-price, vegyük az utolsó valid close-t
         if price is None:
             try:
                 price = [c for c in close_list if isinstance(c, (int, float))][-1]
             except Exception:
                 price = None
+
         out = {"symbol": t}
         if price is not None:
             out["regularMarketPrice"] = price
