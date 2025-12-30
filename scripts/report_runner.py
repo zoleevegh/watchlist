@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""report_runner.py – v3.0.42-biblia-ahpm-sessionfix-5e
+"""report_runner.py – v3.0.35-biblia-ahpm-sessionfix-5d
 
 Megjegyzés: Ez a verzió a korábbi teljes runner logikát megtartja.
 A bibliás formátum finomhangolása külön lépésekben történik.
@@ -13,50 +13,10 @@ A bibliás formátum finomhangolása külön lépésekben történik.
 
 
 import argparse
-import sys
 import csv
 import datetime as dt
-from zoneinfo import ZoneInfo
 import json
-import os
-import subprocess
-import requests
-from typing import Dict, List, Optional, Tuple
 
-
-
-def _maybe_proxy_url(url: str) -> str:
-    # Jina AI proxy often bypasses Yahoo edge blocks (401/403/429) on CI runners.
-    # It returns the upstream response body as plain text.
-    if url.startswith("https://"):
-        return "https://r.jina.ai/" + url
-    if url.startswith("http://"):
-        return "https://r.jina.ai/" + url
-    return "https://r.jina.ai/https://" + url.lstrip("/")
-
-def _get_json_with_optional_proxy(session, url: str, headers: dict, timeout: int = 20, max_bytes: int = 5_000_000):
-    """Fetch JSON; if Yahoo blocks (401/403/429), retry via proxy."""
-    try_urls = [url]
-    proxy = _maybe_proxy_url(url)
-    if proxy != url:
-        try_urls.append(proxy)
-
-    last_err = None
-    for i, u in enumerate(try_urls):
-        try:
-            resp = session.get(u, headers=headers, timeout=timeout)
-            if resp.status_code in (401, 403, 429) and i == 0:
-                # try proxy
-                continue
-            resp.raise_for_status()
-            # safety: avoid huge bodies (proxy can be chatty)
-            if resp.content and len(resp.content) > max_bytes:
-                raise ValueError(f"Response too large: {len(resp.content)} bytes")
-            return resp.json()
-        except Exception as e:
-            last_err = e
-            continue
-    raise last_err if last_err else RuntimeError("Unknown fetch error")
 def load_macro_from_json(path: str) -> str:
     """Load macro output written by the GAS macro feed.
 
@@ -132,47 +92,6 @@ def load_macro_from_json(path: str) -> str:
         print(f"[MACRO_JSON] error: {e}")
         return ""
 
-
-
-def fetch_macro_text(report: int, out_path: str, base_url_env: str) -> str:
-    """
-    Macro feed fetcher (Apps Script webapp).
-    - URL comes from env var (base_url_env)
-    - Writes raw response to out_path (UTF-8)
-    - Returns text ("" on failure)
-    NOTE: Only a small helper to support existing runner flow.
-    """
-    url = (os.environ.get(base_url_env) or "").strip()
-    if not url:
-        return ""
-    # Optional param helps if the webapp supports routing by report number
-    try:
-        sep = "&" if "?" in url else "?"
-        full_url = f"{url}{sep}report={report}" if "report=" not in url else url
-        resp = requests.get(full_url, timeout=15)
-        resp.raise_for_status()
-        # If JSON, try common keys, else raw text
-        ctype = (resp.headers.get("Content-Type") or "").lower()
-        if "application/json" in ctype:
-            try:
-                data = resp.json()
-                text = (
-                    (data.get("text") if isinstance(data, dict) else None)
-                    or (data.get("macro") if isinstance(data, dict) else None)
-                    or (data.get("content") if isinstance(data, dict) else None)
-                    or ""
-                )
-            except Exception:
-                text = resp.text or ""
-        else:
-            text = resp.text or ""
-        if out_path:
-            os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
-            with open(out_path, "w", encoding="utf-8") as f:
-                f.write(text)
-        return text
-    except Exception:
-        return ""
 
 def _get_requests_session():
     """Lazy requests.Session + alap header (Yahoo 429 ellen)"""
@@ -305,7 +224,7 @@ def run_analyst_catalyst_builder(report: int, reports_dir: str = 'reports') -> N
     except Exception as e:
         print(f"[WARN] analyst_catalyst_builder crashed: {e}")
 
-DEFAULT_SCRIPT_VERSION = "v3.0.44"
+DEFAULT_SCRIPT_VERSION = "v3.0.45"
 AH_PM_MODE = "chart"  # alapértelmezett: Yahoo quote/spark alapú AH/PM
 
 
@@ -474,23 +393,7 @@ def load_watchlist(path: Optional[str]) -> Dict[str, Dict]:
     return watch
 
 
-
 def fetch_yahoo_quote_batch(symbols: List[str]) -> Dict[str, Tuple[Optional[float], Optional[float], Optional[float]]]:
-    """Yahoo quote batch (spark) – darabolással, hogy ne üssük meg az URL-limitet."""
-    symbols = [s.strip().upper() for s in symbols if s and s.strip()]
-    if not symbols:
-        return {}
-    chunk_size = int(os.environ.get("YF_QUOTE_CHUNK", "50"))
-    merged: Dict[str, Tuple[Optional[float], Optional[float], Optional[float]]] = {}
-    for i in range(0, len(symbols), chunk_size):
-        chunk = symbols[i:i + chunk_size]
-        try:
-            merged.update(_fetch_yahoo_quote_batch_once(chunk))
-        except Exception as e:
-            debug(f"[YF-QUOTE] chunk failed ({i}-{i+len(chunk)-1}): {e}")
-    return merged
-
-def _fetch_yahoo_quote_batch_once(symbols: List[str]) -> Dict[str, Tuple[Optional[float], Optional[float], Optional[float]]]:
     """Batch-ben lehúzza a Yahoo quote (spark) feedet AH/PM-hez.
 
     Visszatér: {ticker: (regular_prev_close, ah_pct, pm_pct)}
@@ -508,18 +411,7 @@ def _fetch_yahoo_quote_batch_once(symbols: List[str]) -> Dict[str, Tuple[Optiona
     params = {"symbols": joined}
 
     try:
-        resp = sess = _get_requests_session()
-        resp = sess.get(url, params=params, timeout=10)
-        if resp.status_code in (401, 403, 429):
-            # Retry via proxy (often bypasses CI runner blocking)
-            try:
-                full_url = requests.Request("GET", url, params=params).prepare().url
-                proxy_url = _maybe_proxy_url(full_url)
-                resp = sess.get(proxy_url, timeout=10)
-            except Exception:
-                pass
-        if resp.status_code in (401, 403, 429):
-            raise RuntimeError(f"Yahoo quote blocked: {resp.status_code}")
+        resp = _get_requests_session().get(url, params=params, timeout=10)
         resp.raise_for_status()
     except Exception as e:
         debug(f"[YF-QUOTE] batch fetch error: {e}")
@@ -596,12 +488,6 @@ def fetch_chart(symbol: str) -> Tuple[dict, List[int], List[Optional[float]]]:
         for _ in range(3):
             try:
                 resp = _chart_get(host, symbol, params)
-                if resp.status_code in (401, 403, 429):
-                    try:
-                        proxy_url = _maybe_proxy_url(resp.url)
-                        resp = _get_requests_session().get(proxy_url, timeout=10)
-                    except Exception:
-                        pass
                 resp.raise_for_status()
                 data = resp.json()
                 chart = data.get("chart", {})
@@ -783,11 +669,13 @@ def generate_model_report(
                 pm_pct = pm_q
             if rth_close is None and ah_pct is None and pm_pct is None:
                 missing[sym] = str(e)
+                INTERNAL_LOG.append({'stage': 'price_fetch', 'ticker': sym, 'error': str(e)})
                 continue
 
         # Ha sem bázisár, sem AH/PM % nem állt elő, ez lefedettségi hiba (ne fusson át csendben).
         if rth_close is None and ah_pct is None and pm_pct is None:
             missing[sym] = "nincs RTH/AH/PM adat (Yahoo quote+chart nem adott értelmezhető értéket)"
+            INTERNAL_LOG.append({'stage': 'price_fetch', 'ticker': sym, 'error': missing.get(sym)})
             continue
 
         is_position = sym in positions and positions[sym].get("quantity", 0) > 0
@@ -859,11 +747,15 @@ def generate_model_report(
     else:
         macro_block = build_macro_block_report1("", now_bud=dt.datetime.now(ZoneInfo("Europe/Budapest")))
 
-    # 5/6/7 blokkokat a postprocess_report.py állítja elő a reports/*.json fájlokból.
-    # Itt (runnerben) nem formázunk blokkot, hogy a felelősségi határ tiszta legyen.
-    analyst_block = ""
-    catalyst_block = ""
-    highconv_block = ""
+        # Elemzői lépések / közeli katalizátorok / high-conviction események (5/6/7. blokk)
+    analyst_events = fetch_analyst_events(get_analyst_events_path(report))
+    analyst_block = format_analyst_block(analyst_events)
+
+    catalyst_events = fetch_catalyst_events(get_catalyst_events_path(report))
+    catalyst_block = format_catalyst_block(catalyst_events)
+
+    highconv_events = fetch_highconviction_events(HIGHCONV_EVENTS_PATH)
+    highconv_block = format_highconviction_block(highconv_events)
 
     lines: List[str] = []
     lines.extend(header_lines)
@@ -962,6 +854,14 @@ def generate_model_report(
     with open(output_json, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2, ensure_ascii=False)
 
+
+    # belső log (hibaokok) mentése – ha van
+    if INTERNAL_LOG:
+        internal_log_path = os.path.join(os.path.dirname(output_md), f"internal_log_{report}.txt")
+        with open(internal_log_path, "w", encoding="utf-8") as lf:
+            for rec in INTERNAL_LOG:
+                lf.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
     return md_text
 
 
@@ -995,11 +895,10 @@ def generate_report2_macro_only(
     analyst_block = format_analyst_block(analyst_events)
 
     catalyst_events = fetch_catalyst_events(get_catalyst_events_path(report))
-    # 5/6/7 blokkokat a postprocess_report.py állítja elő a reports/*.json fájlokból.
-    # Itt (runnerben) nem formázunk blokkot, hogy a felelősségi határ tiszta legyen.
-    analyst_block = ""
-    catalyst_block = ""
-    highconv_block = ""
+    catalyst_block = format_catalyst_block(catalyst_events)
+
+    highconv_events = fetch_highconviction_events(HIGHCONV_EVENTS_PATH)
+    highconv_block = format_highconviction_block(highconv_events)
 
     lines: List[str] = []
     lines.extend(header_lines)
@@ -1082,11 +981,11 @@ def generate_report3_macro_only(
     analyst_events = fetch_analyst_events(get_analyst_events_path(report))
     analyst_block = format_analyst_block(analyst_events)
 
-    # 5/6/7 blokkokat a postprocess_report.py állítja elő a reports/*.json fájlokból.
-    # Itt (runnerben) nem formázunk blokkot, hogy a felelősségi határ tiszta legyen.
-    analyst_block = ""
-    catalyst_block = ""
-    highconv_block = ""
+    catalyst_events = fetch_catalyst_events(get_catalyst_events_path(report))
+    catalyst_block = format_catalyst_block(catalyst_events)
+
+    highconv_events = fetch_highconviction_events(HIGHCONV_EVENTS_PATH)
+    highconv_block = format_highconviction_block(highconv_events)
 
     lines: List[str] = []
     lines.extend(header_lines)
