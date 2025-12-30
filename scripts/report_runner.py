@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""report_runner.py – v3.0.35-biblia-ahpm-sessionfix-5d
+"""report_runner.py – v3.0.46-yahoo-query2-coveragefix
 
 Megjegyzés: Ez a verzió a korábbi teljes runner logikát megtartja.
 A bibliás formátum finomhangolása külön lépésekben történik.
@@ -16,6 +16,7 @@ import argparse
 import csv
 import datetime as dt
 import json
+from typing import Dict, List, Optional, Tuple
 
 def load_macro_from_json(path: str) -> str:
     """Load macro output written by the GAS macro feed.
@@ -224,7 +225,7 @@ def run_analyst_catalyst_builder(report: int, reports_dir: str = 'reports') -> N
     except Exception as e:
         print(f"[WARN] analyst_catalyst_builder crashed: {e}")
 
-DEFAULT_SCRIPT_VERSION = "v3.0.45"
+DEFAULT_SCRIPT_VERSION = "v3.0.46-yahoo-query2-coveragefix"
 AH_PM_MODE = "chart"  # alapértelmezett: Yahoo quote/spark alapú AH/PM
 
 
@@ -406,7 +407,7 @@ def fetch_yahoo_quote_batch(symbols: List[str]) -> Dict[str, Tuple[Optional[floa
         return {}
 
     # Yahoo quote endpoint – ez hajtja a webes portfólió UI-t is.
-    url = "https://query1.finance.yahoo.com/v7/finance/quote"
+    url = "https://query2.finance.yahoo.com/v7/finance/quote"
     joined = ",".join(sorted(set(symbols)))
     params = {"symbols": joined}
 
@@ -451,7 +452,7 @@ def fetch_yahoo_quote_batch(symbols: List[str]) -> Dict[str, Tuple[Optional[floa
 
 def fetch_yahoo_quote_single(symbol: str) -> Tuple[Optional[float], Optional[float], Optional[float]]:
     """Single-symbol Yahoo quote fallback (prev_close, ah_pct, pm_pct). Best-effort."""
-    url = "https://query1.finance.yahoo.com/v7/finance/quote"
+    url = "https://query2.finance.yahoo.com/v7/finance/quote"
     params = {"symbols": symbol}
     try:
         data = _get_json_with_retries(url, params=params, timeout=12, max_tries=4)
@@ -484,7 +485,7 @@ def fetch_chart(symbol: str) -> Tuple[dict, List[int], List[Optional[float]]]:
     params = {"range": rng, "interval": "5m", "includePrePost": "true"}
 
     last_err = None
-    for host in ("query1.finance.yahoo.com", "query2.finance.yahoo.com"):
+    for host in ("query2.finance.yahoo.com", "query2.finance.yahoo.com"):
         for _ in range(3):
             try:
                 resp = _chart_get(host, symbol, params)
@@ -669,13 +670,11 @@ def generate_model_report(
                 pm_pct = pm_q
             if rth_close is None and ah_pct is None and pm_pct is None:
                 missing[sym] = str(e)
-                INTERNAL_LOG.append({'stage': 'price_fetch', 'ticker': sym, 'error': str(e)})
                 continue
 
         # Ha sem bázisár, sem AH/PM % nem állt elő, ez lefedettségi hiba (ne fusson át csendben).
         if rth_close is None and ah_pct is None and pm_pct is None:
             missing[sym] = "nincs RTH/AH/PM adat (Yahoo quote+chart nem adott értelmezhető értéket)"
-            INTERNAL_LOG.append({'stage': 'price_fetch', 'ticker': sym, 'error': missing.get(sym)})
             continue
 
         is_position = sym in positions and positions[sym].get("quantity", 0) > 0
@@ -853,14 +852,6 @@ def generate_model_report(
     os.makedirs(os.path.dirname(output_json), exist_ok=True)
     with open(output_json, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2, ensure_ascii=False)
-
-
-    # belső log (hibaokok) mentése – ha van
-    if INTERNAL_LOG:
-        internal_log_path = os.path.join(os.path.dirname(output_md), f"internal_log_{report}.txt")
-        with open(internal_log_path, "w", encoding="utf-8") as lf:
-            for rec in INTERNAL_LOG:
-                lf.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
     return md_text
 
