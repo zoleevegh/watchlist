@@ -1,5 +1,5 @@
-# Version: v3.8.14
-# Last updated: 2025-12-30T10:22:32
+# Version: v3.8.15
+# Last updated: 2025-12-30T11:42:33+01:00
 # PATCH v4.0.3: master url fix + macro debug
 name: Run Report (Windows) # v4.0.2-noblock-valid
 
@@ -35,9 +35,9 @@ jobs:
       CATALYST_FEED_URL_3: "https://script.google.com/macros/s/AKfycbzKea8pYciU4LgAwaSy0ELHsHFzWM4czionANpCdGucIghF8iORcF8eOPPzPprOV7ak5g/exec?type=catalyst&report=3&run=${{ github.run_id }}&attempt=${{ github.run_attempt }}"
 
       # Makró / FED / Politika – narratív feed (GAS)
-      MACRO_FEED_URL_1: "https://script.google.com/macros/s/AKfycbzG9wI-eiCx_rPeXoC7ZmHBvU1YmC-k03MAcMgayLuNu0NZgsEhXz7DOJ7wIs5GmiwP/exec?report=1&run=${{ github.run_id }}&attempt=${{ github.run_attempt }}"
-      MACRO_FEED_URL_2: "https://script.google.com/macros/s/AKfycbzG9wI-eiCx_rPeXoC7ZmHBvU1YmC-k03MAcMgayLuNu0NZgsEhXz7DOJ7wIs5GmiwP/exec?report=2&run=${{ github.run_id }}&attempt=${{ github.run_attempt }}"
-      MACRO_FEED_URL_3: "https://script.google.com/macros/s/AKfycbzG9wI-eiCx_rPeXoC7ZmHBvU1YmC-k03MAcMgayLuNu0NZgsEhXz7DOJ7wIs5GmiwP/exec?report=3&run=${{ github.run_id }}&attempt=${{ github.run_attempt }}"
+      MACRO_FEED_URL_1: "https://script.google.com/macros/s/AKfycbylsusoCTE1PU9SIcw1vzPll-057mwVxtKg3g2Seg9p0-RKeFI-geWBYPOElVxvmMGo/exec?report=1&run=${{ github.run_id }}&attempt=${{ github.run_attempt }}"
+      MACRO_FEED_URL_2: "https://script.google.com/macros/s/AKfycbylsusoCTE1PU9SIcw1vzPll-057mwVxtKg3g2Seg9p0-RKeFI-geWBYPOElVxvmMGo/exec?report=2&run=${{ github.run_id }}&attempt=${{ github.run_attempt }}"
+      MACRO_FEED_URL_3: "https://script.google.com/macros/s/AKfycbylsusoCTE1PU9SIcw1vzPll-057mwVxtKg3g2Seg9p0-RKeFI-geWBYPOElVxvmMGo/exec?report=3&run=${{ github.run_id }}&attempt=${{ github.run_attempt }}"
 
     steps:
       - name: Checkout
