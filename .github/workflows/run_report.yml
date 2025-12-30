@@ -1,5 +1,5 @@
-# Version: v3.8.13
-# Last updated: 2025-12-26T20:08:57
+# Version: v3.8.14
+# Last updated: 2025-12-30T10:22:32
 # PATCH v4.0.3: master url fix + macro debug
 name: Run Report (Windows) # v4.0.2-noblock-valid
 
@@ -267,6 +267,7 @@ jobs:
           if (Test-Path "scripts\analyst_catalyst_builder.py") {
             python -X utf8 "scripts\analyst_catalyst_builder.py" `
               --report $report `
+              --analyst-out "$analystOut" `
               --catalysts-out "$catalystsOut" `
               --health-out "reports\health_analyst_${report}.json"
           }
