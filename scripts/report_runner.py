@@ -271,7 +271,7 @@ def run_analyst_catalyst_builder(report: int, reports_dir: str = 'reports') -> N
     except Exception as e:
         print(f"[WARN] analyst_catalyst_builder crashed: {e}")
 
-DEFAULT_SCRIPT_VERSION = "v3.0.42"
+DEFAULT_SCRIPT_VERSION = "v3.0.43"
 AH_PM_MODE = "chart"  # alapértelmezett: Yahoo quote/spark alapú AH/PM
 
 
@@ -440,7 +440,23 @@ def load_watchlist(path: Optional[str]) -> Dict[str, Dict]:
     return watch
 
 
+
 def fetch_yahoo_quote_batch(symbols: List[str]) -> Dict[str, Tuple[Optional[float], Optional[float], Optional[float]]]:
+    """Yahoo quote batch (spark) – darabolással, hogy ne üssük meg az URL-limitet."""
+    symbols = [s.strip().upper() for s in symbols if s and s.strip()]
+    if not symbols:
+        return {}
+    chunk_size = int(os.environ.get("YF_QUOTE_CHUNK", "50"))
+    merged: Dict[str, Tuple[Optional[float], Optional[float], Optional[float]]] = {}
+    for i in range(0, len(symbols), chunk_size):
+        chunk = symbols[i:i + chunk_size]
+        try:
+            merged.update(_fetch_yahoo_quote_batch_once(chunk))
+        except Exception as e:
+            debug(f"[YF-QUOTE] chunk failed ({i}-{i+len(chunk)-1}): {e}")
+    return merged
+
+def _fetch_yahoo_quote_batch_once(symbols: List[str]) -> Dict[str, Tuple[Optional[float], Optional[float], Optional[float]]]:
     """Batch-ben lehúzza a Yahoo quote (spark) feedet AH/PM-hez.
 
     Visszatér: {ticker: (regular_prev_close, ah_pct, pm_pct)}
