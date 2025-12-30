@@ -344,7 +344,7 @@ def debug(msg: str) -> None:
     sys.stderr.flush()
 
 
-def find_col(headers: List[str], candidates: List[str]) -> Optional[str]:
+def find_col(headers: list[str], candidates: list[str]) -> Optional[str]:
     lower = {h.strip().lower(): h for h in headers if h}
     for cand in candidates:
         if cand.lower() in lower:
