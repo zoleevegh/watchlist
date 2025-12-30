@@ -1,5 +1,5 @@
-# Version: v3.8.10
-# Last updated: 2025-12-26T15:20:12
+# Version: v3.8.11
+# Last updated: 2025-12-30T13:03:24Z
 #!/usr/bin/env python3
 """postprocess_report.py – v3.4.2-format-reflow-robust
 
@@ -340,7 +340,7 @@ def main() -> None:
 
     body_lines, job_lines = _extract_job_summary(lines)
 
-    body_lines = _remove_section_by_heading(body_lines, ["### Makró / Politika / FED", "### Politika / FED / Makró"])
+    body_lines = _remove_section_by_heading(body_lines, ["### Makró / Politika / FED", "## Makró / Politika / FED", "### Makró / FED / Politika", "## Makró / FED / Politika", "### Politika / FED / Makró", "## Politika / FED / Makró", "### 🧠 Makró / FED / Politika", "## 🧠 Makró / FED / Politika", "### 🧠 Makró / Politika / FED", "## 🧠 Makró / Politika / FED", "### 🕒 Makró / FED / Politika", "## 🕒 Makró / FED / Politika", "### 🕒 Makró / Politika / FED", "## 🕒 Makró / Politika / FED"])
     body_lines = _remove_section_by_heading(body_lines, ["### Bejelentések & fel/lemínősítések", "### 🧩 Bejelentések & fel/lemínősítések"])
     body_lines = _remove_section_by_heading(body_lines, ["### Közeli katalizátorok", "### ⏳ Közelgő katalizátorok", "### Közelgő katalizátorok"])
     body_lines = _remove_section_by_heading(body_lines, ["### Listán kívüli, 3–12 hónapos high-conviction jelöltek", "### 🚀 Listán kívüli, 3–12 hónapos high-conviction jelöltek"])
@@ -367,10 +367,6 @@ def main() -> None:
     body_lines = _append_blocks(body_lines, [analyst_block, catalysts_block, highconv_block])
 
     final_lines = body_lines[:]
-    if job_lines:
-        if final_lines and final_lines[-1].strip() != "":
-            final_lines.append("")
-        final_lines.extend(job_lines)
 
     # --- Earnings block injection (optional) ---
     earnings_block = ""
@@ -386,8 +382,14 @@ def main() -> None:
         final_lines.append(earnings_block.rstrip())
         final_lines.append("")
 
+    if job_lines:
+        if final_lines and final_lines[-1].strip() != "":
+            final_lines.append("")
+        final_lines.extend(job_lines)
 
-    _write_md(md_path, "\n".join(final_lines).rstrip() + "\n")
+    _write_md(md_path, "
+".join(final_lines).rstrip() + "
+")
 
 
 
