@@ -1,83 +1,5 @@
-
-# --- AUTO-FIX PRELUDE (non-invasive) -----------------------------------------
-# Purpose: prevent NameError without changing business logic.
-# Added:
-#   - SESSION initialization
-#   - Safe stubs for helper functions if they are missing
-# -----------------------------------------------------------------------------
-
-import requests
-SESSION = None  # lazy-initialized by _get_requests_session()
-
-# --- SAFE STUBS (used only if real implementations are absent) ---------------
-
-def fetch_macro_text(report: int, out_path: str, base_url_env: str) -> str:
-    # Best-effort: read already generated macro JSON/TXT if exists; otherwise empty.
-    try:
-        import os, json
-        if os.path.exists(out_path):
-            return open(out_path, "r", encoding="utf-8", errors="replace").read().strip()
-        # try reports/macro_news_{report}.json
-        p = f"reports/macro_news_{report}.json"
-        if os.path.exists(p):
-            raw = open(p, "r", encoding="utf-8", errors="replace").read()
-            try:
-                j = json.loads(raw)
-                if isinstance(j, dict) and isinstance(j.get("narrative"), list):
-                    return "\n".join([str(x) for x in j.get("narrative") if str(x).strip()])
-            except Exception:
-                return raw.strip()
-    except Exception:
-        pass
-    return ""
-
-def format_analyst_block(events):
-    if not events:
-        return ""
-    lines = ["### 🧩 Bejelentések & fel/lemínősítések"]
-    for e in events:
-        if isinstance(e, dict):
-            t = e.get("title") or e.get("headline") or e.get("text") or ""
-            if t:
-                lines.append(f"- {t}")
-        elif isinstance(e, str):
-            lines.append(f"- {e}")
-    return "\n".join(lines)
-
-def format_catalyst_block(events):
-    if not events:
-        return ""
-    lines = ["### ⏳ Közelgő katalizátorok"]
-    for e in events:
-        if isinstance(e, dict):
-            t = e.get("title") or e.get("headline") or e.get("text") or ""
-            if t:
-                lines.append(f"- {t}")
-        elif isinstance(e, str):
-            lines.append(f"- {e}")
-    return "\n".join(lines)
-
-def format_highconviction_block(events):
-    if not events:
-        return ""
-    lines = ["### 🚀 Listán kívüli, 3–12 hónapos high-conviction jelöltek"]
-    for e in events:
-        if isinstance(e, dict):
-            t = e.get("title") or e.get("headline") or e.get("text") or ""
-            if t:
-                lines.append(f"- {t}")
-        elif isinstance(e, str):
-            lines.append(f"- {e}")
-    return "\n".join(lines)
-
-def fetch_yahoo_macro_news(report_type: int, now_cet):
-    # Macro Yahoo feed intentionally disabled here; rely on GAS macro.
-    return []
-# -----------------------------------------------------------------------------
-
-
 #!/usr/bin/env python3
-"""report_runner.py – v3.0.48-biblia-importfix
+"""report_runner.py – v3.0.51-biblia-importfix
 
 Megjegyzés: Ez a verzió a korábbi teljes runner logikát megtartja.
 A bibliás formátum finomhangolása külön lépésekben történik.
@@ -101,6 +23,9 @@ import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
+
+import random
+from typing import List, Optional, Dict, Any, Tuple
 
 def load_macro_from_json(path: str) -> str:
     """Load macro output written by the GAS macro feed.
@@ -345,6 +270,49 @@ def get_catalyst_events_path(report: str) -> str:
 
 HIGHCONV_EVENTS_PATH = "reports/high_conv_1.json"
 
+
+
+
+def fetch_analyst_events(path: str) -> List[Dict[str, Any]]:
+    """Analyst események betöltése a reports/{n}/analyst_*.json fájlból.
+    - Ha nincs fájl / üres: []
+    - Elfogad: {"items":[...]} vagy közvetlen lista
+    """
+    try:
+        if not path or (not os.path.exists(path)):
+            return []
+        raw = open(path, "r", encoding="utf-8").read().strip()
+        if not raw:
+            return []
+        data = json.loads(raw)
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            items = data.get("items") or data.get("events") or data.get("data")
+            if isinstance(items, list):
+                return items
+        return []
+    except Exception:
+        return []
+
+def fetch_catalyst_events(path: str) -> List[Dict[str, Any]]:
+    """Catalyst események betöltése a reports/{n}/catalysts_*.json fájlból."""
+    try:
+        if not path or (not os.path.exists(path)):
+            return []
+        raw = open(path, "r", encoding="utf-8").read().strip()
+        if not raw:
+            return []
+        data = json.loads(raw)
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            items = data.get("items") or data.get("events") or data.get("data")
+            if isinstance(items, list):
+                return items
+        return []
+    except Exception:
+        return []
 
 def debug(msg: str) -> None:
     """Simple stderr logger so the MD remains clean."""
