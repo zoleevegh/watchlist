@@ -66,7 +66,7 @@ Ha bármely workflow, script, README vagy komment ellentmond ennek a dokumentumn
 akkor **EZ A DOKUMENTUM AZ IRÁNYADÓ**, és az eltérést hibának kell tekinteni.
 
 
-**Verzió:** v3.8.1  
+**Verzió:** v3.8.2  
 
 
 
@@ -250,12 +250,12 @@ Megvalósítás: `blocks_events_3.py`, `blocks_intraday_3.py`, `postprocess_repo
    - kimenet: `reports/master.csv`.
 
 2. **Makró feed (Apps Script MACRO webapp)**  
-   - `macro_fetcher.py` hívja a MACRO_FEED_URL_1/2/3 URL-eket,  
-   - kimenet: `macro_news_1.json`, `macro_news_2.json`, `macro_news_3.json`.
+   - a `run_report.yml` (PowerShell `curl`) hívja a `MACRO_FEED_URL_1/2/3` URL-eket,  
+   - kimenet: `reports/macro_news_1.json`, `reports/macro_news_2.json`, `reports/macro_news_3.json`.
 
-3. **Analyst / Catalyst feed (Apps Script webapp)**  
-   - `analyst_feed_parser.py` hívja az ANALYST_FEED_URL_X és CATALYST_FEED_URL_X URL-eket,  
-   - kimenet: `analyst_X.json`, `catalysts_X.json`.
+3. **Analyst / Catalyst események (Python pipeline)**  
+   - `crawler_analyst_catalyst.py` letölti a nyers feedeket (GAS webapp) → `reports/raw_analyst_{N}.json`, `reports/raw_catalysts_{N}.json`,  
+   - `events_fetcher.py` normalizál → `reports/analyst_{N}.json`, `reports/catalysts_{N}.json` (opcionális `reports/health_analyst_{N}.json`).
 
 4. **High-conv builder**  
    - `highconv_builder.py` → `high_conv_1.json`.
@@ -404,6 +404,7 @@ A `validate_run.py` a workflow-ban **postprocess után, Gist frissítés előtt*
 
 ### Verzió
 
+- **v3.8.2** – Makró feed JSON (items[].text) + nyelvi szabály (HU-only) rögzítve; artifact útvonalak egységesítve (`reports/` alatt, `reports/` almappák nincsenek almappa); adatfolyam leírás aktualizálva (makró: workflow curl, analyst/catalyst: Python pipeline).
 - **v3.8.1** – Makró blokk: Apps Script webapp (Yahoo+Reuters+AP) + runner "A‑mód" (konzervatív értelmezés). `macro_fetcher.py` eltávolítva a kanonikus rendszerből.
 zás
 A `validate_run.py` és a workflow módosításai is a kötelező verziófolytatás hatálya alá esnek.
@@ -437,9 +438,9 @@ scripts/
 - Deduplikál és egységes JSON struktúrát ír.
 
 **Kimenetek:**
-- `reports/{N}/analyst_{N}.json`
-- `reports/{N}/catalysts_{N}.json`
-- (opcionális) `reports/{N}/health_analyst_{N}.json` – forrás-szintű diagnosztika (`ok/count/httpStatus/error/ms`).
+- `reports/analyst_{N}.json`
+- `reports/catalysts_{N}.json`
+- (opcionális) `reports/health_analyst_{N}.json` – forrás-szintű diagnosztika (`ok/count/httpStatus/error/ms`).
 
 **Helye a pipeline-ban:**
 - `run_report.yml` futtatja postprocess előtt, hogy a #1/#2/#3 riportok „Bejelentések & fel/lemínősítések” és „Közeli katalizátorok” blokkjai ne maradjanak üresek forrás-blokkolás miatt.
@@ -833,7 +834,7 @@ Az alábbi fájlok **nincsenek hívva** a `run_report.yml` jelenlegi futásában
 ## Apps Script webappok (kettő külön, mindkettő használatban)
 
 1) **Makró / FED / Politika narratív feed (GAS)**  
-- Visszatérés: JSON `{"status":"ok","report":"1|2|3","generated_at":"...","narrative":[...max 3–6 sor...]}`  
+- Visszatérés: JSON (display-ready) `{"ok":true,"type":"macro_feed","version":"v1.x","report":"1|2|3","generated_at":"...","items":[{"text":"..."}]}`  
 - Ezt a riport elején, a **Lefedettség** blokk után injektáljuk.
 
 2) **Analyst / Catalyst feed (GAS)**  
@@ -850,6 +851,7 @@ Makró / FED / Politika – KANONIKUS ADATÚT (AKTÍV)
 **A‑mód (konzervatív használat – kötelező):**
 - A makró blokk **nem piaci előrejelzés** és nem tartalmazhat olyan állítást, hogy „a piac kamatcsökkentést áraz”, „Nasdaq-pozitív”, stb.
 - A blokk célja: **headline‑kockázat / zajszint jelzés** (van/nincs piacmozgató makró‑FED‑politikai input).
+- **Nyelvi szabály:** a feed **kizárólag magyar** (HU) szöveget adhat vissza; angol headline nem kerülhet a végső riportba.
 - Ha nincs releváns tétel: a fix mondat kerül be (nincs halandzsa, nincs kitalálás).
 
 
