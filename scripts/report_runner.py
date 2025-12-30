@@ -23,6 +23,40 @@ import subprocess
 import requests
 from typing import Dict, List, Optional, Tuple
 
+
+
+def _maybe_proxy_url(url: str) -> str:
+    # Jina AI proxy often bypasses Yahoo edge blocks (401/403/429) on CI runners.
+    # It returns the upstream response body as plain text.
+    if url.startswith("https://"):
+        return "https://r.jina.ai/" + url
+    if url.startswith("http://"):
+        return "https://r.jina.ai/" + url
+    return "https://r.jina.ai/https://" + url.lstrip("/")
+
+def _get_json_with_optional_proxy(session, url: str, headers: dict, timeout: int = 20, max_bytes: int = 5_000_000):
+    """Fetch JSON; if Yahoo blocks (401/403/429), retry via proxy."""
+    try_urls = [url]
+    proxy = _maybe_proxy_url(url)
+    if proxy != url:
+        try_urls.append(proxy)
+
+    last_err = None
+    for i, u in enumerate(try_urls):
+        try:
+            resp = session.get(u, headers=headers, timeout=timeout)
+            if resp.status_code in (401, 403, 429) and i == 0:
+                # try proxy
+                continue
+            resp.raise_for_status()
+            # safety: avoid huge bodies (proxy can be chatty)
+            if resp.content and len(resp.content) > max_bytes:
+                raise ValueError(f"Response too large: {len(resp.content)} bytes")
+            return resp.json()
+        except Exception as e:
+            last_err = e
+            continue
+    raise last_err if last_err else RuntimeError("Unknown fetch error")
 def load_macro_from_json(path: str) -> str:
     """Load macro output written by the GAS macro feed.
 
@@ -271,7 +305,7 @@ def run_analyst_catalyst_builder(report: int, reports_dir: str = 'reports') -> N
     except Exception as e:
         print(f"[WARN] analyst_catalyst_builder crashed: {e}")
 
-DEFAULT_SCRIPT_VERSION = "v3.0.43"
+DEFAULT_SCRIPT_VERSION = "v3.0.44"
 AH_PM_MODE = "chart"  # alapértelmezett: Yahoo quote/spark alapú AH/PM
 
 
@@ -474,7 +508,18 @@ def _fetch_yahoo_quote_batch_once(symbols: List[str]) -> Dict[str, Tuple[Optiona
     params = {"symbols": joined}
 
     try:
-        resp = _get_requests_session().get(url, params=params, timeout=10)
+        resp = sess = _get_requests_session()
+        resp = sess.get(url, params=params, timeout=10)
+        if resp.status_code in (401, 403, 429):
+            # Retry via proxy (often bypasses CI runner blocking)
+            try:
+                full_url = requests.Request("GET", url, params=params).prepare().url
+                proxy_url = _maybe_proxy_url(full_url)
+                resp = sess.get(proxy_url, timeout=10)
+            except Exception:
+                pass
+        if resp.status_code in (401, 403, 429):
+            raise RuntimeError(f"Yahoo quote blocked: {resp.status_code}")
         resp.raise_for_status()
     except Exception as e:
         debug(f"[YF-QUOTE] batch fetch error: {e}")
@@ -551,6 +596,12 @@ def fetch_chart(symbol: str) -> Tuple[dict, List[int], List[Optional[float]]]:
         for _ in range(3):
             try:
                 resp = _chart_get(host, symbol, params)
+                if resp.status_code in (401, 403, 429):
+                    try:
+                        proxy_url = _maybe_proxy_url(resp.url)
+                        resp = _get_requests_session().get(proxy_url, timeout=10)
+                    except Exception:
+                        pass
                 resp.raise_for_status()
                 data = resp.json()
                 chart = data.get("chart", {})
