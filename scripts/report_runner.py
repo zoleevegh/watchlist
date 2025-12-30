@@ -243,7 +243,7 @@ def _prev_close_bud(now_bud: dt.datetime) -> dt.datetime:
     return now_bud.replace(hour=22, minute=0, second=0, microsecond=0)
 
 
-def _sanitize_macro_lines(macro_text: str) -> List[str]:
+def _sanitize_macro_lines(macro_text: str) -> list[str]:
     """Keep only real lines; no headings/boilerplate. Never invent content."""
     out: List[str] = []
     for raw in (macro_text or "").splitlines():
