@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""report_runner.py – v3.0.51-biblia-importfix
+"""report_runner.py – v3.0.42-biblia-ahpm-sessionfix-5e
 
 Megjegyzés: Ez a verzió a korábbi teljes runner logikát megtartja.
 A bibliás formátum finomhangolása külön lépésekben történik.
@@ -13,19 +13,15 @@ A bibliás formátum finomhangolása külön lépésekben történik.
 
 
 import argparse
+import sys
 import csv
 import datetime as dt
+from zoneinfo import ZoneInfo
 import json
 import os
-import re
 import subprocess
-import sys
-import time
-from typing import Any, Dict, List, Optional, Tuple
-from zoneinfo import ZoneInfo
-
-import random
-from typing import List, Optional, Dict, Any, Tuple
+import requests
+from typing import Dict, List, Optional, Tuple
 
 def load_macro_from_json(path: str) -> str:
     """Load macro output written by the GAS macro feed.
@@ -102,6 +98,47 @@ def load_macro_from_json(path: str) -> str:
         print(f"[MACRO_JSON] error: {e}")
         return ""
 
+
+
+def fetch_macro_text(report: int, out_path: str, base_url_env: str) -> str:
+    """
+    Macro feed fetcher (Apps Script webapp).
+    - URL comes from env var (base_url_env)
+    - Writes raw response to out_path (UTF-8)
+    - Returns text ("" on failure)
+    NOTE: Only a small helper to support existing runner flow.
+    """
+    url = (os.environ.get(base_url_env) or "").strip()
+    if not url:
+        return ""
+    # Optional param helps if the webapp supports routing by report number
+    try:
+        sep = "&" if "?" in url else "?"
+        full_url = f"{url}{sep}report={report}" if "report=" not in url else url
+        resp = requests.get(full_url, timeout=15)
+        resp.raise_for_status()
+        # If JSON, try common keys, else raw text
+        ctype = (resp.headers.get("Content-Type") or "").lower()
+        if "application/json" in ctype:
+            try:
+                data = resp.json()
+                text = (
+                    (data.get("text") if isinstance(data, dict) else None)
+                    or (data.get("macro") if isinstance(data, dict) else None)
+                    or (data.get("content") if isinstance(data, dict) else None)
+                    or ""
+                )
+            except Exception:
+                text = resp.text or ""
+        else:
+            text = resp.text or ""
+        if out_path:
+            os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+            with open(out_path, "w", encoding="utf-8") as f:
+                f.write(text)
+        return text
+    except Exception:
+        return ""
 
 def _get_requests_session():
     """Lazy requests.Session + alap header (Yahoo 429 ellen)"""
@@ -234,7 +271,7 @@ def run_analyst_catalyst_builder(report: int, reports_dir: str = 'reports') -> N
     except Exception as e:
         print(f"[WARN] analyst_catalyst_builder crashed: {e}")
 
-DEFAULT_SCRIPT_VERSION = "v3.0.35"
+DEFAULT_SCRIPT_VERSION = "v3.0.42"
 AH_PM_MODE = "chart"  # alapértelmezett: Yahoo quote/spark alapú AH/PM
 
 
@@ -270,49 +307,6 @@ def get_catalyst_events_path(report: str) -> str:
 
 HIGHCONV_EVENTS_PATH = "reports/high_conv_1.json"
 
-
-
-
-def fetch_analyst_events(path: str) -> List[Dict[str, Any]]:
-    """Analyst események betöltése a reports/{n}/analyst_*.json fájlból.
-    - Ha nincs fájl / üres: []
-    - Elfogad: {"items":[...]} vagy közvetlen lista
-    """
-    try:
-        if not path or (not os.path.exists(path)):
-            return []
-        raw = open(path, "r", encoding="utf-8").read().strip()
-        if not raw:
-            return []
-        data = json.loads(raw)
-        if isinstance(data, list):
-            return data
-        if isinstance(data, dict):
-            items = data.get("items") or data.get("events") or data.get("data")
-            if isinstance(items, list):
-                return items
-        return []
-    except Exception:
-        return []
-
-def fetch_catalyst_events(path: str) -> List[Dict[str, Any]]:
-    """Catalyst események betöltése a reports/{n}/catalysts_*.json fájlból."""
-    try:
-        if not path or (not os.path.exists(path)):
-            return []
-        raw = open(path, "r", encoding="utf-8").read().strip()
-        if not raw:
-            return []
-        data = json.loads(raw)
-        if isinstance(data, list):
-            return data
-        if isinstance(data, dict):
-            items = data.get("items") or data.get("events") or data.get("data")
-            if isinstance(items, list):
-                return items
-        return []
-    except Exception:
-        return []
 
 def debug(msg: str) -> None:
     """Simple stderr logger so the MD remains clean."""
@@ -798,15 +792,11 @@ def generate_model_report(
     else:
         macro_block = build_macro_block_report1("", now_bud=dt.datetime.now(ZoneInfo("Europe/Budapest")))
 
-        # Elemzői lépések / közeli katalizátorok / high-conviction események (5/6/7. blokk)
-    analyst_events = fetch_analyst_events(get_analyst_events_path(report))
-    analyst_block = format_analyst_block(analyst_events)
-
-    catalyst_events = fetch_catalyst_events(get_catalyst_events_path(report))
-    catalyst_block = format_catalyst_block(catalyst_events)
-
-    highconv_events = fetch_highconviction_events(HIGHCONV_EVENTS_PATH)
-    highconv_block = format_highconviction_block(highconv_events)
+    # 5/6/7 blokkokat a postprocess_report.py állítja elő a reports/*.json fájlokból.
+    # Itt (runnerben) nem formázunk blokkot, hogy a felelősségi határ tiszta legyen.
+    analyst_block = ""
+    catalyst_block = ""
+    highconv_block = ""
 
     lines: List[str] = []
     lines.extend(header_lines)
@@ -938,10 +928,11 @@ def generate_report2_macro_only(
     analyst_block = format_analyst_block(analyst_events)
 
     catalyst_events = fetch_catalyst_events(get_catalyst_events_path(report))
-    catalyst_block = format_catalyst_block(catalyst_events)
-
-    highconv_events = fetch_highconviction_events(HIGHCONV_EVENTS_PATH)
-    highconv_block = format_highconviction_block(highconv_events)
+    # 5/6/7 blokkokat a postprocess_report.py állítja elő a reports/*.json fájlokból.
+    # Itt (runnerben) nem formázunk blokkot, hogy a felelősségi határ tiszta legyen.
+    analyst_block = ""
+    catalyst_block = ""
+    highconv_block = ""
 
     lines: List[str] = []
     lines.extend(header_lines)
@@ -1024,11 +1015,11 @@ def generate_report3_macro_only(
     analyst_events = fetch_analyst_events(get_analyst_events_path(report))
     analyst_block = format_analyst_block(analyst_events)
 
-    catalyst_events = fetch_catalyst_events(get_catalyst_events_path(report))
-    catalyst_block = format_catalyst_block(catalyst_events)
-
-    highconv_events = fetch_highconviction_events(HIGHCONV_EVENTS_PATH)
-    highconv_block = format_highconviction_block(highconv_events)
+    # 5/6/7 blokkokat a postprocess_report.py állítja elő a reports/*.json fájlokból.
+    # Itt (runnerben) nem formázunk blokkot, hogy a felelősségi határ tiszta legyen.
+    analyst_block = ""
+    catalyst_block = ""
+    highconv_block = ""
 
     lines: List[str] = []
     lines.extend(header_lines)
