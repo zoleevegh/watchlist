@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""report_runner.py – v3.0.42-biblia-ahpm-sessionfix-5e
+"""report_runner.py – v3.0.43-biblia-ahpm-sessionfix-5f
 
 Megjegyzés: Ez a verzió a korábbi teljes runner logikát megtartja.
 A bibliás formátum finomhangolása külön lépésekben történik.
@@ -21,7 +21,19 @@ import json
 import os
 import subprocess
 import requests
+import math
 from typing import Dict, List, Optional, Tuple
+
+# ------------------------------
+# Globals
+# ------------------------------
+# IMPORTANT: these must exist at import-time.
+# In v3.0.42 the absence of SESSION caused *every* ticker AH/PM fetch to fail
+# with: "name 'SESSION' is not defined" (see latest_1.json coverage_missing).
+SESSION: Optional[requests.Session] = None
+
+# Optional ticker notes (multi-lot / multi-broker) used in the darabszámos block.
+POSITION_LOT_NOTES: Dict[str, str] = {}
 
 def load_macro_from_json(path: str) -> str:
     """Load macro output written by the GAS macro feed.
@@ -754,7 +766,8 @@ def generate_model_report(
             + " (oka: lásd belső logot / forráshibát)"
         )
 
-    now = dt.datetime.now(dt.timezone(dt.timedelta(hours=1)))
+    # Use real Europe/Budapest TZ (GitHub runner is UTC by default; fixed offset breaks DST).
+    now = dt.datetime.now(ZoneInfo("Europe/Budapest"))
 
     header_lines = [
         "## After-hours & Premarket – #1 jelentés",
@@ -909,7 +922,7 @@ def generate_report2_macro_only(
         "Lefedettség: HIÁNYOS – ticker-szintű #2 modul még fejlesztés alatt ebben a verzióban."
     )
 
-    now = dt.datetime.now(dt.timezone(dt.timedelta(hours=1)))
+    now = dt.datetime.now(ZoneInfo("Europe/Budapest"))
 
     header_lines = [
         "#2 – Előző kereskedési nap: nyitástól zárásig (15:30–22:00) — CEST",
@@ -997,7 +1010,7 @@ def generate_report3_macro_only(
         "Lefedettség: HIÁNYOS – ticker-szintű #3 modul még fejlesztés alatt ebben a verzióban."
     )
 
-    now = dt.datetime.now(dt.timezone(dt.timedelta(hours=1)))
+    now = dt.datetime.now(ZoneInfo("Europe/Budapest"))
 
     header_lines = [
         "#3 – Mai kereskedési nap: nyitástól mostanáig (15:30-tól) — CEST",
