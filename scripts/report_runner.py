@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""report_runner.py – v3.0.43-biblia-ahpm-sessionfix-5f
+"""report_runner.py – v3.0.44-biblia-ahpm-coveragecount-5g
 
 Megjegyzés: Ez a verzió a korábbi teljes runner logikát megtartja.
 A bibliás formátum finomhangolása külön lépésekben történik.
@@ -283,7 +283,7 @@ def run_analyst_catalyst_builder(report: int, reports_dir: str = 'reports') -> N
     except Exception as e:
         print(f"[WARN] analyst_catalyst_builder crashed: {e}")
 
-DEFAULT_SCRIPT_VERSION = "v3.0.42"
+DEFAULT_SCRIPT_VERSION = "v3.0.44"
 AH_PM_MODE = "chart"  # alapértelmezett: Yahoo quote/spark alapú AH/PM
 
 
@@ -756,15 +756,19 @@ def generate_model_report(
             darab_results.append(entry)
         elif max_move >= k_val:
             watch_results.append(entry)
+        total_tickers = len(all_symbols)
+    missing_count = len(missing)
     if not missing:
-        coverage_line = "Lefedettség: TELJES"
+        coverage_line = f"Lefedettség: TELJES – ellenőrizve: {total_tickers}/{total_tickers} ticker"
     else:
         tickers_str = ", ".join(sorted(missing.keys()))
         coverage_line = (
-            "Lefedettség: HIÁNYOS – nem elérhető ticker(ek): "
+            f"Lefedettség: HIÁNYOS – ellenőrizve: {total_tickers} ticker, ebből missing: {missing_count} – "
+            + "nem elérhető ticker(ek): "
             + tickers_str
             + " (oka: lásd belső logot / forráshibát)"
         )
+    universe_line = f"Universe: positions={len(positions)}, watchlist={len(watch)}, total={total_tickers}"
 
     # Use real Europe/Budapest TZ (GitHub runner is UTC by default; fixed offset breaks DST).
     now = dt.datetime.now(ZoneInfo("Europe/Budapest"))
@@ -783,6 +787,7 @@ def generate_model_report(
         "utolsó RTH záró → AH/PM utolsó ár alapján számolt % mozgás)",
         "",
         coverage_line,
+        universe_line,
     ]
 
 
