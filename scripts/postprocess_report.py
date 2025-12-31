@@ -1,7 +1,7 @@
-# Version: v3.8.12
+# Version: v3.8.13
 # Last updated: 2025-12-31T11:15:00Z
 #!/usr/bin/env python3
-"""postprocess_report.py – v3.4.2-format-reflow-robust
+"""postprocess_report.py – v3.8.13-format-reflow-robust
 
 Bocsáss meg Uram, mert balfék voltam; add Uram, hogy ne legyen hibás ez a módosítás.
 
@@ -232,6 +232,45 @@ def _remove_macro_section_loose(lines: List[str]) -> List[str]:
 
     return out
 
+def _remove_legacy_macro_sections(lines: List[str]) -> List[str]:
+    """Remove legacy macro sections like 'Makró / Politika / FED' (no emoji / headline-based).
+
+    KEEP the Apps Script state-based macro block that starts with:
+      '### 🧠 Makró / FED / Politika'
+    """
+    out: List[str] = []
+    i = 0
+
+    legacy_head_re = re.compile(r"^#{0,3}\s*Makró\s*/\s*Politika\s*/\s*FED\s*$", re.IGNORECASE)
+
+    while i < len(lines):
+        ln = lines[i].strip()
+
+        # Keep the new Apps Script macro header
+        if ln.startswith("### 🧠 Makró / FED / Politika"):
+            out.append(lines[i])
+            i += 1
+            continue
+
+        # Remove legacy macro section (heading line) and everything until next '### ' heading (other blocks) or end
+        if legacy_head_re.match(ln) or ln == "Makró / Politika / FED":
+            i += 1
+            # drop following bullet/paragraph lines until next major heading
+            while i < len(lines):
+                nxt = lines[i].strip()
+                if nxt.startswith("### ") and not nxt.startswith("### 🧠 Makró / FED / Politika"):
+                    break
+                if nxt.startswith("## ") and not legacy_head_re.match(nxt):
+                    break
+                i += 1
+            continue
+
+        out.append(lines[i])
+        i += 1
+
+    return out
+
+
 def _insert_macro_after_coverage(lines: List[str], macro_block: str) -> List[str]:
     """Insert macro block right after the 'Lefedettség:' line.
 
@@ -381,9 +420,18 @@ def main() -> None:
     body_lines = _remove_section_by_heading(body_lines, ["### Közeli katalizátorok", "### ⏳ Közelgő katalizátorok", "### Közelgő katalizátorok"])
     body_lines = _remove_section_by_heading(body_lines, ["### Listán kívüli, 3–12 hónapos high-conviction jelöltek", "### 🚀 Listán kívüli, 3–12 hónapos high-conviction jelöltek"])
 
-    body_lines = _remove_macro_section_loose(body_lines)
-    macro_block = _build_macro_block(macro_json)
-    body_lines = _insert_macro_after_coverage(body_lines, macro_block)
+    # Makró blokk kezelése:
+    # - Ha a runner már beillesztette az Apps Script (state-based) makró blokkot (### 🧠 ... + Script verzió),
+    #   akkor NEM szúrunk be macro_news_{report}.json alapú legacy blokkot (különben dupláz/ellentmond).
+    has_appscript_macro = any("### 🧠 Makró / FED / Politika" in ln or "### 🧠 Makró / FED / Politika" in ln for ln in body_lines) or any("**Script verzió:**" in ln and "Makró" in ln for ln in body_lines)
+
+    if has_appscript_macro:
+        # Csak a legacy 'Makró / Politika / FED' jellegű szekciókat takarítjuk.
+        body_lines = _remove_legacy_macro_sections(body_lines)
+    else:
+        body_lines = _remove_legacy_macro_sections(body_lines)
+        macro_block = _build_macro_block(macro_json)
+        body_lines = _insert_macro_after_coverage(body_lines, macro_block)
 
     analyst_block = _ensure_block(
         build_analyst_block(analyst_json),
