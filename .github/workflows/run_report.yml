@@ -1,5 +1,5 @@
-# Version: v3.8.17
-# Last updated: 2025-12-31T13:58:00+01:00
+# Version: v3.8.18
+# Last updated: 2025-12-31T15:05:00+01:00
 # PATCH v4.0.3: master url fix + macro debug
 name: Run Report (Windows) # v4.0.2-noblock-valid
 
@@ -78,73 +78,31 @@ jobs:
           $report = "${{ steps.vars.outputs.report }}"
           if (-not $report) { $report = "1" }
 
-          $out = "reports\macro_news_${report}.json"
-
-          # URL kiválasztás report szerint
+          # URL kiválasztás report szerint (TEXT pipeline – Option A)
           $url = ""
-          if ($report -eq "1") { $url = "${{ env.MACRO_FEED_URL_1 }}" }
-          elseif ($report -eq "2") { $url = "${{ env.MACRO_FEED_URL_2 }}" }
+          if ($report -eq "2") { $url = "${{ env.MACRO_FEED_URL_2 }}" }
           elseif ($report -eq "3") { $url = "${{ env.MACRO_FEED_URL_3 }}" }
+          else { $url = "${{ env.MACRO_FEED_URL_1 }}" }
+
+          $out = "reports\macro_block_${report}.txt"
 
           if (-not $url) {
-            Write-Host "MACRO_FEED_URL_${report} nincs beállítva → üres macro_news_${report}.json"
-            "[]" | Out-File -FilePath $out -Encoding utf8
+            Write-Host "MACRO_FEED_URL_${report} nincs beállítva → üres TXT"
+            "" | Out-File -FilePath $out -Encoding utf8
             exit 0
           }
 
-          Write-Host "Makró feed letöltés: $url"
+          Write-Host "Makró feed letöltés (TEXT): $url"
           & curl.exe -fL --retry 3 --retry-all-errors -A "Mozilla/5.0" "$url" -o "$out"
           if ($LASTEXITCODE -ne 0) {
-            Write-Host "Makró feed sikertelen (curl exit $LASTEXITCODE) → üres JSON"
-            "[]" | Out-File -FilePath $out -Encoding utf8
+            Write-Host "Makró feed sikertelen (curl exit $LASTEXITCODE) → üres TXT"
+            "" | Out-File -FilePath $out -Encoding utf8
             exit 0
           }
 
-          if ((Get-Item "$out").Length -lt 3) {
-            Write-Host "Makró feed üres/kicsi → üres JSON"
-            "[]" | Out-File -FilePath $out -Encoding utf8
-            exit 0
-          }
-
+          # opcionális: első sor debug
           $first = Get-Content "$out" -TotalCount 1
-          if ($first -match "<!DOCTYPE html>|<html") {
-            Write-Host "Makró feed HTML-t adott vissza (auth/redirect?) → üres JSON"
-            "[]" | Out-File -FilePath $out -Encoding utf8
-            exit 0
-          }
-
-          if (($first.TrimStart() -notmatch "^\[|^\{")) {
-            Write-Host "Makró feed nem JSON (első sor: $first) → üres JSON"
-            "[]" | Out-File -FilePath $out -Encoding utf8
-            exit 0
-          }
-
-          Write-Host "Makró feed OK → $out"
-
-
-      - name: Debug macro feed file (count + size)
-        shell: pwsh
-        run: |
-          $p = "reports\macro_news_${{ steps.vars.outputs.report }}.json"
-          if (Test-Path $p) {
-            $len = (Get-Item $p).Length
-            Write-Host "MACRO_FILE: $p (bytes=$len)"
-            try {
-              $json = Get-Content $p -Raw | ConvertFrom-Json
-              if ($null -eq $json) { Write-Host "MACRO_ITEMS: null" }
-              elseif ($json.items) { Write-Host ("MACRO_ITEMS: " + ($json.items.Count)) }
-              elseif ($json.Count) { Write-Host ("MACRO_ITEMS: " + ($json.Count)) }
-              else { Write-Host "MACRO_ITEMS: 0" }
-            } catch {
-              Write-Host "MACRO_PARSE_ERROR: $($_.Exception.Message)"
-              Write-Host "MACRO_HEAD:"
-              Get-Content $p -TotalCount 20
-            }
-          } else {
-            Write-Host "MACRO_FILE_MISSING: $p"
-          }
-
-
+          Write-Host "Makró első sor: $first"
       - name: Fetch MASTER CSV (robust)
         shell: pwsh
         run: |
