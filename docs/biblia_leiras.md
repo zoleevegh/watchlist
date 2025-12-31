@@ -1,10 +1,11 @@
-# Részvényjelentés Automata – BIBLIA leírás  
+# Részvényjelentés Automata – BIBLIA leírás
+**Verzió:** v3.8.24  
+**Dátum:** 2025-12-31
 
-## Alapelvek és hatáskör
+## Könyvtárszerkezet (FRISSÍTVE – v3.8.23)
 
-## Könyvtárszerkezet (FRISSÍTETT)
+Az alábbi könyvtárszerkezet **kanonikus**, és kötelezően ezt kell tükröznie a repónak.
 
-```
 repo/
 ├─ README.md
 ├─ .github/
@@ -14,14 +15,12 @@ repo/
 │  └─ biblia_leiras.md
 ├─ reports/
 │  ├─ master.csv
-│  ├─ macro_news_1.json
-│  ├─ macro_news_2.json
-│  ├─ macro_news_3.json
+│  ├─ macro_block_1.txt        # 🆕 Apps Script makró – TEXT (KANONIKUS)
 │  ├─ raw_analyst_1.json
-│  ├─ raw_catalysts_1.json
 │  ├─ raw_analyst_2.json
-│  ├─ raw_catalysts_2.json
 │  ├─ raw_analyst_3.json
+│  ├─ raw_catalysts_1.json
+│  ├─ raw_catalysts_2.json
 │  ├─ raw_catalysts_3.json
 │  ├─ analyst_1.json
 │  ├─ analyst_2.json
@@ -41,34 +40,28 @@ repo/
 │  ├─ summary_report_1.md
 │  ├─ summary_report_2.md
 │  └─ summary_report_3.md
-└─ scripts/
-   ├─ sec_edgar_fetcher.py
-   ├─ crawler_analyst_catalyst.py
-   ├─ events_fetcher.py
-   ├─ yahoo_analyst_events_fetcher.py
-   ├─ earnings_fetcher.py
-   ├─ report_runner.py
-   ├─ report_runner_3.py
-   ├─ postprocess_report.py
-   ├─ postprocess_report_2.py
-   ├─ postprocess_report_3.py
-   ├─ blocks_events_3.py
-   ├─ blocks_intraday_3.py
-   ├─ validate_run.py
-   └─ biblia_helper.py
-```
+├─ scripts/
+│  ├─ sec_edgar_fetcher.py
+│  ├─ crawler_analyst_catalyst.py
+│  ├─ events_fetcher.py
+│  ├─ yahoo_analyst_events_fetcher.py
+│  ├─ earnings_fetcher.py
+│  ├─ report_runner.py
+│  ├─ postprocess_report.py
+│  ├─ blocks_events_3.py
+│  ├─ blocks_intraday_3.py
+│  ├─ validate_run.py          # 🆕 CI Biblia-őr
+│  └─ biblia_helper.py
 
-A fenti lista a **kanonikus repo-szerkezet**. A benne szereplő fájlok a futó pipeline által elvárt komponensek. Ha egy fájl **DEPRECATED / LEGACY** státuszú, azt a dokumentum külön jelzi; ezek nem kötelezőek a futáshoz.
+### Tiltások
+- macro_news_*.json fájlok használata TILOS.
+- Makró blokk Python oldali generálása TILOS.
 
-Ez a dokumentum a **Részvények projekt egyetlen kanonikus szabálykönyve**.
+---
 
-Ha bármely workflow, script, README vagy komment ellentmond ennek a dokumentumnak,
-akkor **EZ A DOKUMENTUM AZ IRÁNYADÓ**, és az eltérést hibának kell tekinteni.
+# Részvényjelentés Automata – BIBLIA leírás  
 
-
-**Verzió:** v3.8.2  
-
-
+## Alapelvek és hatáskör
 
 
 ## 2. Scripts – szerepek és felelősségek
@@ -869,3 +862,42 @@ Makró / FED / Politika – KANONIKUS ADATÚT (AKTÍV)
    - Soha nem talál ki hírt
 
 **Megjegyzés:** A `macro_fetcher.py` Python script **DEPRECATED**, nincs használatban.
+
+
+
+---
+## 🆕 KIEGÉSZÍTÉS – Makró blokk és validáció (2025-12-31)
+
+### Makró / FED / Politika – kanonikus működés
+- A Makró blokk kizárólag Apps Script webapp forrásból érkezhet (makro_v1.3.0+).
+- A makró feed TEXT-alapú.
+- Kimeneti artefakt: reports/macro_block_1.txt
+- Egy jelentésben pontosan 1 Makró blokk lehet.
+- Python oldalon makró headline-keresés TILOS.
+
+### Duplikált makró tiltása
+- report_runner.py nem generálhat makró szöveget.
+- postprocess_report.py csak akkor nyúlhat a makró blokkhoz, ha hiányzik.
+
+### CI Biblia-őr
+- validate_run.py minden #1/#2/#3 jelentés után kötelező.
+- Hiányzó kötelező blokk esetén a workflow hibára fut.
+
+#
+## 🆕 Könyvtárszerkezet – FRISSÍTÉS MEGERŐSÍTVE (2025-12-31)
+
+Az alábbi fájl **KANONIKUSAN RÉSZE** a könyvtárszerkezetnek:
+
+scripts/
+- validate_run.py   # CI Biblia-őr (kötelező, nem opcionális)
+
+reports/
+- macro_block_1.txt # Apps Script makró (TEXT)
+
+Megjegyzés:
+- macro_news_*.json fájlok NEM használhatók.
+- Makró generálás Python oldalon TILOS.
+
+
+
+---
