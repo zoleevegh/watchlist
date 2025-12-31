@@ -5,7 +5,7 @@
 ## Könyvtárszerkezet (FRISSÍTVE – v3.8.23)
 
 Az alábbi könyvtárszerkezet **kanonikus**, és kötelezően ezt kell tükröznie a repónak.
-
+```
 repo/
 ├─ README.md
 ├─ .github/
@@ -52,7 +52,7 @@ repo/
 │  ├─ blocks_intraday_3.py
 │  ├─ validate_run.py          # 🆕 CI Biblia-őr
 │  └─ biblia_helper.py
-
+```
 ### Tiltások
 - macro_news_*.json fájlok használata TILOS.
 - Makró blokk Python oldali generálása TILOS.
