@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""report_runner.py – v3.0.44-biblia-ahpm-coveragecount-5g
+"""report_runner.py – v3.0.46-biblia-ahpm-macrotext-coveragebelow-1g
 
 Megjegyzés: Ez a verzió a korábbi teljes runner logikát megtartja.
 A bibliás formátum finomhangolása külön lépésekben történik.
@@ -14,6 +14,7 @@ A bibliás formátum finomhangolása külön lépésekben történik.
 
 import argparse
 import sys
+from pathlib import Path
 import csv
 import datetime as dt
 from zoneinfo import ZoneInfo
@@ -789,13 +790,23 @@ def generate_model_report(
     ]
 
 
-    # Makró / FED / Politika blokk (#1) – kizárólag Apps Script (state-based, v1.3.0+)
-    # A legacy headline-szűrés és macro_news_1.json alapú blokk KISZEDVE (duplázás/ellentmondás).
-    macro_text_final = fetch_macro_text(
-        report=1,
-        out_path="reports/macro_1.txt",
-        base_url_env="MACRO_FEED_URL_1",
-    )
+    # Makró / FED / Politika blokk (#1) – TEXT pipeline (Option A)
+    # - A workflow letölti a webapp kimenetét: reports/macro_block_1.txt
+    # - Itt elsődlegesen ezt olvassuk be; csak ha hiányzik/üres, akkor próbáljuk közvetlenül letölteni.
+    macro_file = Path("reports/macro_block_1.txt")
+    macro_text_final = ""
+    try:
+        if macro_file.exists():
+            macro_text_final = macro_file.read_text(encoding="utf-8")
+    except Exception:
+        macro_text_final = ""
+
+    if not (macro_text_final and macro_text_final.strip()):
+        macro_text_final = fetch_macro_text(
+            report=1,
+            out_path=str(macro_file),
+            base_url_env="MACRO_FEED_URL_1",
+        )
 
     if macro_text_final and macro_text_final.strip():
         # A webapp már komplett markdown blokkot ad (cím + verzió + 1–3 sor).
