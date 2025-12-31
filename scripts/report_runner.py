@@ -283,7 +283,7 @@ def run_analyst_catalyst_builder(report: int, reports_dir: str = 'reports') -> N
     except Exception as e:
         print(f"[WARN] analyst_catalyst_builder crashed: {e}")
 
-DEFAULT_SCRIPT_VERSION = "v3.0.44"
+DEFAULT_SCRIPT_VERSION = "v3.0.45"
 AH_PM_MODE = "chart"  # alapértelmezett: Yahoo quote/spark alapú AH/PM
 
 
@@ -786,31 +786,23 @@ def generate_model_report(
         "**Árforrás:** Yahoo Finance chart (v8 – 2d/5m; hétfő/hétvége: 5d/5m; includePrePost; "
         "utolsó RTH záró → AH/PM utolsó ár alapján számolt % mozgás)",
         "",
-        coverage_line,
-        universe_line,
     ]
 
 
-    # Makró / FED / piaci hangulat blokk (#1)
-    macro_text_json = load_macro_from_json("reports/macro_news_1.json")
-    if macro_text_json:
-        macro_text_final = macro_text_json
-    elif macro_text and macro_text.strip():
-        macro_text_final = macro_text
-    else:
-        macro_text_final = fetch_macro_text(
-            report=1,
-            out_path="reports/macro_1.txt",
-            base_url_env="MACRO_FEED_URL_1",
-        )
+    # Makró / FED / Politika blokk (#1) – kizárólag Apps Script (state-based, v1.3.0+)
+    # A legacy headline-szűrés és macro_news_1.json alapú blokk KISZEDVE (duplázás/ellentmondás).
+    macro_text_final = fetch_macro_text(
+        report=1,
+        out_path="reports/macro_1.txt",
+        base_url_env="MACRO_FEED_URL_1",
+    )
 
-    if macro_text_final:
-        # A Yahoo-makró híreket itt nem keverjük hozzá, a webapp már tartalmazza az összefoglalót.
-        macro_block = build_macro_block_report1(macro_text_final, now_bud=dt.datetime.now(ZoneInfo("Europe/Budapest")))
+    if macro_text_final and macro_text_final.strip():
+        # A webapp már komplett markdown blokkot ad (cím + verzió + 1–3 sor).
+        macro_block = macro_text_final.strip()
     else:
-        macro_block = build_macro_block_report1("", now_bud=dt.datetime.now(ZoneInfo("Europe/Budapest")))
-
-    # 5/6/7 blokkokat a postprocess_report.py állítja elő a reports/*.json fájlokból.
+        macro_block = "### 🧠 Makró / FED / Politika\n**Script verzió:** n/a\nMakró feed nem elérhető (Apps Script)."
+# 5/6/7 blokkokat a postprocess_report.py állítja elő a reports/*.json fájlokból.
     # Itt (runnerben) nem formázunk blokkot, hogy a felelősségi határ tiszta legyen.
     analyst_block = ""
     catalyst_block = ""
@@ -856,7 +848,12 @@ def generate_model_report(
         line = base if not comment else f"{base} — {comment}"
         lines.append(line)
 
-    # Watchlist – max(|AH|,|PM|) szerint csökkenő
+    
+    # Lefedettség-ellenőrzés (a darabszámos tickerek UTÁN, biblia szerint)
+    lines.append("")
+    lines.append(coverage_line)
+    lines.append(universe_line)
+# Watchlist – max(|AH|,|PM|) szerint csökkenő
     watch_sorted = sorted(
         watch_results,
         key=lambda x: x.get("max_move", 0.0),
