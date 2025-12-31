@@ -1,7 +1,7 @@
-# Version: v3.8.13
+# Version: v3.8.14
 # Last updated: 2025-12-31T11:15:00Z
 #!/usr/bin/env python3
-"""postprocess_report.py – v3.8.13-format-reflow-robust
+"""postprocess_report.py – v3.8.14-format-reflow-robust
 
 Bocsáss meg Uram, mert balfék voltam; add Uram, hogy ne legyen hibás ez a módosítás.
 
@@ -401,8 +401,6 @@ def main() -> None:
 
     md_path = Path(args.md)
     bundle_dir = Path(args.bundle_dir)
-
-    macro_json = bundle_dir / f"macro_news_{args.report}.json"
     analyst_json = bundle_dir / f"analyst_{args.report}.json"
     catalysts_json = bundle_dir / f"catalysts_{args.report}.json"
     highconv_json = bundle_dir / f"high_conv_{args.report}.json"
@@ -415,23 +413,15 @@ def main() -> None:
 
     body_lines, job_lines = _extract_job_summary(lines)
 
-    body_lines = _remove_section_by_heading(body_lines, ["### Makró / Politika / FED", "## Makró / Politika / FED", "### Makró / FED / Politika", "## Makró / FED / Politika", "### Politika / FED / Makró", "## Politika / FED / Makró", "### 🧠 Makró / FED / Politika", "## 🧠 Makró / FED / Politika", "### 🧠 Makró / Politika / FED", "## 🧠 Makró / Politika / FED", "### 🕒 Makró / FED / Politika", "## 🕒 Makró / FED / Politika", "### 🕒 Makró / Politika / FED", "## 🕒 Makró / Politika / FED"])
+    body_lines = _remove_section_by_heading(body_lines, ["### Makró / Politika / FED", "## Makró / Politika / FED", "### Makró / FED / Politika", "## Makró / FED / Politika", "### Politika / FED / Makró", "## Politika / FED / Makró"])
     body_lines = _remove_section_by_heading(body_lines, ["### Bejelentések & fel/lemínősítések", "### 🧩 Bejelentések & fel/lemínősítések"])
     body_lines = _remove_section_by_heading(body_lines, ["### Közeli katalizátorok", "### ⏳ Közelgő katalizátorok", "### Közelgő katalizátorok"])
     body_lines = _remove_section_by_heading(body_lines, ["### Listán kívüli, 3–12 hónapos high-conviction jelöltek", "### 🚀 Listán kívüli, 3–12 hónapos high-conviction jelöltek"])
 
-    # Makró blokk kezelése:
-    # - Ha a runner már beillesztette az Apps Script (state-based) makró blokkot (### 🧠 ... + Script verzió),
-    #   akkor NEM szúrunk be macro_news_{report}.json alapú legacy blokkot (különben dupláz/ellentmond).
-    has_appscript_macro = any("### 🧠 Makró / FED / Politika" in ln or "### 🧠 Makró / FED / Politika" in ln for ln in body_lines) or any("**Script verzió:**" in ln and "Makró" in ln for ln in body_lines)
-
-    if has_appscript_macro:
-        # Csak a legacy 'Makró / Politika / FED' jellegű szekciókat takarítjuk.
-        body_lines = _remove_legacy_macro_sections(body_lines)
-    else:
-        body_lines = _remove_legacy_macro_sections(body_lines)
-        macro_block = _build_macro_block(macro_json)
-        body_lines = _insert_macro_after_coverage(body_lines, macro_block)
+    # Makró blokk kezelése (Option A – TEXT):
+    # - A runner már beilleszti a kanonikus 🧠 Apps Script makró blokkot.
+    # - Itt csak a legacy (duplázó) makró szekciókat takarítjuk.
+    body_lines = _remove_legacy_macro_sections(body_lines)
 
     analyst_block = _ensure_block(
         build_analyst_block(analyst_json),
