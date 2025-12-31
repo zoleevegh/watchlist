@@ -1,5 +1,5 @@
-# Version: v3.8.11
-# Last updated: 2025-12-30T13:03:24Z
+# Version: v3.8.12
+# Last updated: 2025-12-31T11:15:00Z
 #!/usr/bin/env python3
 """postprocess_report.py – v3.4.2-format-reflow-robust
 
@@ -196,6 +196,42 @@ def _remove_section_by_heading(lines: List[str], heading_variants: List[str]) ->
             out.pop(idx)
     return out
 
+
+def _remove_macro_section_loose(lines: List[str]) -> List[str]:
+    """Remove any existing macro block even if it is formatted as bullets (e.g. '🧠 Makró / FED / Politika').
+
+    This prevents postprocess from inserting a second macro section when the runner already printed one.
+    """
+    out: List[str] = []
+    i = 0
+
+    # Matches:
+    #   🧠 Makró / FED / Politika
+    #   🕒 Makró / FED / Politika
+    #   - 🧠 Makró / FED / Politika
+    macro_start_re = re.compile(r"^\s*-?\s*(?:[🧠🕒]\s*)?Makró\s*/\s*.*FED.*Politika.*$", re.IGNORECASE)
+
+    # Stop when we hit a new major section header
+    def _is_next_section(line: str) -> bool:
+        s = line.strip()
+        return s.startswith("## ") or s.startswith("### ")
+
+    while i < len(lines):
+        if macro_start_re.match(lines[i]):
+            # Skip until next section header (but keep blank separation)
+            j = i + 1
+            while j < len(lines) and not _is_next_section(lines[j]):
+                j += 1
+            # Also remove leading blank lines right after removed macro, to avoid double spacing
+            while j < len(lines) and lines[j].strip() == "":
+                j += 1
+            i = j
+            continue
+        out.append(lines[i])
+        i += 1
+
+    return out
+
 def _insert_macro_after_coverage(lines: List[str], macro_block: str) -> List[str]:
     """Insert macro block right after the 'Lefedettség:' line.
 
@@ -345,6 +381,7 @@ def main() -> None:
     body_lines = _remove_section_by_heading(body_lines, ["### Közeli katalizátorok", "### ⏳ Közelgő katalizátorok", "### Közelgő katalizátorok"])
     body_lines = _remove_section_by_heading(body_lines, ["### Listán kívüli, 3–12 hónapos high-conviction jelöltek", "### 🚀 Listán kívüli, 3–12 hónapos high-conviction jelöltek"])
 
+    body_lines = _remove_macro_section_loose(body_lines)
     macro_block = _build_macro_block(macro_json)
     body_lines = _insert_macro_after_coverage(body_lines, macro_block)
 
