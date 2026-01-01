@@ -1,22 +1,17 @@
-"""
-highconv_builder.py
-(Sheet-alapú, kizárásos high-conv builder – FRISSÍTETT LINKKEL + ÚJ OUTPUT ÚTTAL)
+VERSION = "v1.0.5-biblia-ticker-guard-snapshot-safe"
+
+"""highconv_builder.py
+
+(Sheet-alapú, kizárásos high-conv builder – TICKER-GUARD + SNAPSHOT SAFE)
 
 3–12 hónapos „high-conviction” jelöltek automatikus azonosítása és high_conv_1.json generálása.
 
 FRISSÍTÉSEK EHHEZ A VERZIÓHOZ
 -----------------------------
-- ANALYST_FEED_URL: a JELENLEGI, működő Apps Script analyst endpointod
-    https://script.google.com/macros/s/AKfycbx5geIQ-eAnAqzjbPmTd5k59Hn_MnLiKh_9c8ft0nSWd2P3BQt1o5Dv6JQqNJi4q7X4Ow/exec
-
-- EXCLUDE_TICKERS_CSV_URL: a kézi futásoknál is használt MASTER CSV linked
-    https://docs.google.com/spreadsheets/d/e/2PACX-1vS0vpBd1ADF3_Godyflgh3-TbJoj_CCRBJ4QHeLiZCY12tHPWuTIL5OZBTByMApdT92vjS2pRpI1koM/pub?output=csv
-
-- OUTPUT_PATH: a #1 biblia-struktúrához igazítva most már
-    reports/1/high_conv_1.json
-
-A kizárandó tickereket (portfólió + watchlist) dinamikusan a fenti CSV-ből olvassa,
-nem kell semmit txt-be írogatnod. A txt csak opcionális extra rásegítés.
+- Verziószám a fájl ELEJÉN (biblia-szabály: folytatólagos verziózás).
+- Ticker-guard: UPGRADE/DOWNGRADE stb. nem lehet ticker (stopword + regex).
+- Yahoo snapshot 401/403/429 esetén nem törik a futás (best-effort + chart fallback).
+- Biblia-kompatibilis: „listán kívüli” jelöltek = kizárjuk a MASTER (watchlist+pozíció) tickereit.
 
 HASZNÁLAT
 ---------
@@ -30,9 +25,9 @@ HASZNÁLAT
 3) Eredmény:
        reports/1/high_conv_1.json
 
-   Ezt a macro_highconv_helpers_v2.py script fogja beolvasni, és a
-   „Listán kívüli, 3–12 hónapos high-conviction jelöltek” blokkot a #1-es riport
-   végére bevarrja.
+# IMÁDSÁG
+# Bocsáss meg uram, mert balfék voltam, és action szót tickernek néztem (UPGRADE).
+# Add uram, hogy ez a build csak valódi tickereket engedjen át, és a Yahoo 401 ne törje el a futást.
 """
 
 from __future__ import annotations
@@ -48,17 +43,59 @@ from typing import Any, Dict, Iterable, List, Optional, Set
 
 import time
 import random
+import re
 
 import requests
 
-# ima (debug után):
-# bocsáss meg uram mert balfék voltam…
-# add uram, hogy ne legyen hibás ez a módosítás.
+# --- TICKER VALIDÁCIÓ ----------------------------------------------------------
+
+_TICKER_RE = re.compile(r"^[A-Z][A-Z0-9.\-]{0,11}$")
+
+_TICKER_STOPWORDS = {
+    "UPGRADE","DOWNGRADE","UPGRADED","DOWNGRADED",
+    "RAISE","RAISED","LOWER","LOWERED",
+    "INITIATE","INITIATED","INITIATES","INITIATING",
+    "MAINTAIN","MAINTAINED","REITERATE","REITERATED",
+    "OUTPERFORM","UNDERPERFORM","NEUTRAL","BUY","SELL","HOLD",
+    "OVERWEIGHT","UNDERWEIGHT","EQUALWEIGHT",
+    "TARGET","PT","PRICE","ACTION","RATING",
+}
+
+def is_valid_ticker(sym: str) -> bool:
+    if not sym:
+        return False
+    s = sym.strip().upper()
+    if s in _TICKER_STOPWORDS:
+        return False
+    return bool(_TICKER_RE.match(s))
 
 
-VERSION = "v1.0.4-rate-limit-safe-yahoochart-fallback-indentfix"
+# --- KONFIGURÁCIÓ --------------------------------------------------------------
 
-# Yahoo rate-limit / retry config
+ANALYST_FEED_URL = (
+    "https://script.google.com/macros/s/"
+    "AKfycbx5geIQ-eAnAqzjbPmTd5k59Hn_MnLiKh_9c8ft0nSWd2P3BQt1o5Dv6JQqNJi4q7X4Ow"
+    "/exec"
+)
+
+DAYS_BACK = 30
+
+EXCLUDE_TICKERS_CSV_URL = (
+    "https://docs.google.com/spreadsheets/d/e/"
+    "2PACX-1vS0vpBd1ADF3_Godyflgh3-TbJoj_CCRBJ4QHeLiZCY12tHPWuTIL5OZBTByMApdT92vjS2pRpI1koM/"
+    "pub?output=csv"
+)
+
+EXCLUDE_TICKERS_FILE = "exclude_tickers.txt"
+EXTRA_EXCLUDE_TICKERS: Set[str] = set()
+
+YAHOO_QUOTE_URL = "https://query1.finance.yahoo.com/v7/finance/quote"
+
+MIN_SCORE = 0.6
+MIN_SIGNAL_COUNT = 2
+
+OUTPUT_PATH = Path("reports/1/high_conv_1.json")
+
 YAHOO_BATCH_SIZE = 50
 YAHOO_MAX_RETRIES = 6
 YAHOO_BASE_SLEEP_SEC = 1.0
@@ -72,48 +109,7 @@ SESSION.headers.update({
 })
 
 
-
-# --- KONFIGURÁCIÓ --------------------------------------------------------------
-
-# Apps Script analyst feed URL – FRISSÍTETT, JELENLEGI LINK
-ANALYST_FEED_URL = (
-    "https://script.google.com/macros/s/"
-    "AKfycbx5geIQ-eAnAqzjbPmTd5k59Hn_MnLiKh_9c8ft0nSWd2P3BQt1o5Dv6JQqNJi4q7X4Ow"
-    "/exec"
-)
-
-# Hány napra visszamenőleg nézzük az analyst eseményeket a high-convhez
-DAYS_BACK = 30
-
-# Dinamikus kizárási lista Google Sheets CSV-ből
-# A kézi futásoknál is használt MASTER CSV linked
-EXCLUDE_TICKERS_CSV_URL = (
-    "https://docs.google.com/spreadsheets/d/e/"
-    "2PACX-1vS0vpBd1ADF3_Godyflgh3-TbJoj_CCRBJ4QHeLiZCY12tHPWuTIL5OZBTByMApdT92vjS2pRpI1koM/"
-    "pub?output=csv"
-)
-
-# Opcionális extra kizárási txt fájl (egy sor = ticker, vagy vesszővel elválasztott lista)
-EXCLUDE_TICKERS_FILE = "exclude_tickers.txt"
-
-# Alapból üres kézi halmaz; ha akarsz, itt is megadhatsz pár tickert fixen
-EXTRA_EXCLUDE_TICKERS: Set[str] = set()
-
-# Yahoo Finance quote endpoint (több ticker egyszerre)
-YAHOO_QUOTE_URL = "https://query1.finance.yahoo.com/v7/finance/quote"
-
-# High-conv pontszám küszöb
-MIN_SCORE = 0.6
-
-# Min. jel szám (az 5 biblia-jelölés közül)
-MIN_SIGNAL_COUNT = 2
-
-# high_conv_1.json kimeneti fájl – BIBLIA SZERINTI HELYRE RAKVA
-OUTPUT_PATH = Path("reports/1/high_conv_1.json")
-
-
 # --- ADATSTRUKTÚRÁK ------------------------------------------------------------
-
 
 @dataclass
 class AnalystEvent:
@@ -128,7 +124,7 @@ class AnalystEvent:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "AnalystEvent":
-        ticker = str(data.get("ticker") or "").upper()
+        ticker = str(data.get("ticker") or "").upper().strip()
         date_str = str(data.get("date") or "")
         date = _parse_date(date_str)
         firm = str(data.get("firm") or "").strip()
@@ -159,7 +155,7 @@ class TickerSignals:
     ticker: str
     positive_analyst_events: int = 0
     has_guidance_upgrade: bool = False
-    has_consensus_revision_up: bool = False  # jelenleg placeholder
+    has_consensus_revision_up: bool = False  # placeholder
     has_future_catalyst: bool = False
     near_52w_high: bool = False
     score: float = 0.0
@@ -167,11 +163,8 @@ class TickerSignals:
 
 # --- SEGÉD FÜGGVÉNYEK ----------------------------------------------------------
 
-
 def _parse_date(value: str) -> datetime:
-    """
-    ISO vagy 'YYYY-MM-DD' -> datetime (UTC). Ha nem érthető, 'most'.
-    """
+    """ISO vagy 'YYYY-MM-DD' -> datetime (UTC). Ha nem érthető, 'most'."""
     if not value:
         return datetime.now(timezone.utc)
     try:
@@ -184,28 +177,20 @@ def _parse_date(value: str) -> datetime:
 
 
 def load_exclude_tickers() -> Set[str]:
-    """
-    Dinamikus kizárási lista építése:
-      - EXTRA_EXCLUDE_TICKERS (hardcode)
-      - EXCLUDE_TICKERS_CSV_URL (Google Sheets CSV)
-      - EXCLUDE_TICKERS_FILE (opcionális txt)
-    """
-    tickers: Set[str] = set(t.upper() for t in EXTRA_EXCLUDE_TICKERS)
+    """MASTER CSV + opcionális txt + extra set."""
+    tickers: Set[str] = set(t.upper() for t in EXTRA_EXCLUDE_TICKERS if t)
 
-    # 1) CSV-ből
     if EXCLUDE_TICKERS_CSV_URL and EXCLUDE_TICKERS_CSV_URL.startswith("http"):
         try:
             resp = requests.get(EXCLUDE_TICKERS_CSV_URL, timeout=30)
             resp.raise_for_status()
-            text = resp.text
-            f = StringIO(text)
+            f = StringIO(resp.text)
             reader = csv.reader(f)
             rows = list(reader)
             if rows:
                 header = [h.strip() for h in rows[0]]
                 data_rows = rows[1:] if any(header) else rows
 
-                # Ticker oszlop index
                 ticker_idx = 0
                 for i, name in enumerate(header):
                     if name.lower() == "ticker":
@@ -216,23 +201,22 @@ def load_exclude_tickers() -> Set[str]:
                     if len(row) <= ticker_idx:
                         continue
                     t = row[ticker_idx].strip().upper()
-                    if t:
+                    if is_valid_ticker(t):
                         tickers.add(t)
         except Exception as e:
             print(f"[highconv_builder] FIGYELEM: CSV kizárási lista betöltése sikertelen: {e}")
 
-    # 2) Opcionális txt fájl
     path = Path(EXCLUDE_TICKERS_FILE)
     if path.is_file():
         try:
-            text = path.read_text(encoding="utf-8")
-            for line in text.splitlines():
+            txt = path.read_text(encoding="utf-8")
+            for line in txt.splitlines():
                 line = line.strip()
                 if not line:
                     continue
                 for part in line.replace(";", ",").split(","):
                     t = part.strip().upper()
-                    if t:
+                    if is_valid_ticker(t):
                         tickers.add(t)
         except Exception as e:
             print(f"[highconv_builder] FIGYELEM: txt kizárási lista betöltése sikertelen: {e}")
@@ -241,18 +225,12 @@ def load_exclude_tickers() -> Set[str]:
 
 
 def fetch_analyst_events() -> List[AnalystEvent]:
-    """
-    Apps Script analyst feed hívása.
-    Várja, hogy a válasz JSON-ben:
-        { "ok": true, "events": [ ... ] }
-    legyen.
-    """
+    """Apps Script analyst feed hívása."""
     params = {"type": "analyst", "report": "1", "days": str(DAYS_BACK)}
     resp = requests.get(ANALYST_FEED_URL, params=params, timeout=30)
     resp.raise_for_status()
     data = resp.json()
 
-    events_raw = []
     if isinstance(data, dict):
         events_raw = data.get("events") or data.get("items") or []
     elif isinstance(data, list):
@@ -266,7 +244,7 @@ def fetch_analyst_events() -> List[AnalystEvent]:
             ev = AnalystEvent.from_dict(item)
         except Exception:
             continue
-        if not ev.ticker:
+        if not is_valid_ticker(ev.ticker):
             continue
         events.append(ev)
 
@@ -274,11 +252,11 @@ def fetch_analyst_events() -> List[AnalystEvent]:
 
 
 def classify_events(events: Iterable[AnalystEvent]) -> Dict[str, TickerSignals]:
-    """
-    Analyst eseményekből biblia-jelölések és pontszám számítása ticker szinten.
-    """
+    """Analyst események -> biblia-jelölések ticker szinten."""
     by_ticker: Dict[str, List[AnalystEvent]] = defaultdict(list)
     for ev in events:
+        if not is_valid_ticker(ev.ticker):
+            continue
         by_ticker[ev.ticker].append(ev)
 
     result: Dict[str, TickerSignals] = {}
@@ -286,19 +264,19 @@ def classify_events(events: Iterable[AnalystEvent]) -> Dict[str, TickerSignals]:
     for ticker, evs in by_ticker.items():
         sig = TickerSignals(ticker=ticker)
 
-        # 1) Pozitív analyst események (upgrade, PT emelés, pozitív coverage)
         positive_count = 0
         for ev in evs:
             act = ev.action.lower()
             notes = ev.notes.lower()
+
             if any(kw in act for kw in ["upgrade", "initiated", "overweight", "outperform", "buy"]):
                 positive_count += 1
                 continue
             if "pt emelés" in notes or "price target raised" in notes or "pt raised" in notes:
                 positive_count += 1
+
         sig.positive_analyst_events = positive_count
 
-        # 2) Guidance / outlook emelés
         for ev in evs:
             notes = ev.notes.lower()
             if any(
@@ -315,10 +293,8 @@ def classify_events(events: Iterable[AnalystEvent]) -> Dict[str, TickerSignals]:
                 sig.has_guidance_upgrade = True
                 break
 
-        # 3) Konszenzus EPS/árbevétel felfelé módosul – jelenleg placeholder
         sig.has_consensus_revision_up = False
 
-        # 4) Közelgő katalizátor (3–12 hónap)
         for ev in evs:
             notes = ev.notes.lower()
             if any(
@@ -344,53 +320,37 @@ def classify_events(events: Iterable[AnalystEvent]) -> Dict[str, TickerSignals]:
 
 
 def _sleep_backoff(attempt: int) -> None:
-    # Exponential backoff + jitter
     base = YAHOO_BASE_SLEEP_SEC * (2 ** max(0, attempt))
     jitter = random.uniform(0.0, 0.25 * base)
     time.sleep(min(30.0, base + jitter))
 
 
 def fetch_yahoo_chart_snapshot(ticker: str) -> Dict[str, Any]:
-    """
-    Yahoo Finance chart fallback – akkor használjuk, ha a quote endpoint (v7/finance/quote) 401/403/429 miatt
-    nem ad adatot. A cél minimálisan ez:
-      - regularMarketPrice (vagy utolsó close)
-      - fiftyTwoWeekHigh (1y napi close max)
-    """
+    """Yahoo chart fallback 1y/1d: regularMarketPrice + fiftyTwoWeekHigh."""
     t = (ticker or "").upper().strip()
-    if not t:
+    if not is_valid_ticker(t):
         return {}
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{t}?range=1y&interval=1d&includePrePost=false"
     try:
-        # SESSION már tartalmaz UA/Accept headereket; itt csak a timeoutot és no-cache-t adunk meg.
-        resp = SESSION.get(
-            url,
-            timeout=20,
-            headers={"Cache-Control": "no-cache", "Pragma": "no-cache"},
-        )
-
-        # Ha ez is blokkolt, hagyjuk üresen
+        resp = SESSION.get(url, timeout=20, headers={"Cache-Control": "no-cache", "Pragma": "no-cache"})
         if resp.status_code >= 400:
             return {}
-
         data = resp.json()
         res = (((data.get("chart") or {}).get("result") or [])[:1] or [None])[0] or {}
         meta = res.get("meta") or {}
         price = meta.get("regularMarketPrice") or meta.get("previousClose")
         closes = (((res.get("indicators") or {}).get("quote") or [])[:1] or [None])[0] or {}
         close_list = closes.get("close") or []
+        max_close = None
         try:
             max_close = max([c for c in close_list if isinstance(c, (int, float))])
         except Exception:
             max_close = None
-
-        # Biztonság: ha nincs meta-price, vegyük az utolsó valid close-t
         if price is None:
             try:
                 price = [c for c in close_list if isinstance(c, (int, float))][-1]
             except Exception:
                 price = None
-
         out = {"symbol": t}
         if price is not None:
             out["regularMarketPrice"] = price
@@ -402,21 +362,13 @@ def fetch_yahoo_chart_snapshot(ticker: str) -> Dict[str, Any]:
 
 
 def fetch_yahoo_snapshot(tickers: Iterable[str]) -> Dict[str, Dict[str, Any]]:
-    """
-    Yahoo Finance quote snapshot – több tickerre egyszerre.
-
-    FONTOS: A Yahoo 429 / rate-limit esetén NEM dobjuk el a teljes futást.
-    - batch-eljük a tickereket (YAHOO_BATCH_SIZE)
-    - 429/5xx esetén retry + backoff
-    - végső sikertelenségnél a batch kimarad, a futás megy tovább
-    """
-    tickers_list = sorted({t.upper() for t in tickers if t})
+    """Yahoo quote snapshot batch. 401/403/429 esetén best-effort, nem dob."""
+    tickers_list = sorted({t.upper() for t in tickers if is_valid_ticker(t)})
     if not tickers_list:
         return {}
 
     result: Dict[str, Dict[str, Any]] = {}
 
-    # Batches
     for i in range(0, len(tickers_list), YAHOO_BATCH_SIZE):
         batch = tickers_list[i : i + YAHOO_BATCH_SIZE]
         symbols = ",".join(batch)
@@ -431,33 +383,27 @@ def fetch_yahoo_snapshot(tickers: Iterable[str]) -> Dict[str, Dict[str, Any]]:
                     headers={"Cache-Control": "no-cache", "Pragma": "no-cache"},
                 )
 
-                # Rate limit
+                if resp.status_code in (401, 403):
+                    last_err = f"HTTP {resp.status_code} Unauthorized/Forbidden"
+                    break
+
                 if resp.status_code == 429:
                     last_err = "HTTP 429 Too Many Requests"
                     _sleep_backoff(attempt)
                     continue
 
-                # Transient server errors
                 if 500 <= resp.status_code < 600:
                     last_err = f"HTTP {resp.status_code}"
                     _sleep_backoff(attempt)
                     continue
 
                 resp.raise_for_status()
-
                 data = resp.json()
-                quotes = data.get("quoteResponse", {}).get("result", []) or []
+                quotes = (data.get("quoteResponse") or {}).get("result") or []
                 for q in quotes:
                     symbol = str(q.get("symbol") or "").upper()
-                    if symbol:
+                    if is_valid_ticker(symbol):
                         result[symbol] = q
-
-                # Ha a batch-ből hiányzik ticker, próbáljuk chart fallback-kal pótolni
-                for t in batch:
-                    if t not in result:
-                        q2 = fetch_yahoo_chart_snapshot(t)
-                        if q2:
-                            result[t] = q2
 
                 last_err = None
                 break
@@ -465,16 +411,21 @@ def fetch_yahoo_snapshot(tickers: Iterable[str]) -> Dict[str, Dict[str, Any]]:
                 last_err = str(e)
                 _sleep_backoff(attempt)
 
+        # Chart fallback for missing ones OR if quote blocked
+        for t in batch:
+            if t not in result:
+                q2 = fetch_yahoo_chart_snapshot(t)
+                if q2:
+                    result[t] = q2
+
         if last_err:
-            print(f"[highconv_builder] FIGYELEM: Yahoo snapshot batch kihagyva ({len(batch)} ticker): {last_err}")
+            print(f"[highconv_builder] FIGYELEM: Yahoo snapshot batch issue ({len(batch)} ticker): {last_err}")
 
     return result
 
+
 def apply_52w_high_signal(signals: Dict[str, TickerSignals], yahoo_quotes: Dict[str, Dict[str, Any]]) -> None:
-    """
-    Beállítja a near_52w_high jelzőt a Yahoo-ból jövő adatok alapján:
-    aktuális ár max. 5%-nál legyen távol a 12 havi csúcstól.
-    """
+    """near_52w_high: ár max 5%-ra az 52W csúcstól."""
     for ticker, sig in signals.items():
         q = yahoo_quotes.get(ticker)
         if not q:
@@ -498,15 +449,7 @@ def apply_52w_high_signal(signals: Dict[str, TickerSignals], yahoo_quotes: Dict[
 
 
 def compute_scores(signals: Dict[str, TickerSignals]) -> None:
-    """
-    A biblia 5 jelölését pontszámokká alakítja.
-    Egyszerű súlyozás:
-      - 1) pozitív analyst események (>=2): +0.4
-      - 2) guidance upgrade: +0.3
-      - 3) konszenzus felhúzás (placeholder): +0.2
-      - 4) közelgő katalizátor: +0.2
-      - 5) near 52w high: +0.2
-    """
+    """Biblia jelölések -> pontszám."""
     for sig in signals.values():
         score = 0.0
         if sig.positive_analyst_events >= 2:
@@ -523,12 +466,7 @@ def compute_scores(signals: Dict[str, TickerSignals]) -> None:
 
 
 def select_highconv(signals: Dict[str, TickerSignals], exclude_tickers: Set[str]) -> List[TickerSignals]:
-    """
-    Kiválasztja a high-conv jelölteket:
-      - nincs a kizárandó halmazban,
-      - elég jel (MIN_SIGNAL_COUNT),
-      - elég pont (MIN_SCORE).
-    """
+    """High-conv kiválasztás: exclude + signal_count + score."""
     candidates: List[TickerSignals] = []
 
     for ticker, sig in signals.items():
@@ -556,9 +494,7 @@ def select_highconv(signals: Dict[str, TickerSignals], exclude_tickers: Set[str]
 
 
 def build_highconv_json(candidates: List[TickerSignals]) -> List[Dict[str, Any]]:
-    """
-    A TickerSignals listát high_conv_1.json kompatibilis dict-listává alakítja.
-    """
+    """Kimeneti items lista."""
     items: List[Dict[str, Any]] = []
     for sig in candidates:
         thesis_parts: List[str] = []
@@ -586,14 +522,13 @@ def build_highconv_json(candidates: List[TickerSignals]) -> List[Dict[str, Any]]
         if sig.near_52w_high:
             signals_list.append("Árfolyam 5%-on belül az 52 hetes csúcstól.")
 
-        item = {
+        items.append({
             "ticker": sig.ticker,
-            "company": "",  # opcionálisan később kitölthető Yahoo 'shortName'-ből
+            "company": "",
             "thesis": thesis,
             "score": round(sig.score, 2),
             "signals": signals_list,
-        }
-        items.append(item)
+        })
 
     return items
 
@@ -620,11 +555,8 @@ def main() -> None:
     sigs = classify_events(events)
 
     print("[highconv_builder] Yahoo snapshot lekérése...")
-    try:
-        yahoo_quotes = fetch_yahoo_snapshot(sigs.keys())
-        apply_52w_high_signal(sigs, yahoo_quotes)
-    except Exception as e:
-        print(f"[highconv_builder] FIGYELEM: Yahoo snapshot sikertelen (folytatom 52w jel nélkül): {e}")
+    yahoo_quotes = fetch_yahoo_snapshot(sigs.keys())
+    apply_52w_high_signal(sigs, yahoo_quotes)
 
     compute_scores(sigs)
 
