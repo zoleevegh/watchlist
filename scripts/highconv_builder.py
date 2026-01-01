@@ -1,4 +1,4 @@
-VERSION = "v1.0.5-biblia-ticker-guard-snapshot-safe"
+VERSION = "v1.0.6-biblia-version-top-no-future"
 
 """highconv_builder.py
 
@@ -29,8 +29,6 @@ HASZNÁLAT
 # Bocsáss meg uram, mert balfék voltam, és action szót tickernek néztem (UPGRADE).
 # Add uram, hogy ez a build csak valódi tickereket engedjen át, és a Yahoo 401 ne törje el a futást.
 """
-
-from __future__ import annotations
 
 import csv
 import json
