@@ -36,9 +36,9 @@ jobs:
 
       # Makró / FED / Politika – narratív feed (GAS)
 
-      MACRO_FEED_URL_1: "https://script.google.com/macros/s/AKfycbyZxnT5CwmBTgwM9j_6WLw5LHsYVwDzI3sgMZqWfuvlxW-x4_qcexihN3HppNOjLLuZ/exec?report=1&run=${{ github.run_id }}&attempt=${{ github.run_attempt }}&format=text"
-      MACRO_FEED_URL_2: "https://script.google.com/macros/s/AKfycbyZxnT5CwmBTgwM9j_6WLw5LHsYVwDzI3sgMZqWfuvlxW-x4_qcexihN3HppNOjLLuZ/exec?report=2&run=${{ github.run_id }}&attempt=${{ github.run_attempt }}&format=text"
-      MACRO_FEED_URL_3: "https://script.google.com/macros/s/AKfycbyZxnT5CwmBTgwM9j_6WLw5LHsYVwDzI3sgMZqWfuvlxW-x4_qcexihN3HppNOjLLuZ/exec?report=3&run=${{ github.run_id }}&attempt=${{ github.run_attempt }}&format=text"
+      MACRO_FEED_URL_1: "https://script.google.com/macros/s/AKfycbxPDhBf2OPKKpLUbX63n-Yl7QqwSiOq4HP5bW51Sqwj_0tSvwk683jgjdNQAY-nMwgf/exec?report=1&run=${{ github.run_id }}&attempt=${{ github.run_attempt }}&format=text"
+      MACRO_FEED_URL_2: "https://script.google.com/macros/s/AKfycbxPDhBf2OPKKpLUbX63n-Yl7QqwSiOq4HP5bW51Sqwj_0tSvwk683jgjdNQAY-nMwgf/exec?report=2&run=${{ github.run_id }}&attempt=${{ github.run_attempt }}&format=text"
+      MACRO_FEED_URL_3: "https://script.google.com/macros/s/AKfycbxPDhBf2OPKKpLUbX63n-Yl7QqwSiOq4HP5bW51Sqwj_0tSvwk683jgjdNQAY-nMwgf/exec?report=3&run=${{ github.run_id }}&attempt=${{ github.run_attempt }}&format=text"
 
 
     steps:
