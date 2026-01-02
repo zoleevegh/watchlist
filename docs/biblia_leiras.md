@@ -1,6 +1,6 @@
 # Részvényjelentés Automata – BIBLIA leírás
-**Verzió:** v3.8.24  
-**Dátum:** 2025-12-31
+**Verzió:** v3.8.25  
+**Dátum:** 2026-01-02
 
 ## Könyvtárszerkezet (FRISSÍTVE – v3.8.23)
 
@@ -98,9 +98,9 @@ A konkrét logika:
 - Endpointok:
   - `.../exec?type=macro&report={1|2|3}` → makró JSON (A‑mód: konzervatív, nem piaci vélemény)
   - `.../exec?type=health` → forrásonkénti lefedettség-ellenőrzés (`ok/httpStatus/error`)
-- A workflow **curl-lel** tölti le a JSON-t ide:
-  - `reports/macro_news_1.json`, `reports/macro_news_2.json`, `reports/macro_news_3.json`
-- A `report_runner.py` ezeket **csak beolvassa és megjeleníti**, hírt soha nem talál ki.
+- A workflow **curl-lel** tölti le a **TEXT** makró blokkot ide:
+  - `reports/macro_block_1.txt` (opcionálisan `macro_block_2.txt`, `macro_block_3.txt`)
+- A `report_runner.py` ezt **csak beolvassa és beilleszti**ssa és megjeleníti**, hírt soha nem talál ki.
 
 ### 2.4 crawler_analyst_catalyst.py
 
@@ -131,7 +131,7 @@ A #1 és #2 jelentések központi utófeldolgozója:
 
 - a nyers `summary_report_X.md` törzsét kiegészíti:
 
-  - makró blokkal (`macro_news_X.json`),
+  - makró blokkot a runner már beilleszti (`macro_block_X.txt`), ezért a postprocess ezt nem gyártja,
   - analyst & catalyst blokkal (`analyst_X.json`, `catalysts_X.json`),
   - high-conv blokkal (`high_conv_1.json`),
 
@@ -178,7 +178,7 @@ A #1 és #2 jelentések központi utófeldolgozója:
 **Sorrend (blokkszint):**
 
 1. Lefedettség-ellenőrzés (#1 – TELJES / HIÁNYOS, hiányzó tickerek felsorolásával),
-2. Makró / Politika / FED / „Trump-napihír” blokk (macro_news_1.json),
+2. Makró / Politika / FED / „Trump-napihír” blokk (`macro_block_1.txt` – Apps Script TEXT),
 3. Darabszámos tickerek AH/PM mozgásai,
 4. Watchlist tickerek (csak ha >= ±3,00% vagy lényeges hír),
 5. „Bejelentések & fel/lemínősítések” – analyst_1.json + catalysts_1.json alapján,
@@ -200,7 +200,7 @@ A #1 és #2 jelentések központi utófeldolgozója:
 **Blokkok:**
 
 1. Lefedettség (#2 – TELJES / HIÁNYOS),
-2. Makró blokk (macro_news_2.json),
+2. Makró blokk (`macro_block_2.txt` – Apps Script TEXT),
 3. Darabszámos tickerek Open→Close mozgásai,
 4. Watchlist tickerek (ha hír vagy >= ±3,00% mozgás),
 5. Elemzői lépések, katalizátorok (analyst_2.json, catalysts_2.json),
@@ -244,7 +244,7 @@ Megvalósítás: `blocks_events_3.py`, `blocks_intraday_3.py`, `postprocess_repo
 
 2. **Makró feed (Apps Script MACRO webapp)**  
    - a `run_report.yml` (PowerShell `curl`) hívja a `MACRO_FEED_URL_1/2/3` URL-eket,  
-   - kimenet: `reports/macro_news_1.json`, `reports/macro_news_2.json`, `reports/macro_news_3.json`.
+   - kimenet: `reports/macro_block_1.txt` (opcionálisan `macro_block_2.txt`, `macro_block_3.txt`).
 
 3. **Analyst / Catalyst események (Python pipeline)**  
    - `crawler_analyst_catalyst.py` letölti a nyers feedeket (GAS webapp) → `reports/raw_analyst_{N}.json`, `reports/raw_catalysts_{N}.json`,  
@@ -449,7 +449,7 @@ scripts/
 
 A Makró / Politika / FED blokk a #1 jelentésben **strukturálisan kötelező**.
 
-Amennyiben a `macro_news_1.json` az adott futás során üres,
+Amennyiben a `macro_block_1.txt` az adott futás során üres,
 vagy nem tartalmaz piaci relevanciájú makró / FED / politikai eseményt,
 a `postprocess_report.py` **kötelezően beszúr egy üres (placeholder) makró blokkot**
 a jelentés elejére.
@@ -469,7 +469,7 @@ A #1 / #2 / #3 jelentések **nem osztoznak** artifact fájlokon: minden jelenté
 - #3 → `high_conv_3.json`
 
 **Egyéb feed artifactok (példa):**
-- `macro_news_1.json`, `macro_news_2.json`, `macro_news_3.json`
+- `macro_block_1.txt`, `macro_block_2.txt`, `macro_block_3.txt`
 - `earnings_1.json`, `earnings_2.json`, `earnings_3.json`
 - `analyst_1.json`, `analyst_2.json`, `analyst_3.json`
 - `catalysts_1.json`, `catalysts_2.json`, `catalysts_3.json`
@@ -857,7 +857,7 @@ Makró / FED / Politika – KANONIKUS ADATÚT (AKTÍV)
    - Letölti a JSON-t ide: `reports/macro_news_1.json`
 
 3. **report_runner.py**
-   - Beolvassa a `macro_news_1.json` fájlt
+   - Beolvassa a `macro_block_1.txt` fájlt
    - Ha üres → korrekt „nem érkezett érdemi hír” szöveg
    - Soha nem talál ki hírt
 
