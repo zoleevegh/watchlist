@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""report_runner.py – v3.0.46-biblia-ahpm-macrotext-coveragebelow-1g
+"""report_runner.py – v3.0.47-biblia-ahpm-macrotext-safetyfix-1a
 
 Megjegyzés: Ez a verzió a korábbi teljes runner logikát megtartja.
 A bibliás formátum finomhangolása külön lépésekben történik.
@@ -35,6 +35,36 @@ SESSION: Optional[requests.Session] = None
 
 # Optional ticker notes (multi-lot / multi-broker) used in the darabszámos block.
 POSITION_LOT_NOTES: Dict[str, str] = {}
+
+
+NO_MATERIAL_MACRO_LINE = "Az előző piaczárás óta nem érkezett a piac egészét érdemben befolyásoló makró, FED vagy politikai hír."
+
+
+def ensure_macro_block_has_headline(macro_md: str) -> str:
+    """If the macro webapp returns a header-only block (e.g., ends at 'HEADLINES:'), append a single fallback line.
+    Keeps the webapp's markdown header intact; only prevents 'kamu üres' output.
+    """
+    if not macro_md:
+        return macro_md
+    if "HEADLINES:" not in macro_md:
+        return macro_md
+
+    lines = macro_md.splitlines()
+    # locate the first 'HEADLINES:' line
+    idx = None
+    for i, ln in enumerate(lines):
+        if "HEADLINES:" in ln:
+            idx = i
+            break
+    if idx is None:
+        return macro_md
+
+    # any bullet after HEADLINES?
+    for ln in lines[idx + 1 :]:
+        if ln.strip().startswith("- "):
+            return macro_md
+
+    return macro_md.rstrip() + "\n- " + NO_MATERIAL_MACRO_LINE
 
 def load_macro_from_json(path: str) -> str:
     """Load macro output written by the GAS macro feed.
@@ -808,9 +838,11 @@ def generate_model_report(
             base_url_env="MACRO_FEED_URL_1",
         )
 
-    if macro_text_final and macro_text_final.strip():
-        # A webapp már komplett markdown blokkot ad (cím + verzió + 1–3 sor).
-        macro_block = macro_text_final.strip()
+    macro_text_final = (macro_text_final or "").strip()
+    if macro_text_final:
+        # A webapp már komplett markdown blokkot ad (cím + verzió + HEADLINES + 0–N sor).
+        # Biztonsági öv: ha a webapp üres HEADLINES-t ad (nincs '- ' sor), hozzáadunk 1 fallback sort.
+        macro_block = ensure_macro_block_has_headline(macro_text_final)
     else:
         macro_block = "### 🧠 Makró / FED / Politika\n**Script verzió:** n/a\nMakró feed nem elérhető (Apps Script)."
 # 5/6/7 blokkokat a postprocess_report.py állítja elő a reports/*.json fájlokból.
