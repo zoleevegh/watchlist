@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-# report_runner.py — v4.0.2-price-engine-chartv8-2026-01-05
+# report_runner.py — v4.0.3-price-engine-chartv8-calc-2026-01-05
 # PRICE ENGINE: AH/PM % + küszöb + lefedettség
-# FIX: A /v7/finance/quote GitHub Actions alatt gyakran üres/korlátozott.
-#      Átváltunk Yahoo Chart v8 endpoint-ra (includePrePost=true), ami a régi "v8" logikához áll közelebb.
+#
+# Fix 1: Yahoo Chart v8 meta sokszor NEM ad preMarketPrice/postMarketPrice mezőt.
+#        Ezért a chart idősorából számoljuk a PRE/POST utolsó árát a tradingPeriods alapján.
+# Fix 2: Pozíció darabszám oszlopnevek (HU/EN variánsok) bővítése, hogy ne legyen positions=0.
 
 from __future__ import annotations
 
@@ -17,12 +19,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 import urllib.request
-import urllib.error
 
-
-# -----------------------------
-# TZ-safe time helpers
-# -----------------------------
 
 def _now_local() -> dt.datetime:
     return dt.datetime.now().astimezone()
@@ -30,10 +27,6 @@ def _now_local() -> dt.datetime:
 def _tz_label(now: dt.datetime) -> str:
     return (now.tzname() or "LOCAL") + f" ({now.strftime('%z')})"
 
-
-# -----------------------------
-# Formatting helpers
-# -----------------------------
 
 def _fmt_pct(x: Optional[float]) -> str:
     if x is None or (isinstance(x, float) and (math.isnan(x) or math.isinf(x))):
@@ -55,10 +48,6 @@ def _safe_float(v: Any) -> Optional[float]:
         return None
 
 
-# -----------------------------
-# MASTER CSV
-# -----------------------------
-
 def _read_master_csv(path: str) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     with open(path, "r", encoding="utf-8", newline="") as f:
@@ -77,7 +66,12 @@ def _get_first_key(d: Dict[str, Any], keys: List[str]) -> Optional[str]:
     return None
 
 def _parse_qty(row: Dict[str, Any]) -> float:
-    v = _get_first_key(row, ["quantity", "qty", "darab", "db", "shares"])
+    # bővített kulcslista HU/EN
+    v = _get_first_key(row, [
+        "quantity", "qty", "shares", "share", "position",
+        "darab", "db", "darabszám", "darabszam", "mennyiség", "mennyiseg",
+        "Darab", "DB", "Darabszám", "Darabszam", "Mennyiség", "Mennyiseg",
+    ])
     f = _safe_float(v)
     return float(f) if f is not None else 0.0
 
@@ -87,15 +81,12 @@ def _parse_threshold_k(row: Dict[str, Any]) -> float:
     return float(f) if (f is not None and f > 0) else 3.0
 
 
-# -----------------------------
-# Yahoo Chart v8
-# -----------------------------
-
 @dataclass
 class PriceSlice:
     prev_close: Optional[float]
-    post: Optional[float]
     pre: Optional[float]
+    post: Optional[float]
+
 
 def _http_get_json(url: str, timeout: int = 25) -> Dict[str, Any]:
     req = urllib.request.Request(
@@ -112,35 +103,71 @@ def _http_get_json(url: str, timeout: int = 25) -> Dict[str, Any]:
         data = resp.read()
     return json.loads(data.decode("utf-8"))
 
+
 def _yahoo_chart_v8(ticker: str) -> Dict[str, Any]:
-    # includePrePost=true adja a pre/post meta értékeket, és a prevClose-t is.
-    url = (
+    return _http_get_json(
         f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
         f"?interval=1m&range=1d&includePrePost=true&events=div%7Csplit"
     )
-    return _http_get_json(url)
 
-def _extract_prices_from_chart(payload: Dict[str, Any]) -> PriceSlice:
+
+def _last_close_in_window(timestamps: List[int], closes: List[Any], start: int, end: int) -> Optional[float]:
+    # timestamps epoch sec, closes list with None allowed
+    last: Optional[float] = None
+    for ts, c in zip(timestamps, closes):
+        if ts < start or ts > end:
+            continue
+        fv = _safe_float(c)
+        if fv is not None:
+            last = fv
+    return last
+
+
+def _extract_prices(payload: Dict[str, Any]) -> PriceSlice:
     """
-    A v8 chart válaszban a meta rész tipikusan tartalmazza:
-      - previousClose
-      - preMarketPrice
-      - postMarketPrice
-    Kulcsnevek változhatnak; több opciót próbálunk.
+    prev_close: meta.previousClose
+    pre/post: tradingPeriods (pre/post) + series closes alapján utolsó ár
     """
     try:
         res = payload.get("chart", {}).get("result", [])
         r0 = res[0] if res else {}
         meta = r0.get("meta", {}) if isinstance(r0, dict) else {}
+        timestamps = r0.get("timestamp", []) or []
+        indicators = r0.get("indicators", {}) or {}
+        quotes = indicators.get("quote", []) or []
+        q0 = quotes[0] if quotes else {}
+        closes = q0.get("close", []) or []
+        trading = meta.get("tradingPeriods", {}) or {}
     except Exception:
         meta = {}
+        timestamps = []
+        closes = []
+        trading = {}
 
     prev_close = _safe_float(meta.get("previousClose")) or _safe_float(meta.get("regularMarketPreviousClose"))
-    pre = _safe_float(meta.get("preMarketPrice"))
-    post = _safe_float(meta.get("postMarketPrice"))
 
-    # Ha nincs pre/post a meta-ban (előfordulhat), akkor marad None.
-    return PriceSlice(prev_close=prev_close, pre=pre, post=post)
+    pre_price = None
+    post_price = None
+
+    # tradingPeriods structure can be list/dict; common: {"pre":[{"start":..,"end":..}], "post":[...], "regular":[...]}
+    try:
+        pre0 = (trading.get("pre") or [None])[0]
+        post0 = (trading.get("post") or [None])[0]
+        if isinstance(pre0, dict) and timestamps and closes:
+            pre_price = _last_close_in_window(timestamps, closes, int(pre0["start"]), int(pre0["end"]))
+        if isinstance(post0, dict) and timestamps and closes:
+            post_price = _last_close_in_window(timestamps, closes, int(post0["start"]), int(post0["end"]))
+    except Exception:
+        pass
+
+    # fallback: if meta has preMarketPrice/postMarketPrice use it
+    if pre_price is None:
+        pre_price = _safe_float(meta.get("preMarketPrice"))
+    if post_price is None:
+        post_price = _safe_float(meta.get("postMarketPrice"))
+
+    return PriceSlice(prev_close=prev_close, pre=pre_price, post=post_price)
+
 
 def _pct_change(a: Optional[float], b: Optional[float]) -> Optional[float]:
     if a is None or b is None or b == 0:
@@ -182,8 +209,7 @@ def _compute_moves(master_rows: List[Dict[str, Any]], retries: int = 2, sleep_s:
             moves.append(TickerMove(ticker=t, qty=qty, k=k, ah_pct=None, pm_pct=None))
             continue
 
-        ps = _extract_prices_from_chart(payload)
-
+        ps = _extract_prices(payload)
         if ps.prev_close is None:
             missing.append(t)
 
@@ -231,7 +257,7 @@ def _render_report_1(moves: List[TickerMove], missing: List[str]) -> str:
 
     lines.append("### 📊 Darabszámos tickerek — After-hours & Premarket mozgások (teljes lista)")
     if not positions:
-        lines.append("_Nincs darabszámos pozíció a MASTER-ben._")
+        lines.append("_Nincs darabszámos pozíció a MASTER-ben._ (ellenőrizd a darabszám oszlop nevét a CSV-ben)")
     else:
         for m in positions:
             tag = " 🔔" if _is_trigger(m) else ""
@@ -266,9 +292,9 @@ def _render_report_1(moves: List[TickerMove], missing: List[str]) -> str:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--report", type=int, default=1, choices=[1], help="PRICE ENGINE: csak report=1 (AH/PM).")
-    ap.add_argument("--master", type=str, default="reports/master.csv", help="MASTER CSV.")
-    ap.add_argument("--out", type=str, default="reports/summary_report_1.md", help="Kimeneti markdown.")
+    ap.add_argument("--report", type=int, default=1, choices=[1])
+    ap.add_argument("--master", type=str, default="reports/master.csv")
+    ap.add_argument("--out", type=str, default="reports/summary_report_1.md")
     args = ap.parse_args()
 
     if not os.path.exists(args.master):
