@@ -1,27 +1,28 @@
 #!/usr/bin/env python3
-# report_runner.py — v4.3.1-chartv8-session-gating-2026-01-05
+# report_runner.py — v4.3.2-chartv8-window-gating-2026-01-05
 #
-# PROBLÉMA (amit most látsz):
-# - Zárás után (CE(S)T ~22:xx) a "Premarket" még NEM indult el.
-# - Ha range=2d és simán "pre" ablakból inferálunk, könnyen a TEGNAPI premarket tickeket kapjuk,
-#   és azt hasonlítjuk a mai prevClose-hoz -> teljesen fals PM %.
+# MI VOLT A HIBA a v4.3.1-ben?
+# - A PM "gating" csak azt nézte, hogy now >= pre_start.
+# - Ez zárás után is igaz (hiszen a MAI premarket már reggel LEFUTOTT),
+#   ezért a runner a "mai" pre ablakból (már rég vége) inferált árat, és PM %-ot számolt.
 #
-# FIX:
-# - Premarket értéket csak akkor adunk vissza, ha a JELENLEGI premarket ablak már elkezdődött.
-#   (now_epoch < pre_start -> PM = n/a, nem használunk történelmi pre adatot!)
-# - After-hours (post) értéket akkor is kiadjuk, ha a postmarket már elindult (now_epoch >= post_start),
-#   és az utolsó elérhető ticket vesszük a post ablakból.
+# FIX v4.3.2:
+# - Premarket (PM) csak akkor érvényes, ha NOW BENNE VAN a pre ablakban: pre_start <= now <= pre_end.
+#   Különben PM = n/a (nem használunk történelmi pre tickeket).
+# - After-hours (AH) csak akkor érvényes, ha NOW BENNE VAN a post ablakban: post_start <= now <= post_end.
 # - Yahoo v7 quote KIKAPCSOLVA (401). Csak Yahoo Chart v8.
+# - 1 lista:
+#   - ha van legalább 1 érvényes PM -> PM abs% szerint
+#   - különben AH abs% szerint
 #
-# 1 lista:
-# - ha van legalább 1 PM (és nem n/a a session gating miatt) -> PM abs% szerint
-# - különben AH abs% szerint
+# Logging:
+# - A runner.log-ba kiírunk egy rövid összegzést + 10-es debug sample-t, hogy a GH Actionsben is lásd.
 #
 # Exit:
 # - 0 OK
 # - 5 ALL_NA (minden ticker PM/AH n/a)
 #
-# Verzió-szabály: bármely fájl módosításakor a verziószámot folytatólagosan kell növelni.
+# Verzió-szabály: bármely fájl módosításakor a verziószámot folytatólagosan kell növelni, kihagyás nélkül.
 
 import csv
 import json
@@ -32,7 +33,7 @@ import urllib.request
 import time
 from typing import Optional, Tuple, List, Dict, Any
 
-VERSION = "v4.3.1-chartv8-session-gating-2026-01-05"
+VERSION = "v4.3.2-chartv8-window-gating-2026-01-05"
 
 
 def pct(a, b):
@@ -70,7 +71,7 @@ def load_master(path: str) -> List[str]:
 
 
 def _tp(meta: Dict[str, Any], key: str) -> Optional[Tuple[int, int]]:
-    # prefer currentTradingPeriod (ez a "mai" / "következő" sávokat adja)
+    # prefer currentTradingPeriod (ez a legjobb "mai" periódusokra)
     ctp = meta.get("currentTradingPeriod")
     if isinstance(ctp, dict) and key in ctp and isinstance(ctp[key], dict):
         d = ctp[key]
@@ -110,14 +111,11 @@ def chart_prices(t: str, now_epoch: int) -> Tuple[Optional[float], Optional[floa
 
     prev = meta.get("previousClose") or meta.get("regularMarketPreviousClose")
 
-    pre_start, pre_end = (None, None)
-    post_start, post_end = (None, None)
     wpre = _tp(meta, "pre")
     wpost = _tp(meta, "post")
-    if wpre:
-        pre_start, pre_end = wpre
-    if wpost:
-        post_start, post_end = wpost
+
+    pre_start, pre_end = (wpre if wpre else (None, None))
+    post_start, post_end = (wpost if wpost else (None, None))
 
     ts = res.get("timestamp") or []
     ind = (res.get("indicators") or {}).get("quote") or []
@@ -140,41 +138,40 @@ def chart_prices(t: str, now_epoch: int) -> Tuple[Optional[float], Optional[floa
     if pre is not None:
         debug["pre_source"] = "meta"
     else:
-        # SESSION GATING: ha a premarket még nem indult el, PM = n/a
-        if pre_start is not None and now_epoch < pre_start:
+        # WINDOW GATING: PM csak akkor, ha MOST pre ablakban vagyunk
+        if pre_start is None or pre_end is None:
             pre = None
-            debug["pre_source"] = "gated_not_started"
+            debug["pre_source"] = "tp_missing"
+        elif not (pre_start <= now_epoch <= pre_end):
+            pre = None
+            debug["pre_source"] = "gated_outside_window"
         else:
-            # ha elindult (vagy már lement), inferálhatunk
-            if pre_start is not None and pre_end is not None and ts and closes:
-                inf = _last_close_in_window(ts, closes, pre_start, pre_end)
-                if inf is not None:
-                    pre = inf
-                    debug["pre_source"] = "infer"
-                else:
-                    debug["pre_source"] = "infer_none"
+            inf = _last_close_in_window(ts, closes, pre_start, pre_end) if (ts and closes) else None
+            if inf is not None:
+                pre = inf
+                debug["pre_source"] = "infer"
             else:
-                debug["pre_source"] = "tp_missing_or_no_series"
+                debug["pre_source"] = "infer_none"
 
     # --- After-hours (postmarket) ---
     post = meta.get("postMarketPrice")
     if post is not None:
         debug["post_source"] = "meta"
     else:
-        # AH csak akkor releváns, ha a postmarket már elindult
-        if post_start is not None and now_epoch < post_start:
+        # AH csak akkor, ha MOST post ablakban vagyunk
+        if post_start is None or post_end is None:
             post = None
-            debug["post_source"] = "gated_not_started"
+            debug["post_source"] = "tp_missing"
+        elif not (post_start <= now_epoch <= post_end):
+            post = None
+            debug["post_source"] = "gated_outside_window"
         else:
-            if post_start is not None and post_end is not None and ts and closes:
-                inf = _last_close_in_window(ts, closes, post_start, post_end)
-                if inf is not None:
-                    post = inf
-                    debug["post_source"] = "infer"
-                else:
-                    debug["post_source"] = "infer_none"
+            inf = _last_close_in_window(ts, closes, post_start, post_end) if (ts and closes) else None
+            if inf is not None:
+                post = inf
+                debug["post_source"] = "infer"
             else:
-                debug["post_source"] = "tp_missing_or_no_series"
+                debug["post_source"] = "infer_none"
 
     return prev, pre, post, debug
 
@@ -204,7 +201,7 @@ def main() -> int:
         "post_none": 0,
     }
 
-    sample_dbg = []  # pár ticker debug-ot kiírunk
+    sample_dbg = []  # 10 ticker debug
 
     for t in tickers:
         try:
@@ -220,7 +217,7 @@ def main() -> int:
                 dbg_counts["pre_meta"] += 1
             elif ps == "infer":
                 dbg_counts["pre_infer"] += 1
-            elif ps == "gated_not_started":
+            elif ps == "gated_outside_window":
                 dbg_counts["pre_gated"] += 1
             else:
                 dbg_counts["pre_none"] += 1
@@ -230,13 +227,13 @@ def main() -> int:
                 dbg_counts["post_meta"] += 1
             elif qs == "infer":
                 dbg_counts["post_infer"] += 1
-            elif qs == "gated_not_started":
+            elif qs == "gated_outside_window":
                 dbg_counts["post_gated"] += 1
             else:
                 dbg_counts["post_none"] += 1
 
-            if len(sample_dbg) < 5:
-                sample_dbg.append((t, dbg))
+            if len(sample_dbg) < 10:
+                sample_dbg.append((t, dbg, pm, ah))
 
             rows.append((t, pm, ah))
         except Exception:
@@ -261,14 +258,22 @@ def main() -> int:
         f.write(f"- now_epoch: {now_epoch}\n")
         for k in ["pre_meta","pre_infer","pre_gated","pre_none","post_meta","post_infer","post_gated","post_none"]:
             f.write(f"- {k}: {dbg_counts[k]}\n")
-        f.write("\n### Debug sample (first 5 tickers)\n")
-        for t, dbg in sample_dbg:
-            f.write(f"- {t}: pre_source={dbg.get('pre_source')}, post_source={dbg.get('post_source')}, "
-                    f"pre_start={dbg.get('pre_start')}, pre_end={dbg.get('pre_end')}, "
-                    f"post_start={dbg.get('post_start')}, post_end={dbg.get('post_end')}\n")
+
+        f.write("\n### Debug sample (first 10 tickers)\n")
+        for t, dbg, pm, ah in sample_dbg:
+            f.write(
+                f"- {t}: PM {fmt(pm)} (pre_source={dbg.get('pre_source')}, pre_start={dbg.get('pre_start')}, pre_end={dbg.get('pre_end')}) | "
+                f"AH {fmt(ah)} (post_source={dbg.get('post_source')}, post_start={dbg.get('post_start')}, post_end={dbg.get('post_end')})\n"
+            )
+
+    # rövid log a runner.log-ba (GH Actionsben legyen "életjel")
+    print(f"RUNNER_VERSION={VERSION}", file=sys.stderr, flush=True)
+    print(f"MODE={mode} any_pm={any_pm} tickers={len(rows)}", file=sys.stderr, flush=True)
+    print(f"DBG pre_meta={dbg_counts['pre_meta']} pre_infer={dbg_counts['pre_infer']} pre_gated={dbg_counts['pre_gated']} pre_none={dbg_counts['pre_none']}", file=sys.stderr, flush=True)
+    print(f"DBG post_meta={dbg_counts['post_meta']} post_infer={dbg_counts['post_infer']} post_gated={dbg_counts['post_gated']} post_none={dbg_counts['post_none']}", file=sys.stderr, flush=True)
 
     if all(pm is None and ah is None for _, pm, ah in rows):
-        print("ALL_NA: chart v8 nem adott használható pre/post adatot (session gating + infer).", file=sys.stderr, flush=True)
+        print("ALL_NA: chart v8 nem adott használható pre/post adatot (window gating + infer).", file=sys.stderr, flush=True)
         return 5
     return 0
 
