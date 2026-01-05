@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
-# validate_run.py — v4.0.0-price-engine-2026-01-05
-# CI guard: a futás csak akkor zöld, ha a PRICE ENGINE riport szerkezetileg valid.
-# (A korábbi biblia-guard NEM alkalmazható, mert a makró/analyst/catalyst/high-conv blokkokat kivettük.)
+# validate_run.py — v4.0.1-price-engine-tzfix-2026-01-05
 
 from __future__ import annotations
 
@@ -43,7 +41,6 @@ def main() -> int:
         print("ERROR: hiányzó kötelező token(ek): " + ", ".join(missing), file=sys.stderr)
         return 4
 
-    # Coverage HIÁNYOS nem hiba (WARN)
     if "Lefedettség: HIÁNYOS" in txt:
         print("WARN: Lefedettség HIÁNYOS (árfeed/forrás hiba).", file=sys.stderr)
 
