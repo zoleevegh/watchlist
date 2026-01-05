@@ -1,19 +1,17 @@
 #!/usr/bin/env python3
-# report_runner.py — v4.3.2-chartv8-window-gating-2026-01-05
+# report_runner.py — v4.3.3-chartv8-ah-basefix-nowcap-2026-01-06
 #
-# MI VOLT A HIBA a v4.3.1-ben?
-# - A PM "gating" csak azt nézte, hogy now >= pre_start.
-# - Ez zárás után is igaz (hiszen a MAI premarket már reggel LEFUTOTT),
-#   ezért a runner a "mai" pre ablakból (már rég vége) inferált árat, és PM %-ot számolt.
+# MI VOLT A HIBA a v4.3.2-ben?
+# - Az "AH %" számolás bázisa rossz volt: post vs PREVIOUS CLOSE (prev),
+#   ezért AH%-nak a napi (regular session) %-hoz hasonló értékek jöttek ki.
+#   Helyes: AH% = (postMarketPrice / regularMarketPrice - 1) * 100.
 #
-# FIX v4.3.2:
-# - Premarket (PM) csak akkor érvényes, ha NOW BENNE VAN a pre ablakban: pre_start <= now <= pre_end.
-#   Különben PM = n/a (nem használunk történelmi pre tickeket).
-# - After-hours (AH) csak akkor érvényes, ha NOW BENNE VAN a post ablakban: post_start <= now <= post_end.
-# - Yahoo v7 quote KIKAPCSOLVA (401). Csak Yahoo Chart v8.
-# - 1 lista:
-#   - ha van legalább 1 érvényes PM -> PM abs% szerint
-#   - különben AH abs% szerint
+# FIX v4.3.3:
+# - AH% bázisa: regularMarketPrice (záró/utolsó regular ár). Fallback: prev close, ha regular hiányzik.
+# - PM% bázisa: previousClose (prev) marad.
+# - Inferált pre/post árnál "now-cap": csak a NOW-ig létező timestamp-eket vesszük figyelembe,
+#   ne tudjon "jövőbeli" (range-ben benne lévő) tick befolyni.
+# - Debug sample bővítve: prev, regular, pre, post, bázisok + számolt értékek.
 #
 # Logging:
 # - A runner.log-ba kiírunk egy rövid összegzést + 10-es debug sample-t, hogy a GH Actionsben is lásd.
@@ -33,13 +31,20 @@ import urllib.request
 import time
 from typing import Optional, Tuple, List, Dict, Any
 
-VERSION = "v4.3.2-chartv8-window-gating-2026-01-05"
+VERSION = "v4.3.3-chartv8-ah-basefix-nowcap-2026-01-06"
 
 
 def pct(a, b):
     if a is None or b in (None, 0):
         return None
-    return (a / b - 1) * 100.0
+    try:
+        a = float(a)
+        b = float(b)
+        if b == 0:
+            return None
+        return (a / b - 1) * 100.0
+    except Exception:
+        return None
 
 
 def fmt(x):
@@ -88,12 +93,28 @@ def _tp(meta: Dict[str, Any], key: str) -> Optional[Tuple[int, int]]:
     return None
 
 
-def _last_close_in_window(timestamps: List[int], closes: List[Any], start: int, end: int) -> Optional[float]:
+def _last_close_in_window(
+    timestamps: List[int],
+    closes: List[Any],
+    start: int,
+    end: int,
+    now_epoch: Optional[int] = None,
+) -> Optional[float]:
+    """
+    Visszaadja az ablakban lévő legutolsó záró árat.
+    NOW-cap: ha now_epoch adott, akkor csak ts <= now_epoch mintákat vesz figyelembe.
+    """
     last = None
+    cap_end = end
+    if now_epoch is not None:
+        cap_end = min(end, now_epoch)
+
     for ts, cl in zip(timestamps, closes):
         if ts is None:
             continue
-        if start <= ts <= end:
+        if now_epoch is not None and ts > now_epoch:
+            continue
+        if start <= ts <= cap_end:
             try:
                 if cl is None:
                     continue
@@ -103,13 +124,14 @@ def _last_close_in_window(timestamps: List[int], closes: List[Any], start: int, 
     return last
 
 
-def chart_prices(t: str, now_epoch: int) -> Tuple[Optional[float], Optional[float], Optional[float], Dict[str, Any]]:
+def chart_prices(t: str, now_epoch: int) -> Tuple[Optional[float], Optional[float], Optional[float], Optional[float], Dict[str, Any]]:
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{t}?interval=1m&range=2d&includePrePost=true"
     j = http_json(url)
     res = j["chart"]["result"][0]
     meta = res.get("meta", {})
 
     prev = meta.get("previousClose") or meta.get("regularMarketPreviousClose")
+    regular = meta.get("regularMarketPrice")  # záró/utolsó regular ár
 
     wpre = _tp(meta, "pre")
     wpost = _tp(meta, "post")
@@ -125,6 +147,8 @@ def chart_prices(t: str, now_epoch: int) -> Tuple[Optional[float], Optional[floa
 
     debug = {
         "now": now_epoch,
+        "prev": prev,
+        "regular": regular,
         "pre_start": pre_start,
         "pre_end": pre_end,
         "post_start": post_start,
@@ -146,7 +170,7 @@ def chart_prices(t: str, now_epoch: int) -> Tuple[Optional[float], Optional[floa
             pre = None
             debug["pre_source"] = "gated_outside_window"
         else:
-            inf = _last_close_in_window(ts, closes, pre_start, pre_end) if (ts and closes) else None
+            inf = _last_close_in_window(ts, closes, pre_start, pre_end, now_epoch=now_epoch) if (ts and closes) else None
             if inf is not None:
                 pre = inf
                 debug["pre_source"] = "infer"
@@ -166,14 +190,14 @@ def chart_prices(t: str, now_epoch: int) -> Tuple[Optional[float], Optional[floa
             post = None
             debug["post_source"] = "gated_outside_window"
         else:
-            inf = _last_close_in_window(ts, closes, post_start, post_end) if (ts and closes) else None
+            inf = _last_close_in_window(ts, closes, post_start, post_end, now_epoch=now_epoch) if (ts and closes) else None
             if inf is not None:
                 post = inf
                 debug["post_source"] = "infer"
             else:
                 debug["post_source"] = "infer_none"
 
-    return prev, pre, post, debug
+    return prev, regular, pre, post, debug
 
 
 def main() -> int:
@@ -205,9 +229,15 @@ def main() -> int:
 
     for t in tickers:
         try:
-            prev, pre, post, dbg = chart_prices(t, now_epoch)
+            prev, regular, pre, post, dbg = chart_prices(t, now_epoch)
+
+            # PM a prev close-hoz viszonyítva (helyes)
             pm = pct(pre, prev)
-            ah = pct(post, prev)
+
+            # AH a regular close-hoz viszonyítva (helyes).
+            # Ha regular hiányzik, fallback prev close (jobb mint semmi, de ritka).
+            ah_base = regular if regular not in (None, 0) else prev
+            ah = pct(post, ah_base)
 
             if pm is not None:
                 any_pm = True
@@ -233,7 +263,7 @@ def main() -> int:
                 dbg_counts["post_none"] += 1
 
             if len(sample_dbg) < 10:
-                sample_dbg.append((t, dbg, pm, ah))
+                sample_dbg.append((t, dbg, prev, regular, pre, post, pm, ah))
 
             rows.append((t, pm, ah))
         except Exception:
@@ -241,10 +271,10 @@ def main() -> int:
 
     # 1 lista rendezés
     if any_pm:
-        rows.sort(key=lambda r: abs(r[1] or 0.0), reverse=True)
+        rows.sort(key=lambda r: abs(r[1]) if r[1] is not None else -1.0, reverse=True)
         mode = "PM"
     else:
-        rows.sort(key=lambda r: abs(r[2] or 0.0), reverse=True)
+        rows.sort(key=lambda r: abs(r[2]) if r[2] is not None else -1.0, reverse=True)
         mode = "AH"
 
     with open(args.out, "w", encoding="utf-8", newline="\n") as f:
@@ -260,9 +290,10 @@ def main() -> int:
             f.write(f"- {k}: {dbg_counts[k]}\n")
 
         f.write("\n### Debug sample (first 10 tickers)\n")
-        for t, dbg, pm, ah in sample_dbg:
+        for t, dbg, prev, regular, pre, post, pm, ah in sample_dbg:
             f.write(
-                f"- {t}: PM {fmt(pm)} (pre_source={dbg.get('pre_source')}, pre_start={dbg.get('pre_start')}, pre_end={dbg.get('pre_end')}) | "
+                f"- {t}: prev={prev} regular={regular} pre={pre} post={post} | "
+                f"PM {fmt(pm)} (pre_source={dbg.get('pre_source')}, pre_start={dbg.get('pre_start')}, pre_end={dbg.get('pre_end')}) | "
                 f"AH {fmt(ah)} (post_source={dbg.get('post_source')}, post_start={dbg.get('post_start')}, post_end={dbg.get('post_end')})\n"
             )
 
