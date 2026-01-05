@@ -22,7 +22,7 @@ jobs:
       PYTHONUNBUFFERED: "1"
 
       # MASTER (Google Sheets 'Publish to web' CSV) — ez legyen a teljes sheet, hogy minden ticker lefedett legyen
-      DEFAULT_CSV_URL: https://docs.google.com/spreadsheets/d/e/.../pub?output=csv
+      DEFAULT_CSV_URL: https://docs.google.com/spreadsheets/d/e/2PACX-1vQkgyw0ONwSfc2KnrmWGqf8fWVQxS-R08RySndB69KDJ8L1Cz-H2F1AZtyDfhBGedC0qdC1SFo_aDye/pub?output=csv
 
       # Gist (#1) — summary_report_1.md
       GIST_ID_1: 5df443b8a46ef863cdc97aad62756510
