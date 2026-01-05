@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
-# report_runner.py — v4.0.4-price-engine-yahoohtml-fallback-2026-01-05
+# report_runner.py — v4.0.5-price-engine-sort-premarket-noszuro-2026-01-05
 #
-# PRICE ENGINE (#1): After-hours & Premarket % (AH/PM) + K küszöb + lefedettség
-# - Primary: Yahoo Chart v8 (includePrePost=true)
+# PRICE ENGINE (#1): After-hours & Premarket % (AH/PM) — minden ticker, K-küszöb NINCS.
+# Sorrend: Premarket abs % szerint (nagyobb elmozdulás felül).
+#
+# Forráslogika:
+# - Primary: Yahoo Chart v8 (includePrePost=true) + tradingPeriods + chart closes
 # - Fallback: Yahoo Finance quote HTML (embedded JSON) — pre/post/prevClose
+#
+# Egyéb:
 # - Dedupe tickers
 # - TZ-safe (no tzdata required)
-# - Report header includes: script version + GitHub run_id/run_attempt (ha elérhető)
+# - Report header: script verzió + GitHub run_id/run_attempt
 
 from __future__ import annotations
 
@@ -22,10 +27,9 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 import urllib.request
-import urllib.error
 
 
-VERSION = "v4.0.4-price-engine-yahoohtml-fallback-2026-01-05"
+VERSION = "v4.0.5-price-engine-sort-premarket-noszuro-2026-01-05"
 
 
 # -----------------------------
@@ -62,6 +66,9 @@ def _safe_float(v: Any) -> Optional[float]:
     except Exception:
         return None
 
+def _abs_or_zero(x: Optional[float]) -> float:
+    return abs(x) if x is not None else 0.0
+
 
 # -----------------------------
 # MASTER CSV
@@ -92,11 +99,6 @@ def _parse_qty(row: Dict[str, Any]) -> float:
     ])
     f = _safe_float(v)
     return float(f) if f is not None else 0.0
-
-def _parse_threshold_k(row: Dict[str, Any]) -> float:
-    v = _get_first_key(row, ["K", "k", "K_%", "min_move", "min_move_pct"])
-    f = _safe_float(v)
-    return float(f) if (f is not None and f > 0) else 3.0
 
 
 # -----------------------------
@@ -184,7 +186,7 @@ def _extract_from_chart(payload: Dict[str, Any]) -> PriceSlice:
 
 def _yahoo_quote_html_prices(ticker: str) -> PriceSlice:
     """
-    HTML fallback: finance.yahoo.com quote oldal embedded JSON-ból próbáljuk kinyerni:
+    HTML fallback: finance.yahoo.com/quote oldal embedded JSON-ból:
     - regularMarketPreviousClose
     - preMarketPrice
     - postMarketPrice
@@ -192,7 +194,6 @@ def _yahoo_quote_html_prices(ticker: str) -> PriceSlice:
     url = f"https://finance.yahoo.com/quote/{ticker}?p={ticker}"
     html = _http_get(url, timeout=25).decode("utf-8", errors="ignore")
 
-    # Fast regexes (raw values)
     def grab(patterns: List[str]) -> Optional[float]:
         for pat in patterns:
             m = re.search(pat, html)
@@ -204,12 +205,8 @@ def _yahoo_quote_html_prices(ticker: str) -> PriceSlice:
         r'"regularMarketPreviousClose"\s*:\s*\{\s*"raw"\s*:\s*([0-9.]+)',
         r'"previousClose"\s*:\s*\{\s*"raw"\s*:\s*([0-9.]+)',
     ])
-    pre = grab([
-        r'"preMarketPrice"\s*:\s*\{\s*"raw"\s*:\s*([0-9.]+)',
-    ])
-    post = grab([
-        r'"postMarketPrice"\s*:\s*\{\s*"raw"\s*:\s*([0-9.]+)',
-    ])
+    pre = grab([r'"preMarketPrice"\s*:\s*\{\s*"raw"\s*:\s*([0-9.]+)'])
+    post = grab([r'"postMarketPrice"\s*:\s*\{\s*"raw"\s*:\s*([0-9.]+)'])
 
     return PriceSlice(prev_close=prev, pre=pre, post=post)
 
@@ -224,21 +221,17 @@ def _pct_change(a: Optional[float], b: Optional[float]) -> Optional[float]:
 class TickerMove:
     ticker: str
     qty: float
-    k: float
     ah_pct: Optional[float]
     pm_pct: Optional[float]
 
 
 def _fetch_prices(ticker: str, retries: int = 2, sleep_s: float = 0.6) -> PriceSlice:
-    # 1) Chart v8
     last_err: Optional[Exception] = None
+
+    # 1) Chart v8
     for _ in range(retries + 1):
         try:
-            ps = _extract_from_chart(_yahoo_chart_v8(ticker))
-            # If we at least have prev_close, accept; pre/post may still be None.
-            if ps.prev_close is not None:
-                return ps
-            return ps
+            return _extract_from_chart(_yahoo_chart_v8(ticker))
         except Exception as e:
             last_err = e
             time.sleep(sleep_s)
@@ -270,22 +263,21 @@ def _compute_moves(master_rows: List[Dict[str, Any]]) -> Tuple[List[TickerMove],
         seen.add(t)
 
         qty = _parse_qty(row)
-        k = _parse_threshold_k(row)
 
         try:
             ps = _fetch_prices(t)
         except Exception:
             missing.append(t)
-            moves.append(TickerMove(ticker=t, qty=qty, k=k, ah_pct=None, pm_pct=None))
+            moves.append(TickerMove(ticker=t, qty=qty, ah_pct=None, pm_pct=None))
             continue
 
         if ps.prev_close is None:
             missing.append(t)
 
-        ah_pct = _pct_change(ps.post, ps.prev_close) if ps.post is not None else None
-        pm_pct = _pct_change(ps.pre, ps.prev_close) if ps.pre is not None else None
+        ah_pct = _pct_change(ps.post, ps.prev_close) if (ps.post is not None and ps.prev_close is not None) else None
+        pm_pct = _pct_change(ps.pre, ps.prev_close) if (ps.pre is not None and ps.prev_close is not None) else None
 
-        moves.append(TickerMove(ticker=t, qty=qty, k=k, ah_pct=ah_pct, pm_pct=pm_pct))
+        moves.append(TickerMove(ticker=t, qty=qty, ah_pct=ah_pct, pm_pct=pm_pct))
 
     return moves, sorted(list(set(missing))), skipped_dupes
 
@@ -293,28 +285,62 @@ def _compute_moves(master_rows: List[Dict[str, Any]]) -> Tuple[List[TickerMove],
 def _split_positions_watchlist(moves: List[TickerMove]) -> Tuple[List[TickerMove], List[TickerMove]]:
     positions = [m for m in moves if m.qty and m.qty > 0]
     watch = [m for m in moves if not (m.qty and m.qty > 0)]
-    positions.sort(key=lambda x: x.ticker)
-    watch.sort(key=lambda x: x.ticker)
     return positions, watch
 
 
-def _is_trigger(m: TickerMove) -> bool:
-    k = float(m.k or 3.0)
-    return (m.ah_pct is not None and abs(m.ah_pct) >= k) or (m.pm_pct is not None and abs(m.pm_pct) >= k)
+def _sort_by_premarket(moves: List[TickerMove]) -> List[TickerMove]:
+    # PM abs% desc, majd AH abs% desc, majd ticker
+    return sorted(
+        moves,
+        key=lambda m: (_abs_or_zero(m.pm_pct), _abs_or_zero(m.ah_pct), m.ticker),
+        reverse=True,
+    )
+
+
+def _render_top(title: str, moves: List[TickerMove], n: int = 12) -> List[str]:
+    out: List[str] = []
+    out.append(f"## {title}")
+    if not moves:
+        out.append("_Nincs adat._")
+        out.append("")
+        return out
+    for m in moves[:n]:
+        out.append(f"- {m.ticker} — PM {_fmt_pct(m.pm_pct)} | AH {_fmt_pct(m.ah_pct)}")
+    out.append("")
+    return out
+
+
+def _render_list(title: str, moves: List[TickerMove]) -> List[str]:
+    out: List[str] = []
+    out.append(f"### {title}")
+    if not moves:
+        out.append("_Nincs adat._")
+        out.append("")
+        return out
+    for m in moves:
+        out.append(f"- {m.ticker} — PM {_fmt_pct(m.pm_pct)} | AH {_fmt_pct(m.ah_pct)}")
+    out.append("")
+    return out
 
 
 def _render_report_1(moves: List[TickerMove], missing: List[str], skipped_dupes: int) -> str:
     now = _now_local()
-    positions, watch = _split_positions_watchlist(moves)
 
     run_id = os.getenv("GITHUB_RUN_ID", "")
     run_attempt = os.getenv("GITHUB_RUN_ATTEMPT", "")
     run_tag = f"{run_id}/{run_attempt}" if run_id and run_attempt else (run_id or "n/a")
 
+    positions, watch = _split_positions_watchlist(moves)
+
     if len(missing) == 0:
         cov = f"Lefedettség: TELJES — ellenőrizve: {len(moves)}/{len(moves)} ticker"
     else:
         cov = f"Lefedettség: HIÁNYOS — nem elérhető / hiányos adat: {', '.join(missing)} (ok: árfeed/forrás hiba)"
+
+    # Sorting
+    all_sorted = _sort_by_premarket(moves)
+    pos_sorted = _sort_by_premarket(positions)
+    watch_sorted = _sort_by_premarket(watch)
 
     lines: List[str] = []
     lines.append("# #1 — After-hours & Premarket (PRICE ENGINE)")
@@ -327,45 +353,17 @@ def _render_report_1(moves: List[TickerMove], missing: List[str], skipped_dupes:
     if skipped_dupes:
         lines.append(f"Duplikált tickerek kihagyva: {skipped_dupes}")
     lines.append("")
-    lines.append("## 🎯 Megjegyzés")
-    lines.append("Ez a riport SZÁNDÉKOSAN csak az AH/PM számokat és küszöb-triggereket tartalmazza. "
-                 "Makró/FED/politika + bejelentések/elemzői lépések + katalizátorok + high-conv: manuális/webes elemzés.")
+    lines.append("Megjegyzés: Küszöbök / triggerekszűrés ki van kapcsolva — minden ticker listázva, PM abs% szerinti sorrendben.")
     lines.append("")
 
-    lines.append("### 📊 Darabszámos tickerek — After-hours & Premarket mozgások (teljes lista)")
-    if not positions:
-        lines.append("Nincs darabszámos pozíció a MASTER-ben. (ellenőrizd a darabszám oszlop nevét a CSV-ben)")
-    else:
-        for m in positions:
-            tag = " 🔔" if _is_trigger(m) else ""
-            lines.append(f"- {m.ticker} — AH {_fmt_pct(m.ah_pct)} | PM {_fmt_pct(m.pm_pct)} — K={m.k:.2f}%{tag}")
-    lines.append("")
+    lines.extend(_render_top("Top Premarket mozgások (PM abs% szerint)", all_sorted, n=12))
+    lines.extend(_render_top("Top After-hours mozgások (AH abs% szerint)", sorted(moves, key=lambda m: (_abs_or_zero(m.ah_pct), _abs_or_zero(m.pm_pct), m.ticker), reverse=True), n=12))
 
-    lines.append("### 👀 Watchlist — Küszöb feletti AH/PM mozgások (|%| ≥ K)")
-    watch_trig = [m for m in watch if _is_trigger(m)]
-    if not watch_trig:
-        lines.append("Nincs küszöb feletti watchlist mozgás.")
-    else:
-        def key_abs(m: TickerMove) -> float:
-            a = abs(m.pm_pct) if m.pm_pct is not None else 0.0
-            b = abs(m.ah_pct) if m.ah_pct is not None else 0.0
-            return max(a, b)
-        watch_trig.sort(key=key_abs, reverse=True)
-        for m in watch_trig:
-            lines.append(f"- {m.ticker} — AH {_fmt_pct(m.ah_pct)} | PM {_fmt_pct(m.pm_pct)} — K={m.k:.2f}% 🔔")
-    lines.append("")
+    lines.extend(_render_list("📊 Darabszámos tickerek — PM sorrend (teljes lista)", pos_sorted))
+    lines.extend(_render_list("👀 Watchlist — PM sorrend (teljes lista)", watch_sorted))
 
-    lines.append("### 📄 Watchlist — After-hours & Premarket mozgások (teljes lista)")
-    if not watch:
-        lines.append("Nincs watchlist ticker a MASTER-ben.")
-    else:
-        for m in watch:
-            tag = " 🔔" if _is_trigger(m) else ""
-            lines.append(f"- {m.ticker} — AH {_fmt_pct(m.ah_pct)} | PM {_fmt_pct(m.pm_pct)} — K={m.k:.2f}%{tag}")
-    lines.append("")
     lines.append(f"Job summary generated at run-time ({now.strftime('%Y-%m-%dT%H:%M:%S%z')})")
 
-    # Normalize newlines to \n (GitHub raw + JSON patch safe)
     return ("\n".join(lines) + "\n").replace("\r\n", "\n").replace("\r", "\n")
 
 
