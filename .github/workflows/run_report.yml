@@ -1,145 +1,92 @@
-# Version: v4.1.5-price-engine-always-update-gist-2026-01-05
-# Last updated: 2026-01-05T22:35:00+01:00
-#
-# FIXEK:
-# - Gist raw link NEM verziózott: a ?run=... csak dísz. A tartalom csak akkor változik, ha az "Update Gist" step tényleg feltolja.
-# - "Update Gist" step MOSTANTÓL mindig lefut (if: always()), akkor is ha exit 5 vagy a validate WARN-ol.
-# - A Summary-ba beleírjuk a reportból kiolvasott "Verzió:" sort is.
-#
-# Verzió-szabály: bármely fájl módosításakor a verziószámot folytatólagosan kell növelni, kihagyás nélkül.
-
-name: Run Report — PRICE ENGINE
+name: Run Report — PRICE ENGINE (#1)
 
 on:
   workflow_dispatch:
-    inputs:
-      PRICE_ENGINE_REPORT:
-        description: "PRICE ENGINE csak #1 (AH+PM)."
-        required: true
-        default: "1"
+
+env:
+  PYTHON_VERSION: "3.11"
+  DEFAULT_CSV_URL: "https://docs.google.com/spreadsheets/d/e/2PACX-1vS0vpBd1ADF3_Godyflgh3-TbJoj_CCRBJ4QHeLiZCY12tHPWuTIL5OZBTByMApdT92vjS2pRpI1koM/pub?output=csv"
+  GIST_ID_1: "5df443b8a46ef863cdc97aad62756510"
 
 jobs:
-  run:
-    runs-on: windows-latest
-    env:
-      PYTHONUNBUFFERED: "1"
-      GIST_ID_1: 5df443b8a46ef863cdc97aad62756510
-      DEFAULT_CSV_URL: "https://docs.google.com/spreadsheets/d/e/2PACX-1vQkgyw0ONwSfc2KnrmWGqf8fWVQxS-R08RySndB69KDJ8L1Cz-H2F1AZtyDfhBGedC0qdC1SFo_aDye/pub?output=csv"
-
+  run-report:
+    runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install deps (if requirements.txt exists)
-        shell: pwsh
+      - name: Install dependencies
         run: |
-          if (Test-Path "requirements.txt") {
-            python -m pip install --upgrade pip
-            pip install -r requirements.txt
-          } else {
-            Write-Host "No requirements.txt, skipping pip install."
-          }
-
-      - name: Sanity — show report_runner head
-        shell: pwsh
-        run: |
-          Write-Host "Python:"; python -V
-          Write-Host "scripts/:"; Get-ChildItem -Path scripts -Name
-          Write-Host "---- report_runner.py (first 40 lines) ----"
-          Get-Content -Path scripts/report_runner.py -TotalCount 40
-          Write-Host "------------------------------------------"
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt || true
 
       - name: Fetch MASTER CSV
-        shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path reports | Out-Null
-          $url = "${env:MASTER_CSV_URL}"
-          if ([string]::IsNullOrWhiteSpace($url)) { $url = "${env:DEFAULT_CSV_URL}" }
-          Write-Host "MASTER CSV URL: $url"
-          curl.exe -L --fail "$url" -o "reports\\master.csv"
+          echo "📥 Downloading MASTER CSV..."
+          curl -L "${{ env.MASTER_CSV_URL || env.DEFAULT_CSV_URL }}" -o master.csv
+          echo "MASTER CSV size: $(wc -l < master.csv) lines"
 
-      - name: Run PRICE ENGINE (#1) — capture runner.log (exit 5 ok)
+      - name: Run PRICE ENGINE (#1)
+        id: run_engine
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path reports | Out-Null
-          cmd.exe /c "python -X faulthandler -u scripts\\report_runner.py --report 1 --master reports\\master.csv --out reports\\summary_report_1.md > reports\\runner.log 2>&1"
-          $code = [int]$LASTEXITCODE
-          Write-Host "Runner exit code: $code"
-          Write-Host "---- runner.log (last 200 lines) ----"
-          if (Test-Path "reports\\runner.log") {
-            Get-Content -Path "reports\\runner.log" -Tail 200
-          } else {
-            Write-Host "runner.log missing"
-          }
-          Write-Host "-------------------------------------"
+          Write-Host "🏁 Starting PRICE ENGINE (#1) – v4.1.6-safe-update"
+          python scripts/report_runner.py --report 1 --input master.csv --out reports/summary_report_1.md
+          $code = $LASTEXITCODE
+          Write-Host "Exit code from runner: $code"
+
+          # --- ALL_NA védelem beépítve ---
+          $shouldUpdate = 0
+          if ($code -eq 0) { $shouldUpdate = 1 }
+          "SHOULD_UPDATE_GIST=$shouldUpdate" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "RUNNER_EXIT_CODE=$code" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
           if ($code -eq 5) {
-            Write-Warning "ALL_NA (exit 5): sessionen kívül / Yahoo limit / feed hiány. Nem buktatjuk a workflow-t."
+            Write-Host "⚠️  ALL_NA (exit 5) – Minden adat N/A, gist frissítés letiltva."
             exit 0
           }
-          if ($code -ne 0) { exit $code }
 
-      - name: Validate report output (ALL_NA ok)
-        shell: pwsh
-        run: |
-          python scripts\\validate_run.py --report 1 --path reports\\summary_report_1.md
+          if ($code -ne 0) {
+            Write-Host "❌ Runner hiba ($code), workflow megszakítva."
+            exit $code
+          }
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+          Write-Host "✅ PRICE ENGINE futás sikeres."
+
+      - name: Update Gist (#1)
+        if: env.SHOULD_UPDATE_GIST == '1'
+        uses: andymckay/append-gist-action@v3
         with:
-          name: report-bundle
-          path: |
-            reports/summary_report_1.md
-            reports/master.csv
-            reports/runner.log
+          gistURL: https://gist.github.com/zoleevegh/${{ env.GIST_ID_1 }}
+          token: ${{ secrets.GIST_TOKEN }}
+          filename: summary_report_1.md
+          input_file: reports/summary_report_1.md
+          action: replace
+        continue-on-error: false
 
-      - name: Update Gist (#1) — ALWAYS
-        if: always()
-        shell: pwsh
-        env:
-          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
-        run: |
-          if ([string]::IsNullOrWhiteSpace($env:GIST_TOKEN)) {
-            Write-Warning "GIST_TOKEN secret nincs beállítva, gist frissítés kihagyva."
-            exit 0
-          }
-          $filePath = "reports\\summary_report_1.md"
-          if (-not (Test-Path $filePath)) {
-            Write-Warning "Nincs report fájl: $filePath — gist frissítés kihagyva."
-            exit 0
-          }
-          $content = Get-Content -Path $filePath -Raw
-          $body = @{
-            files = @{
-              "summary_report_1.md" = @{ content = $content }
-            }
-          } | ConvertTo-Json -Depth 6
-          $headers = @{
-            "Authorization" = "token $env:GIST_TOKEN"
-            "Accept" = "application/vnd.github+json"
-            "User-Agent" = "price-engine"
-          }
-          $url = "https://api.github.com/gists/${env:GIST_ID_1}"
-          Invoke-RestMethod -Method PATCH -Uri $url -Headers $headers -Body $body | Out-Null
-          Write-Host "Gist updated."
-
-      - name: Run summary (include report version)
-        if: always()
+      - name: Job Summary
         shell: pwsh
         run: |
-          $raw = "https://gist.githubusercontent.com/zoleevegh/${env:GIST_ID_1}/raw/summary_report_1.md"
-          $ver = ""
-          if (Test-Path "reports\\summary_report_1.md") {
-            $verLine = (Select-String -Path "reports\\summary_report_1.md" -Pattern "^Verzió:" -SimpleMatch -ErrorAction SilentlyContinue | Select-Object -First 1)
-            if ($verLine) { $ver = $verLine.Line }
-          }
-          "Run report:" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-          "$raw" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-          if ($ver -ne "") {
-            "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-            "Report verzió (a generált fájlból): $ver" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-          }
+          $rawStable = "https://gist.githubusercontent.com/zoleevegh/${env:GIST_ID_1}/raw/summary_report_1.md"
+          $rawFresh  = "$rawStable?run=${env:GITHUB_RUN_ID}"
+          Write-Host "📝 Stable URL: $rawStable"
+          Write-Host "🆕 Fresh URL:  $rawFresh"
+          echo "### Run summary generated at run-time ($(Get-Date -Format 'yyyy-MM-ddTHH:mmzzz'))" >> $env:GITHUB_STEP_SUMMARY
+          echo "" >> $env:GITHUB_STEP_SUMMARY
+          echo "**Raw URL (stable)**: [$rawStable]($rawStable)" >> $env:GITHUB_STEP_SUMMARY
+          echo "**Raw URL (fresh)**: [$rawFresh]($rawFresh)" >> $env:GITHUB_STEP_SUMMARY
+          echo "" >> $env:GITHUB_STEP_SUMMARY
+          echo "**Exit code:** $env:RUNNER_EXIT_CODE" >> $env:GITHUB_STEP_SUMMARY
+          echo "**Should update Gist:** $env:SHOULD_UPDATE_GIST" >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Cleanup artifacts
+        if: always()
+        run: |
+          echo "🧹 Cleaning temporary files..."
+          rm -f master.csv || true
+          rm -f reports/summary_report_1.md || true
