@@ -1,21 +1,12 @@
-# Version: v4.0.3-price-engine-2026-01-05
-# Last updated: 2026-01-05T09:45:00+01:00
-# Cél: PRICE ENGINE workflow — csak AH/PM % + küszöb + lefedettség. NINCS makró / analyst / catalyst / high-conv.
-# FIX: Windows runneren ZoneInfo tzdata hiány miatt borulhat → itt pip tzdata, plusz a scriptben tz-safe fallback.
+# Version: v4.0.4-price-engine-2026-01-05
+# Last updated: 2026-01-05T11:10:00+01:00
+# PRICE ENGINE workflow — fix MASTER CSV, nincs input ablak, vissza "run report" step summary.
+# Verzió-szabály: bármely fájl módosításakor a verziószámot folytatólagosan kell növelni, kihagyás nélkül.
 
-name: Run Report (Windows) — PRICE ENGINE
+name: Run Report — PRICE ENGINE
 
 on:
   workflow_dispatch:
-    inputs:
-      master_url:
-        description: "MASTER CSV URL (Publish-to-web CSV). Ha üres, DEFAULT_CSV_URL / repo var MASTER_CSV_URL lesz használva."
-        required: false
-        default: ""
-      report:
-        description: "PRICE ENGINE csak #1 (AH+PM)."
-        required: false
-        default: "1"
 
 jobs:
   run:
@@ -23,7 +14,11 @@ jobs:
     timeout-minutes: 30
     env:
       PYTHONUNBUFFERED: "1"
-      DEFAULT_CSV_URL: "https://docs.google.com/spreadsheets/d/e/2PACX-1vQkgyw0ONwSfc2KnrmWGqf8fWVQxS-R08RySndB69KDJ8L1Cz-H2F1AZtyDfhBGedC0qdC1SFo_aDye/pub?output=csv"
+
+      # MASTER CSV (Publish-to-web)
+      DEFAULT_CSV_URL: https://docs.google.com/spreadsheets/d/e/2PACX-1vQkgyw0ONwSfc2KnrmWGqf8fWVQxS-R08RySndB69KDJ8L1Cz-H2F1AZtyDfhBGedC0qdC1SFo_aDye/pub?output=csv
+
+      # Gist (#1) — summary_report_1.md
       GIST_ID_1: 5df443b8a46ef863cdc97aad62756510
 
     steps:
@@ -41,36 +36,11 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install tzdata
 
-      - name: Resolve inputs (force report=1)
-        id: vars
-        shell: pwsh
-        run: |
-          $report = "1"
-          "report=$report" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          Write-Host "REPORT (forced): $report"
-
-      - name: Resolve MASTER URL (input > env > repo var)
-        id: master
-        shell: pwsh
-        run: |
-          $url = "${{ inputs.master_url }}"
-          if ([string]::IsNullOrWhiteSpace($url)) { $url = "${{ env.DEFAULT_CSV_URL }}" }
-          if ([string]::IsNullOrWhiteSpace($url)) { $url = "${{ vars.MASTER_CSV_URL }}" }
-
-          if ([string]::IsNullOrWhiteSpace($url)) {
-            Write-Error "Nincs MASTER URL. Add meg a workflow inputban (master_url), vagy töltsd ki DEFAULT_CSV_URL-t, vagy repo variable: MASTER_CSV_URL."
-            exit 1
-          }
-
-          "url=$url" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          Write-Host "MASTER URL: $url"
-
       - name: Fetch MASTER CSV
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path reports | Out-Null
-
-          $url = "${{ steps.master.outputs.url }}"
+          $url = "${{ env.DEFAULT_CSV_URL }}"
           $out = "reports\master.csv"
 
           Write-Host "MASTER CSV letöltés: $url"
@@ -82,11 +52,9 @@ jobs:
 
           $first = Get-Content "$out" -TotalCount 1
           if ($first -match "<!DOCTYPE html>|<html") {
-            Write-Error "Nem CSV érkezett (HTML). Valószínű nincs publish-to-web, vagy jogosultsági/átirányítási gond. URL: $url"
+            Write-Error "Nem CSV érkezett (HTML). Ellenőrizd a Publish-to-web linket. URL: $url"
             exit 1
           }
-
-          Get-Content "$out" -TotalCount 2 | ForEach-Object { Write-Host "CSV> $_" }
 
       - name: Run PRICE ENGINE (#1)
         shell: pwsh
@@ -119,6 +87,11 @@ jobs:
           }
 
           $reportPath = "reports\summary_report_1.md"
+          if (-not (Test-Path $reportPath)) {
+            Write-Error "Hiányzik a report: $reportPath"
+            exit 1
+          }
+
           $content = Get-Content $reportPath -Raw -Encoding utf8
 
           $body = @{
@@ -138,5 +111,6 @@ jobs:
             -H "Content-Type: application/json" `
             -d $json
 
-          "Raw URL for this run:" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-          "https://gist.githubusercontent.com/zoleevegh/$($env:GIST_ID)/raw/summary_report_1.md?run=${{ github.run_id }}" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          $raw = "https://gist.githubusercontent.com/zoleevegh/$($env:GIST_ID)/raw/summary_report_1.md?run=${{ github.run_id }}"
+          "Run report:" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          $raw | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
