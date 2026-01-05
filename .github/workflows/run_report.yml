@@ -60,7 +60,7 @@ jobs:
 
       - name: Update Gist (#1)
         if: env.SHOULD_UPDATE_GIST == '1'
-        uses: andymckay/append-gist-action@v3
+        uses: andymckay/append-gist-action@v2
         with:
           gistURL: https://gist.github.com/zoleevegh/${{ env.GIST_ID_1 }}
           token: ${{ secrets.GIST_TOKEN }}
