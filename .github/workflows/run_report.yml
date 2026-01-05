@@ -1,10 +1,9 @@
-# Version: v4.1.3-price-engine-runnerlog-2026-01-05
-# Last updated: 2026-01-05T13:35:00+01:00
+# Version: v4.1.4-price-engine-runnerlog-exit5-ok-2026-01-05
+# Last updated: 2026-01-05T13:45:00+01:00
 #
-# PRICE ENGINE workflow — STABIL + kőkemény láthatóság:
-# - Nem trükközünk heredoc-kal / regex-szel workflow-ban.
-# - A runner kimenetét mindenképp fájlba tesszük (runner.log), és kiírjuk a logba is.
-# - Ha a runner elhasal, a runner.log akkor is látszik + artifactként is felmegy.
+# PRICE ENGINE workflow — STABIL + runner.log:
+# - stdout+stderr -> reports/runner.log
+# - Exit code 5 (ALL_NA) NEM bukás: végigmegy, feltölti az artifactokat és summary-t ad.
 #
 # Verzió-szabály: bármely fájl módosításakor a verziószámot folytatólagosan kell növelni, kihagyás nélkül.
 
@@ -63,13 +62,12 @@ jobs:
           Write-Host "MASTER CSV URL: $url"
           curl.exe -L --fail "$url" -o "reports\\master.csv"
 
-      - name: Run PRICE ENGINE (#1) — always capture runner.log
+      - name: Run PRICE ENGINE (#1) — capture runner.log (exit 5 ok)
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path reports | Out-Null
-          # Run via cmd to guarantee stdout+stderr redirection works the same on Windows runners
           cmd.exe /c "python -X faulthandler -u scripts\\report_runner.py --report 1 --master reports\\master.csv --out reports\\summary_report_1.md > reports\\runner.log 2>&1"
-          $code = $LASTEXITCODE
+          $code = [int]$LASTEXITCODE
           Write-Host "Runner exit code: $code"
           Write-Host "---- runner.log (last 200 lines) ----"
           if (Test-Path "reports\\runner.log") {
@@ -78,6 +76,10 @@ jobs:
             Write-Host "runner.log missing"
           }
           Write-Host "-------------------------------------"
+          if ($code -eq 5) {
+            Write-Warning "ALL_NA (exit 5): Yahoo valószínűleg blokkol/rate-limit/consent. Nem buktatjuk a workflow-t, de a reportban n/a lesz."
+            exit 0
+          }
           if ($code -ne 0) { exit $code }
 
       - name: Validate report output
