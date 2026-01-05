@@ -1,6 +1,6 @@
-# Version: v4.0.4-price-engine-2026-01-05
-# Last updated: 2026-01-05T11:10:00+01:00
-# PRICE ENGINE workflow — fix MASTER CSV, nincs input ablak, vissza "run report" step summary.
+# Version: v4.0.5-price-engine-2026-01-05
+# Last updated: 2026-01-05T12:05:00+01:00
+# PRICE ENGINE workflow — nincs input ablak, van részletes run summary a job summary-ban.
 # Verzió-szabály: bármely fájl módosításakor a verziószámot folytatólagosan kell növelni, kihagyás nélkül.
 
 name: Run Report — PRICE ENGINE
@@ -111,6 +111,18 @@ jobs:
             -H "Content-Type: application/json" `
             -d $json
 
-          $raw = "https://gist.githubusercontent.com/zoleevegh/$($env:GIST_ID)/raw/summary_report_1.md?run=${{ github.run_id }}"
+      - name: Run summary (details)
+        if: always()
+        shell: pwsh
+        run: |
+          $raw = "https://gist.githubusercontent.com/zoleevegh/${{ env.GIST_ID_1 }}/raw/summary_report_1.md?run=${{ github.run_id }}"
           "Run report:" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
           $raw | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+          if (Test-Path "reports\summary_report_1.md") {
+            "Első ~60 sor (gyors áttekintés):" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+            "```" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+            Get-Content "reports\summary_report_1.md" -TotalCount 60 | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+            "```" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          }
