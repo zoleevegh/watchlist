@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# validate_run.py — v4.0.1-price-engine-tzfix-2026-01-05
+# validate_run.py — v4.0.2-price-engine-yahoohtml-fallback-2026-01-05
 
 from __future__ import annotations
 
@@ -9,13 +9,15 @@ import sys
 
 REQUIRED_TOKENS = [
     "Lefedettség:",
+    "Verzió:",
+    "Run:",
     "### 📊 Darabszámos tickerek",
     "### 👀 Watchlist — Küszöb feletti",
     "### 📄 Watchlist — After-hours & Premarket mozgások (teljes lista)",
     "Job summary generated at run-time",
 ]
 
-MIN_LINES = 25
+MIN_LINES = 35
 
 
 def main() -> int:
@@ -31,9 +33,10 @@ def main() -> int:
     with open(args.path, "r", encoding="utf-8") as f:
         txt = f.read()
 
-    lines = [ln for ln in txt.splitlines() if ln.strip() != ""]
+    # ensure multiple lines exist (no minified single-line report)
+    lines = txt.splitlines()
     if len(lines) < MIN_LINES:
-        print(f"ERROR: gyanúsan rövid report ({len(lines)} sor) → valószínű üres/összetört generálás", file=sys.stderr)
+        print(f"ERROR: gyanúsan kevés sor ({len(lines)}). Valószínű a tördelés sérült.", file=sys.stderr)
         return 3
 
     missing = [t for t in REQUIRED_TOKENS if t not in txt]
