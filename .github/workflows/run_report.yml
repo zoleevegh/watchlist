@@ -75,15 +75,8 @@ jobs:
           Get-Content -Path scripts/report_runner.py -TotalCount 30
           Write-Host "First 30 lines of scripts/validate_run.py:"
           Get-Content -Path scripts/validate_run.py -TotalCount 30
-          Write-Host "Extract VERSION from report_runner.py (regex read):"
-          python - << 'PY'
-          import re
-          p = "scripts/report_runner.py"
-          with open(p, "r", encoding="utf-8") as f:
-              s = f.read()
-          m = re.search(r'^VERSION\s*=\s*["\']([^"\']+)["\']\s*$', s, re.M)
-          print(m.group(1) if m else "NO_VERSION_FOUND")
-          PY
+          Write-Host "Extract VERSION from report_runner.py:"
+          python -c "import re; s=open('scripts/report_runner.py','r',encoding='utf-8').read(); m=re.search(r'^VERSION\\s*=\\s*[\"\\\']([^\"\\\']+)[\"\\\']', s, re.M); print(m.group(1) if m else 'NO_VERSION_FOUND')"
 
       - name: Run PRICE ENGINE (#1)
         shell: pwsh
