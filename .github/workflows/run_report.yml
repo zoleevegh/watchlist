@@ -1,5 +1,5 @@
-# Version: v4.0.0-price-engine-2026-01-05
-# Last updated: 2026-01-05T09:00:00+01:00
+# Version: v4.0.1-price-engine-2026-01-05
+# Last updated: 2026-01-05T09:25:00+01:00
 # Cél: PRICE ENGINE workflow — csak AH/PM % + küszöb + lefedettség. NINCS makró / analyst / catalyst / high-conv.
 
 name: Run Report (Windows) — PRICE ENGINE
@@ -7,10 +7,14 @@ name: Run Report (Windows) — PRICE ENGINE
 on:
   workflow_dispatch:
     inputs:
-      report:
-        description: "Csak #1 támogatott (AH+PM). Más értéket figyelmen kívül hagyunk."
-        default: "1"
+      master_url:
+        description: "MASTER CSV URL (Publish-to-web CSV ajánlott). Ha üres, DEFAULT_CSV_URL / repo variable MASTER_CSV_URL lesz használva."
         required: false
+        default: ""
+      report:
+        description: "PRICE ENGINE csak #1 (AH+PM)."
+        required: false
+        default: "1"
   repository_dispatch:
     types: [run_report]
 
@@ -21,8 +25,10 @@ jobs:
     env:
       PYTHONUNBUFFERED: "1"
 
-      # MASTER (Google Sheets 'Publish to web' CSV) — ez legyen a teljes sheet, hogy minden ticker lefedett legyen
-      DEFAULT_CSV_URL: https://docs.google.com/spreadsheets/d/e/2PACX-1vQkgyw0ONwSfc2KnrmWGqf8fWVQxS-R08RySndB69KDJ8L1Cz-H2F1AZtyDfhBGedC0qdC1SFo_aDye/pub?output=csv
+      # Alapértelmezett MASTER CSV (állítsd be, vagy használd inkább a workflow inputot / repo variable-t)
+      # Tipp: a Publish-to-web link általában így néz ki:
+      # https://docs.google.com/spreadsheets/d/e/<PUB_ID>/pub?output=csv
+      DEFAULT_CSV_URL: https://docs.google.com/spreadsheets/d/e/2PACX-1vQ7N4XK79VsOKkQ2AQhpiaI9hp1KOcM2KZ_byPpbdpCSFVYvWEE32Vj0kNcd6DnSA/pub?output=csv
 
       # Gist (#1) — summary_report_1.md
       GIST_ID_1: 5df443b8a46ef863cdc97aad62756510
@@ -40,33 +46,60 @@ jobs:
         id: vars
         shell: pwsh
         run: |
-          # A price-engine csak #1-et támogat
           $report = "1"
           "report=$report" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           Write-Host "REPORT (forced): $report"
+
+      - name: Resolve MASTER URL (input > env > repo var)
+        id: master
+        shell: pwsh
+        run: |
+          $url = "${{ inputs.master_url }}"
+          if ([string]::IsNullOrWhiteSpace($url)) { $url = "${{ env.DEFAULT_CSV_URL }}" }
+          if ([string]::IsNullOrWhiteSpace($url)) { $url = "${{ vars.MASTER_CSV_URL }}" }
+
+          if ([string]::IsNullOrWhiteSpace($url)) {
+            Write-Error "Nincs MASTER URL. Add meg a workflow inputban (master_url), vagy töltsd ki DEFAULT_CSV_URL-t, vagy repo variable: MASTER_CSV_URL."
+            exit 1
+          }
+
+          # Ne engedjük át a placeholder / hibás URL-t
+          if ($url -match "\.\.\.") {
+            Write-Error "A MASTER URL placeholder ('...'). Állítsd be rendesen a Publish-to-web CSV linket."
+            Write-Host "Kapott URL: $url"
+            exit 1
+          }
+
+          # Ha valaki véletlenül a /edit linket adja meg, próbáljuk CSV export URL-re alakítani
+          if ($url -match "docs\.google\.com/spreadsheets/d/([^/]+)/") {
+            $id = $Matches[1]
+            if ($url -match "/edit" -or $url -match "usp=") {
+              $url = "https://docs.google.com/spreadsheets/d/$id/export?format=csv"
+              Write-Host "INFO: /edit linkből export CSV lett: $url"
+            }
+          }
+
+          "url=$url" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "MASTER URL: $url"
 
       - name: Fetch MASTER CSV
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path reports | Out-Null
 
-          $url = "${{ env.DEFAULT_CSV_URL }}"
-          if (-not $url) {
-            Write-Error "DEFAULT_CSV_URL nincs beállítva."
-            exit 1
-          }
-
+          $url = "${{ steps.master.outputs.url }}"
           $out = "reports\master.csv"
+
           Write-Host "MASTER CSV letöltés: $url"
           & curl.exe -fL --retry 3 --retry-all-errors -A "Mozilla/5.0" "$url" -o "$out"
           if ($LASTEXITCODE -ne 0) {
-            Write-Error "MASTER CSV letöltés sikertelen (curl exit $LASTEXITCODE)."
+            Write-Error "MASTER CSV letöltés sikertelen (curl exit $LASTEXITCODE). URL: $url"
             exit 1
           }
 
           $first = Get-Content "$out" -TotalCount 1
           if ($first -match "<!DOCTYPE html>|<html") {
-            Write-Error "Nem CSV érkezett (HTML). Ellenőrizd a Publish to web linket."
+            Write-Error "Nem CSV érkezett (HTML). Valószínű nincs publish-to-web, vagy jogosultsági/átirányítási gond. URL: $url"
             exit 1
           }
 
@@ -82,8 +115,18 @@ jobs:
         run: |
           python scripts\validate_run.py --report 1 --path reports\summary_report_1.md
 
+      - name: Check outputs exist
+        id: check
+        shell: pwsh
+        run: |
+          $hasReport = (Test-Path "reports\summary_report_1.md")
+          $hasMaster = (Test-Path "reports\master.csv")
+          "has_report=$hasReport" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "has_master=$hasMaster" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "has_report=$hasReport has_master=$hasMaster"
+
       - name: Upload artifacts
-        if: always()
+        if: always() && steps.check.outputs.has_report == 'True'
         uses: actions/upload-artifact@v4
         with:
           name: report-bundle
@@ -92,6 +135,7 @@ jobs:
             reports/master.csv
 
       - name: Update Gist (#1)
+        if: steps.check.outputs.has_report == 'True'
         shell: pwsh
         env:
           GIST_ID: ${{ env.GIST_ID_1 }}
@@ -103,11 +147,6 @@ jobs:
           }
 
           $reportPath = "reports\summary_report_1.md"
-          if (-not (Test-Path $reportPath)) {
-            Write-Error "Hiányzik a report: $reportPath"
-            exit 1
-          }
-
           $content = Get-Content $reportPath -Raw -Encoding utf8
 
           $body = @{
@@ -121,7 +160,7 @@ jobs:
           $json = $body | ConvertTo-Json -Depth 6
           $url  = "https://api.github.com/gists/$($env:GIST_ID)"
 
-          $resp = curl.exe -s -X PATCH $url `
+          $null = curl.exe -s -X PATCH $url `
             -H "Authorization: Bearer $($env:GIST_TOKEN)" `
             -H "Accept: application/vnd.github+json" `
             -H "Content-Type: application/json" `
