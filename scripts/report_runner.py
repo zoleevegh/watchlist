@@ -37,7 +37,7 @@ import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
 
 
-VERSION = "v4.1.2-price-engine-nodataclasses-trace-2026-01-05"
+VERSION = "v4.1.3-price-engine-nodataclasses-trace-2026-01-05"
 
 
 # -----------------------------
@@ -411,6 +411,9 @@ def main() -> int:
 
     all_na = all((m.get("pm") is None and m.get("ah") is None) for m in moves)
     if all_na:
+        # Always emit a clear reason into logs (captured as runner.log)
+        print("ALL_NA: minden ticker PM/AH n/a — Yahoo blokk/limit/consent/captcha vagy geo issue a runneren.", file=sys.stderr, flush=True)
+        print(f"ALL_NA_DEBUG: quote_status={dbg_info.get('quote_status')} chart_status_counts={dbg_info.get('chart_status_counts')} html_status_counts={dbg_info.get('html_status_counts')} html_flags={dbg_info.get('html_flags')}", file=sys.stderr, flush=True)
         return 5
     return 0
 
