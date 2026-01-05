@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-# report_runner.py — v4.0.1-price-engine-tzfix-2026-01-05
-# Cél: PRICE ENGINE — AH/PM % + küszöb + lefedettség.
-# TZ FIX: Windows GitHub runneren a ZoneInfo gyakran tzdata nélkül fut → fallback.
+# report_runner.py — v4.0.2-price-engine-chartv8-2026-01-05
+# PRICE ENGINE: AH/PM % + küszöb + lefedettség
+# FIX: A /v7/finance/quote GitHub Actions alatt gyakran üres/korlátozott.
+#      Átváltunk Yahoo Chart v8 endpoint-ra (includePrePost=true), ami a régi "v8" logikához áll közelebb.
 
 from __future__ import annotations
 
@@ -15,22 +16,19 @@ import sys
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
-
 import urllib.request
+import urllib.error
 
 
 # -----------------------------
-# Time helpers (TZ-safe)
+# TZ-safe time helpers
 # -----------------------------
 
 def _now_local() -> dt.datetime:
-    # Local timezone (runner) — works even without tzdata.
     return dt.datetime.now().astimezone()
 
-def _label_tz(now: dt.datetime) -> str:
-    # Prefer tzname if present; else fallback to offset
-    tzname = now.tzname() or "LOCAL"
-    return tzname
+def _tz_label(now: dt.datetime) -> str:
+    return (now.tzname() or "LOCAL") + f" ({now.strftime('%z')})"
 
 
 # -----------------------------
@@ -90,7 +88,7 @@ def _parse_threshold_k(row: Dict[str, Any]) -> float:
 
 
 # -----------------------------
-# Yahoo quote
+# Yahoo Chart v8
 # -----------------------------
 
 @dataclass
@@ -99,13 +97,14 @@ class PriceSlice:
     post: Optional[float]
     pre: Optional[float]
 
-def _yahoo_quote(ticker: str, timeout: int = 20) -> Dict[str, Any]:
-    url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={ticker}"
+def _http_get_json(url: str, timeout: int = 25) -> Dict[str, Any]:
     req = urllib.request.Request(
         url,
         headers={
-            "User-Agent": "Mozilla/5.0 (compatible; price-engine/1.0; +https://github.com/)",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                          "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
             "Accept": "application/json,text/plain,*/*",
+            "Accept-Language": "en-US,en;q=0.9",
         },
         method="GET",
     )
@@ -113,17 +112,35 @@ def _yahoo_quote(ticker: str, timeout: int = 20) -> Dict[str, Any]:
         data = resp.read()
     return json.loads(data.decode("utf-8"))
 
-def _extract_prices(payload: Dict[str, Any]) -> PriceSlice:
-    try:
-        result = payload.get("quoteResponse", {}).get("result", [])
-        q = result[0] if result else {}
-    except Exception:
-        q = {}
-    return PriceSlice(
-        prev_close=_safe_float(q.get("regularMarketPreviousClose")),
-        post=_safe_float(q.get("postMarketPrice")) or _safe_float(q.get("postMarketLastPrice")),
-        pre=_safe_float(q.get("preMarketPrice")),
+def _yahoo_chart_v8(ticker: str) -> Dict[str, Any]:
+    # includePrePost=true adja a pre/post meta értékeket, és a prevClose-t is.
+    url = (
+        f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
+        f"?interval=1m&range=1d&includePrePost=true&events=div%7Csplit"
     )
+    return _http_get_json(url)
+
+def _extract_prices_from_chart(payload: Dict[str, Any]) -> PriceSlice:
+    """
+    A v8 chart válaszban a meta rész tipikusan tartalmazza:
+      - previousClose
+      - preMarketPrice
+      - postMarketPrice
+    Kulcsnevek változhatnak; több opciót próbálunk.
+    """
+    try:
+        res = payload.get("chart", {}).get("result", [])
+        r0 = res[0] if res else {}
+        meta = r0.get("meta", {}) if isinstance(r0, dict) else {}
+    except Exception:
+        meta = {}
+
+    prev_close = _safe_float(meta.get("previousClose")) or _safe_float(meta.get("regularMarketPreviousClose"))
+    pre = _safe_float(meta.get("preMarketPrice"))
+    post = _safe_float(meta.get("postMarketPrice"))
+
+    # Ha nincs pre/post a meta-ban (előfordulhat), akkor marad None.
+    return PriceSlice(prev_close=prev_close, pre=pre, post=post)
 
 def _pct_change(a: Optional[float], b: Optional[float]) -> Optional[float]:
     if a is None or b is None or b == 0:
@@ -140,7 +157,7 @@ class TickerMove:
     pm_pct: Optional[float]
 
 
-def _compute_moves(master_rows: List[Dict[str, Any]], retries: int = 2, sleep_s: float = 0.7) -> Tuple[List[TickerMove], List[str]]:
+def _compute_moves(master_rows: List[Dict[str, Any]], retries: int = 2, sleep_s: float = 0.6) -> Tuple[List[TickerMove], List[str]]:
     moves: List[TickerMove] = []
     missing: List[str] = []
 
@@ -155,7 +172,7 @@ def _compute_moves(master_rows: List[Dict[str, Any]], retries: int = 2, sleep_s:
         payload = None
         for _ in range(retries + 1):
             try:
-                payload = _yahoo_quote(t)
+                payload = _yahoo_chart_v8(t)
                 break
             except Exception:
                 time.sleep(sleep_s)
@@ -165,7 +182,8 @@ def _compute_moves(master_rows: List[Dict[str, Any]], retries: int = 2, sleep_s:
             moves.append(TickerMove(ticker=t, qty=qty, k=k, ah_pct=None, pm_pct=None))
             continue
 
-        ps = _extract_prices(payload)
+        ps = _extract_prices_from_chart(payload)
+
         if ps.prev_close is None:
             missing.append(t)
 
@@ -192,8 +210,6 @@ def _is_trigger(m: TickerMove) -> bool:
 
 def _render_report_1(moves: List[TickerMove], missing: List[str]) -> str:
     now = _now_local()
-    tzlabel = _label_tz(now)
-
     positions, watch = _split_positions_watchlist(moves)
 
     if len(missing) == 0:
@@ -202,9 +218,9 @@ def _render_report_1(moves: List[TickerMove], missing: List[str]) -> str:
         cov = f"Lefedettség: HIÁNYOS — nem elérhető / hiányos adat: {', '.join(missing)} (ok: árfeed/forrás hiba)"
 
     lines: List[str] = []
-    lines.append(f"# #1 — After-hours & Premarket (PRICE ENGINE)")
+    lines.append("# #1 — After-hours & Premarket (PRICE ENGINE)")
     lines.append("")
-    lines.append(f"Időbélyeg: {now.strftime('%Y-%m-%d %H:%M:%S')} {tzlabel} ({now.strftime('%z')})")
+    lines.append(f"Időbélyeg: {now.strftime('%Y-%m-%d %H:%M:%S')} {_tz_label(now)}")
     lines.append(cov)
     lines.append(f"Universe: positions={len(positions)}, watchlist={len(watch)}, total={len(moves)}")
     lines.append("")
