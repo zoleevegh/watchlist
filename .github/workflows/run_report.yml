@@ -1,5 +1,5 @@
-# Version: v4.0.4-price-engine-2026-01-05
-# Last updated: 2026-01-05T11:10:00+01:00
+# Version: v4.0.8-price-engine-debug-runner-2026-01-05
+# Last updated: 2026-01-05T11:30:00+01:00
 # PRICE ENGINE workflow — fix MASTER CSV, nincs input ablak, vissza "run report" step summary.
 # Verzió-szabály: bármely fájl módosításakor a verziószámot folytatólagosan kell növelni, kihagyás nélkül.
 
@@ -14,6 +14,7 @@ jobs:
     timeout-minutes: 30
     env:
       PYTHONUNBUFFERED: "1"
+      DEBUG: "1"
 
       # MASTER CSV (Publish-to-web)
       DEFAULT_CSV_URL: https://docs.google.com/spreadsheets/d/e/2PACX-1vQkgyw0ONwSfc2KnrmWGqf8fWVQxS-R08RySndB69KDJ8L1Cz-H2F1AZtyDfhBGedC0qdC1SFo_aDye/pub?output=csv
@@ -56,18 +57,19 @@ jobs:
             exit 1
           }
 
-      -       - name: DEBUG — show runner versions
-                shell: pwsh
-                run: |
-                  python -V
-                  Write-Host "Listing scripts directory:"
-                  Get-ChildItem -Path scripts -Name
-                  Write-Host "First 25 lines of scripts/report_runner.py:"
-                  Get-Content -Path scripts/report_runner.py -TotalCount 25
-                  Write-Host "First 25 lines of scripts/validate_run.py:"
-                  Get-Content -Path scripts/validate_run.py -TotalCount 25
-                  Write-Host "Import VERSION from report_runner.py (safe import):"
-                  python -c "import importlib.util; p='scripts/report_runner.py'; spec=importlib.util.spec_from_file_location('rr', p); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m); print(getattr(m,'VERSION','NO_VERSION'))"
+      - name: DEBUG — show runner versions
+        shell: pwsh
+        run: |
+          python -V
+          Write-Host "Listing scripts directory:"
+          Get-ChildItem -Path scripts -Name
+          Write-Host "First 25 lines of scripts/report_runner.py:"
+          Get-Content -Path scripts/report_runner.py -TotalCount 25
+          Write-Host "First 25 lines of scripts/validate_run.py:"
+          Get-Content -Path scripts/validate_run.py -TotalCount 25
+          Write-Host "Import VERSION from report_runner.py (safe import):"
+          python -c "import importlib.util; p='scripts/report_runner.py'; spec=importlib.util.spec_from_file_location('rr', p); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m); print(getattr(m,'VERSION','NO_VERSION'))"
+
       - name: Run PRICE ENGINE (#1)
         shell: pwsh
         run: |
