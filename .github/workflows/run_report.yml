@@ -1,8 +1,12 @@
-# Version: v4.1.2-price-engine-STABLE-2026-01-05
-# Last updated: 2026-01-05T13:20:00+01:00
+# Version: v4.1.3-price-engine-runnerlog-2026-01-05
+# Last updated: 2026-01-05T13:35:00+01:00
 #
-# STABIL workflow – nincs debug, nincs PowerShell trükk
-# Cél: piacnyitás ELŐTT fusson és reportot adjon
+# PRICE ENGINE workflow — STABIL + kőkemény láthatóság:
+# - Nem trükközünk heredoc-kal / regex-szel workflow-ban.
+# - A runner kimenetét mindenképp fájlba tesszük (runner.log), és kiírjuk a logba is.
+# - Ha a runner elhasal, a runner.log akkor is látszik + artifactként is felmegy.
+#
+# Verzió-szabály: bármely fájl módosításakor a verziószámot folytatólagosan kell növelni, kihagyás nélkül.
 
 name: Run Report — PRICE ENGINE
 
@@ -41,6 +45,15 @@ jobs:
             Write-Host "No requirements.txt, skipping pip install."
           }
 
+      - name: Sanity — show report_runner head
+        shell: pwsh
+        run: |
+          Write-Host "Python:"; python -V
+          Write-Host "scripts/:"; Get-ChildItem -Path scripts -Name
+          Write-Host "---- report_runner.py (first 40 lines) ----"
+          Get-Content -Path scripts/report_runner.py -TotalCount 40
+          Write-Host "------------------------------------------"
+
       - name: Fetch MASTER CSV
         shell: pwsh
         run: |
@@ -50,10 +63,22 @@ jobs:
           Write-Host "MASTER CSV URL: $url"
           curl.exe -L --fail "$url" -o "reports\\master.csv"
 
-      - name: Run PRICE ENGINE (#1)
+      - name: Run PRICE ENGINE (#1) — always capture runner.log
         shell: pwsh
         run: |
-          python scripts\\report_runner.py --report 1 --master reports\\master.csv --out reports\\summary_report_1.md
+          New-Item -ItemType Directory -Force -Path reports | Out-Null
+          # Run via cmd to guarantee stdout+stderr redirection works the same on Windows runners
+          cmd.exe /c "python -X faulthandler -u scripts\\report_runner.py --report 1 --master reports\\master.csv --out reports\\summary_report_1.md > reports\\runner.log 2>&1"
+          $code = $LASTEXITCODE
+          Write-Host "Runner exit code: $code"
+          Write-Host "---- runner.log (last 200 lines) ----"
+          if (Test-Path "reports\\runner.log") {
+            Get-Content -Path "reports\\runner.log" -Tail 200
+          } else {
+            Write-Host "runner.log missing"
+          }
+          Write-Host "-------------------------------------"
+          if ($code -ne 0) { exit $code }
 
       - name: Validate report output
         shell: pwsh
@@ -67,6 +92,7 @@ jobs:
           path: |
             reports/summary_report_1.md
             reports/master.csv
+            reports/runner.log
 
       - name: Run summary
         shell: pwsh
