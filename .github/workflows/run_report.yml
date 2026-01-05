@@ -1,6 +1,7 @@
-# Version: v4.0.1-price-engine-2026-01-05
-# Last updated: 2026-01-05T09:25:00+01:00
+# Version: v4.0.3-price-engine-2026-01-05
+# Last updated: 2026-01-05T09:45:00+01:00
 # Cél: PRICE ENGINE workflow — csak AH/PM % + küszöb + lefedettség. NINCS makró / analyst / catalyst / high-conv.
+# FIX: Windows runneren ZoneInfo tzdata hiány miatt borulhat → itt pip tzdata, plusz a scriptben tz-safe fallback.
 
 name: Run Report (Windows) — PRICE ENGINE
 
@@ -8,15 +9,13 @@ on:
   workflow_dispatch:
     inputs:
       master_url:
-        description: "MASTER CSV URL (Publish-to-web CSV ajánlott). Ha üres, DEFAULT_CSV_URL / repo variable MASTER_CSV_URL lesz használva."
+        description: "MASTER CSV URL (Publish-to-web CSV). Ha üres, DEFAULT_CSV_URL / repo var MASTER_CSV_URL lesz használva."
         required: false
         default: ""
       report:
         description: "PRICE ENGINE csak #1 (AH+PM)."
         required: false
         default: "1"
-  repository_dispatch:
-    types: [run_report]
 
 jobs:
   run:
@@ -24,13 +23,7 @@ jobs:
     timeout-minutes: 30
     env:
       PYTHONUNBUFFERED: "1"
-
-      # Alapértelmezett MASTER CSV (állítsd be, vagy használd inkább a workflow inputot / repo variable-t)
-      # Tipp: a Publish-to-web link általában így néz ki:
-      # https://docs.google.com/spreadsheets/d/e/<PUB_ID>/pub?output=csv
-      DEFAULT_CSV_URL: https://docs.google.com/spreadsheets/d/e/2PACX-1vQ7N4XK79VsOKkQ2AQhpiaI9hp1KOcM2KZ_byPpbdpCSFVYvWEE32Vj0kNcd6DnSA/pub?output=csv
-
-      # Gist (#1) — summary_report_1.md
+      DEFAULT_CSV_URL: "https://docs.google.com/spreadsheets/d/e/2PACX-1vQ7N4XK79VsOKkQ2AQhpiaI9hp1KOcM2KZ_byPpbdpCSFVYvWEE32Vj0kNcd6DnSA/pub?output=csv"
       GIST_ID_1: 5df443b8a46ef863cdc97aad62756510
 
     steps:
@@ -41,6 +34,12 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
+      - name: Install deps (tzdata safety)
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install tzdata
 
       - name: Resolve inputs (force report=1)
         id: vars
@@ -61,22 +60,6 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($url)) {
             Write-Error "Nincs MASTER URL. Add meg a workflow inputban (master_url), vagy töltsd ki DEFAULT_CSV_URL-t, vagy repo variable: MASTER_CSV_URL."
             exit 1
-          }
-
-          # Ne engedjük át a placeholder / hibás URL-t
-          if ($url -match "\.\.\.") {
-            Write-Error "A MASTER URL placeholder ('...'). Állítsd be rendesen a Publish-to-web CSV linket."
-            Write-Host "Kapott URL: $url"
-            exit 1
-          }
-
-          # Ha valaki véletlenül a /edit linket adja meg, próbáljuk CSV export URL-re alakítani
-          if ($url -match "docs\.google\.com/spreadsheets/d/([^/]+)/") {
-            $id = $Matches[1]
-            if ($url -match "/edit" -or $url -match "usp=") {
-              $url = "https://docs.google.com/spreadsheets/d/$id/export?format=csv"
-              Write-Host "INFO: /edit linkből export CSV lett: $url"
-            }
           }
 
           "url=$url" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
@@ -103,7 +86,7 @@ jobs:
             exit 1
           }
 
-          Get-Content "$out" -TotalCount 5 | ForEach-Object { Write-Host "CSV> $_" }
+          Get-Content "$out" -TotalCount 2 | ForEach-Object { Write-Host "CSV> $_" }
 
       - name: Run PRICE ENGINE (#1)
         shell: pwsh
@@ -115,18 +98,8 @@ jobs:
         run: |
           python scripts\validate_run.py --report 1 --path reports\summary_report_1.md
 
-      - name: Check outputs exist
-        id: check
-        shell: pwsh
-        run: |
-          $hasReport = (Test-Path "reports\summary_report_1.md")
-          $hasMaster = (Test-Path "reports\master.csv")
-          "has_report=$hasReport" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "has_master=$hasMaster" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          Write-Host "has_report=$hasReport has_master=$hasMaster"
-
       - name: Upload artifacts
-        if: always() && steps.check.outputs.has_report == 'True'
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: report-bundle
@@ -135,7 +108,6 @@ jobs:
             reports/master.csv
 
       - name: Update Gist (#1)
-        if: steps.check.outputs.has_report == 'True'
         shell: pwsh
         env:
           GIST_ID: ${{ env.GIST_ID_1 }}
