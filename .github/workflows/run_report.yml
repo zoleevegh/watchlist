@@ -1,31 +1,20 @@
-# Version: v4.2.17-price-engine-cleanlink-ubuntu-2026-01-06
-# Last updated: 2026-01-06
-#
-# FIX (stabil):
-# - Ubuntu runner (kevesebb PowerShell-idézőjel pokol)
-# - Runner hívás: NINCS --report (kompatibilis a régi report_runner.py-val is)
-# - Job Summary: 1 db TELJES kattintható URL, automatikus cache-buster: ?nocache=runid-attempt-rand
-# - Ugyanez elmentve: reports/raw_url.txt (artifact)
-#
-# Verzió-szabály: bármely fájl módosításakor a verziószámot folytatólagosan kell növelni, kihagyás nélkül.
-
 name: Run Report — PRICE ENGINE
 
 on:
   workflow_dispatch:
     inputs:
-      master_csv_url:
-        description: "MASTER CSV URL (ha üres, a defaultot használja)"
+      master:
+        description: "MASTER CSV URL (optional; defaults to built-in MASTER)"
         required: false
-        default: "https://docs.google.com/spreadsheets/d/e/2PACX-1vQkgyw0ONwSfc2KnrmWGqf8fWVQxS-R08RySndB69KDJ8L1Cz-H2F1AZtyDfhBGedC0qdC1SFo_aDye/pub?output=csv"
+        default: ""
 
 jobs:
   run:
     runs-on: ubuntu-latest
-
     env:
-      PYTHONUNBUFFERED: "1"
+      DEFAULT_MASTER_CSV: "https://docs.google.com/spreadsheets/d/e/2PACX-1vQkgyw0ONwSfc2KnrmWGqf8fWVQxS-R08RySndB69KDJ8L1Cz-H2F1AZtyDfhBGedC0qdC1SFo_aDye/pub?output=csv"
       GIST_ID: 5df443b8a46ef863cdc97aad62756510
+      GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
 
     steps:
       - name: Checkout
@@ -36,69 +25,54 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install deps (if requirements.txt)
+      - name: Install deps
         shell: bash
         run: |
-          set -euo pipefail
+          python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then
-            python -m pip install --upgrade pip
             pip install -r requirements.txt
           else
-            echo "No requirements.txt, skipping pip install."
+            pip install requests pandas python-dateutil pytz
           fi
 
-      - name: Fetch MASTER CSV
+      - name: Run PRICE ENGINE (#1)
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p reports
 
-          URL='${{ inputs.master_csv_url }}'
-          if [ -z "${URL}" ]; then
-            URL='https://docs.google.com/spreadsheets/d/e/2PACX-1vQkgyw0ONwSfc2KnrmWGqf8fWVQxS-R08RySndB69KDJ8L1Cz-H2F1AZtyDfhBGedC0qdC1SFo_aDye/pub?output=csv'
+          MASTER_URL="${{ github.event.inputs.master }}"
+          if [ -z "${MASTER_URL}" ]; then
+            MASTER_URL="${DEFAULT_MASTER_CSV}"
           fi
 
-          echo "MASTER CSV URL: ${URL}"
-          curl -L --fail "${URL}" -o reports/master.csv
-          echo "MASTER CSV lines: $(wc -l < reports/master.csv)"
-
-      - name: Run PRICE ENGINE (#1) — capture runner.log
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p reports
-
-          # NINCS --report (kompatibilitás)
-          python -X faulthandler -u scripts/report_runner.py \
-            --master reports/master.csv \
-            --out reports/summary_report_1.md \
-            2>&1 | tee reports/runner.log
+          echo "MASTER_URL=${MASTER_URL}"
+          python report_runner.py --report 1 --master "${MASTER_URL}" --out reports/summary_report_1.md
 
       - name: Update fixed Gist with #1 report
         if: always()
         shell: bash
-        env:
-          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
         run: |
           set -euo pipefail
 
-          if [ -z "${GIST_TOKEN:-}" ]; then
-            echo "No GIST_TOKEN secret – skip Gist update (#1)."
+          if [ -z "${GIST_TOKEN}" ]; then
+            echo "No GIST_TOKEN secret - skip Gist update (#1)."
             exit 0
           fi
 
           if [ ! -f reports/summary_report_1.md ]; then
-            echo "summary_report_1.md not found – runner likely failed. Skip Gist update."
+            echo "reports/summary_report_1.md not found - skip Gist update (#1)."
             exit 0
           fi
 
           python - <<'PY'
-import json
-from pathlib import Path
-content = Path('reports/summary_report_1.md').read_text(encoding='utf-8', errors='replace')
-payload = {"files": {"summary_report_1.md": {"content": content}}}
-Path('reports/gist_payload.json').write_text(json.dumps(payload), encoding='utf-8')
-PY
+          import json
+          from pathlib import Path
+
+          content = Path('reports/summary_report_1.md').read_text(encoding='utf-8', errors='replace')
+          payload = {"files": {"summary_report_1.md": {"content": content}}}
+          Path('reports/gist_payload.json').write_text(json.dumps(payload), encoding='utf-8')
+          PY
 
           curl -sS -X PATCH "https://api.github.com/gists/${GIST_ID}" \
             -H "Authorization: Bearer ${GIST_TOKEN}" \
@@ -109,32 +83,26 @@ PY
 
           echo "Gist updated."
 
-      - name: Job summary (single clickable nocache URL)
+      - name: Job summary (single nocache raw URL)
         if: always()
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p reports
 
           BASE="https://gist.githubusercontent.com/zoleevegh/${GIST_ID}/raw/summary_report_1.md"
-          NONCE="$(python - <<'PY'
-import secrets
-print(secrets.token_hex(6))
-PY
-)"
-          URL="${BASE}?nocache=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${NONCE}"
+          NONCE="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-$(date +%s)"
+          URL="${BASE}?nocache=${NONCE}"
 
-          echo "Raw report URL (nocache): ${URL}" >> "${GITHUB_STEP_SUMMARY}"
+          echo "Raw report URL (nocache): <${URL}>" >> "${GITHUB_STEP_SUMMARY}"
+
+          mkdir -p reports
           echo "${URL}" > reports/raw_url.txt
 
-      - name: Upload artifacts (bundle)
+      - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: report-bundle
           path: |
             reports/summary_report_1.md
-            reports/runner.log
-            reports/master.csv
             reports/raw_url.txt
-            reports/gist_payload.json
