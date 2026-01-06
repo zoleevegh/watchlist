@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# report_runner.py — v4.4.1-price-engine-tpselect-ahpm-fix-2026-01-06
+# report_runner.py — v4.4.3-price-engine-ahpm-basefix-2026-01-06
 #
 # Fixek (v4.4.0 -> v4.4.1):
 # - TradingPeriods kiválasztás javítva:
@@ -22,7 +22,7 @@ import traceback
 import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
 
-VERSION = "v4.4.1-price-engine-tpselect-ahpm-fix-2026-01-06"
+VERSION = "v4.4.3-price-engine-ahpm-basefix-2026-01-06"
 
 
 def pct(new: Optional[float], base: Optional[float]) -> Optional[float]:
@@ -283,7 +283,7 @@ def main() -> int:
     for t in all_tickers:
         try:
             base_prev, base_regular, pre, post, dbg = chart_prices(t, now_epoch)
-            pm = pct(pre, base_regular)
+            pm = pct(pre, base_prev)
             ah = pct(post, base_regular)
             data[t] = (ah, pm, dbg)
 
