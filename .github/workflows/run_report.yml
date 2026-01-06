@@ -1,11 +1,14 @@
-# Version: v4.2.9-price-engine-summary-copylink-2026-01-06
-# Last updated: 2026-01-06T03:35:00+01:00
+# Version: v4.2.10-price-engine-summary-split-url-2026-01-06
+# Last updated: 2026-01-06T10:00:00+01:00
 #
-# FIX v4.2.9:
-# - A GitHub UI a nagyon hosszú URL-eket vizuálisan a végéről mutatja (ezért látszik csak "=<nocache GUID>").
-# - Ezért a Summary-ba beteszünk egy KÜLÖN "Copy raw URL" linket, amiről jobbklikk / copy link address (vagy mobilon long-press),
-#   és nem kell a teljes URL-t látni.
-# - A teljes URL továbbra is ki van írva sima sorban + artifact: reports/raw_url.txt
+# MIÉRT LÁTSZIK CSAK AZ URL VÉGE?
+# - A GitHub Actions Summary UI a hosszú stringeket gyakran úgy jeleníti meg, hogy a VÉGÜK látszódjon (mint a hash-eknél),
+#   ezért a "plain text" sorban csak a "?nocache=..." vége látszik.
+#
+# FIX v4.2.10:
+# - A Summary-ba beírjuk a teljes kattintható "Open raw report (nocache)" linket (href = FULL URL)
+# - A másoláshoz külön "split" formában is kiírjuk: base URL külön sor, a nocache külön sor
+# - A teljes URL továbbra is mentve: reports/raw_url.txt (artifact)
 #
 # Verzió-szabály: bármely fájl módosításakor a verziószámot folytatólagosan kell növelni, kihagyás nélkül.
 
@@ -124,8 +127,7 @@ jobs:
           $krix = [guid]::NewGuid().ToString("N")
           $raw = "$rawStable?nocache=$krix"
 
-          # log + file (artifact)
-          Write-Host "RAW_URL=$raw"
+          # file (artifact)
           $raw | Set-Content -Path "reports\raw_url.txt" -Encoding utf8
 
           $ts = Get-Date -Format 'yyyy-MM-ddTHH:mmzzz'
@@ -133,13 +135,16 @@ jobs:
           $summaryLines = @()
           $summaryLines += "Job summary generated at run-time ($ts)"
           $summaryLines += ""
-          $summaryLines += "[Open raw report]($raw)"
+          $summaryLines += "[Open raw report (nocache)]($raw)"
           $summaryLines += ""
-          $summaryLines += "**Copy raw URL (right‑click → copy link address):**"
-          $summaryLines += "[Copy raw URL]($raw)"
+          $summaryLines += "**Copy raw URL (split):**"
+          $summaryLines += $rawStable
+          $summaryLines += "?nocache=$krix"
           $summaryLines += ""
-          $summaryLines += "Raw URL (plain text):"
-          $summaryLines += $raw
+          $summaryLines += "**Copy raw URL (from artifact):** download `report-bundle` → `reports/raw_url.txt`"
+          $summaryLines += ""
+          $summaryLines += "Debug: RAW_STABLE=$rawStable"
+          $summaryLines += "Debug: NO_CACHE_GUID=$krix"
 
           ($summaryLines -join "`n") | Set-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8
 
