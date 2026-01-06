@@ -1,12 +1,10 @@
-# Version: v4.2.7-price-engine-summary-setcontent-fullurl-2026-01-06
-# Last updated: 2026-01-06T03:10:00+01:00
+# Version: v4.2.8-price-engine-yamlfix-summary-lines-2026-01-06
+# Last updated: 2026-01-06T03:20:00+01:00
 #
-# FIX v4.2.7:
-# - A "Raw URL (copy)" eddig azért lett csak "=<token>", mert a Summary tartalmat APPEND-eltük,
-#   és a GitHub UI a régi (hibás) sorokból a legutolsó kódrészletet mutatta.
-# - Mostantól a summary step NEM appendel: Set-Content-tel felülírja a teljes summary-t.
-# - A Raw URL teljesen kiírva, sima szövegként (külön sorban), így mindig egyben másolható.
-# - Plusz: reports/raw_url.txt-be is kiírjuk és artifactként feltöltjük (ha telefonról kell kinyerni).
+# FIX v4.2.8:
+# - YAML syntax hiba oka: a PowerShell here-string tartalma nem volt behúzva a `run: |` blokkban.
+# - Megoldás: NINCS here-string. A summary-t soronként építjük és Set-Content-tel felülírjuk.
+# - A teljes cache-busted URL kiírásra kerül a Summary-ba ÉS reports/raw_url.txt-be (artifact).
 #
 # Verzió-szabály: bármely fájl módosításakor a verziószámot folytatólagosan kell növelni, kihagyás nélkül.
 
@@ -116,6 +114,7 @@ jobs:
         shell: pwsh
         run: |
           [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+          New-Item -ItemType Directory -Force -Path reports | Out-Null
 
           $gistId = "${env:GIST_ID_1}"
           if ([string]::IsNullOrWhiteSpace($gistId)) { $gistId = "5df443b8a46ef863cdc97aad62756510" }
@@ -124,25 +123,21 @@ jobs:
           $krix = [guid]::NewGuid().ToString("N")
           $raw = "$rawStable?nocache=$krix"
 
-          # írd ki logba is
+          # log + file (artifact)
           Write-Host "RAW_URL=$raw"
-
-          # írd ki fájlba is (artifact)
           $raw | Set-Content -Path "reports\raw_url.txt" -Encoding utf8
 
           $ts = Get-Date -Format 'yyyy-MM-ddTHH:mmzzz'
 
-          $summary = @"
-Job summary generated at run-time ($ts)
+          $summaryLines = @()
+          $summaryLines += "Job summary generated at run-time ($ts)"
+          $summaryLines += ""
+          $summaryLines += "[Open raw report]($raw)"
+          $summaryLines += ""
+          $summaryLines += "Raw URL (copy):"
+          $summaryLines += $raw
 
-[Open raw report]($raw)
-
-Raw URL (copy):
-$raw
-"@
-
-          # NEM append, felülírjuk
-          $summary | Set-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8
+          ($summaryLines -join "`n") | Set-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8
 
       - name: Upload artifacts (bundle)
         if: always()
