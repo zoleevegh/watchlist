@@ -132,15 +132,7 @@ jobs:
             exit 0
           fi
 
-          python - << 'PY'
-import json
-from pathlib import Path
-
-gist_id = "5df443b8a46ef863cdc97aad62756510"
-content = Path("reports/summary_report_1.md").read_text(encoding="utf-8", errors="replace")
-payload = {"files": {"summary_report_1.md": {"content": content}}}
-Path("reports/gist_payload.json").write_text(json.dumps(payload), encoding="utf-8")
-PY
+          python -c "import json; from pathlib import Path; content=Path('reports/summary_report_1.md').read_text(encoding='utf-8', errors='replace'); payload={'files':{'summary_report_1.md':{'content':content}}}; Path('reports/gist_payload.json').write_text(json.dumps(payload), encoding='utf-8')"
 
           curl -sS -X PATCH "https://api.github.com/gists/${GIST_ID}"             -H "Authorization: token ${GIST_TOKEN}"             -H "Accept: application/vnd.github+json"             --data-binary "@reports/gist_payload.json" > /dev/null
 
