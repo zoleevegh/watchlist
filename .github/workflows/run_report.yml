@@ -9,6 +9,7 @@
 # Verzió-szabály: bármely fájl módosításakor a verziószámot folytatólagosan kell növelni, kihagyás nélkül.
 
 name: Run Report — PRICE ENGINE
+# WORKFLOW_VERSION: v4.2.16-price-engine-summary-oneurl-nocache-2026-01-06
 
 on:
   workflow_dispatch:
@@ -120,34 +121,25 @@ jobs:
             -d $json | Out-Null
 
           Write-Host "Gist updated."
+- name: Job summary (raw URL — one line + nocache)
+  if: always()
+  shell: pwsh
+  run: |
+    $base = "https://gist.githubusercontent.com/zoleevegh/5df443b8a46ef863cdc97aad62756510/raw/summary_report_1.md"
+    $nonce = ([guid]::NewGuid().ToString("N")).Substring(0,12)
+    $url = "$base?run=$env:GITHUB_RUN_ID&attempt=$env:GITHUB_RUN_ATTEMPT&nonce=$nonce"
 
-      # --- Job summary: full, clickable URL + split copy lines ---
-      - name: Job summary (raw URL — full one-line + nocache)
-        if: always()
-        shell: pwsh
-        env:
-          GIST_RAW_BASE: https://gist.githubusercontent.com/zoleevegh/5df443b8a46ef863cdc97aad62756510/raw/summary_report_1.md
-        run: |
-          $base = $env:GIST_RAW_BASE
-          if (-not $base) {
-            $base = 'https://gist.githubusercontent.com/zoleevegh/5df443b8a46ef863cdc97aad62756510/raw/summary_report_1.md'
-          }
+    $lines = @(
+      "Job summary generated at run-time ($env:GITHUB_RUN_ID)",
+      "",
+      "Raw report URL (nocache):",
+      $url
+    )
+    $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
 
-          $nonce = [guid]::NewGuid().ToString('N').Substring(0,12)
-          $runId = $env:GITHUB_RUN_ID
-          $attempt = $env:GITHUB_RUN_ATTEMPT
-
-          $url = "$base?nocache=$runId-$attempt-$nonce"
-
-          $nl = [Environment]::NewLine
-          $summary = "### PRICE ENGINE — raw report (nocache)" + $nl + $nl
-          $summary += "[Open raw report (nocache)]($url)" + $nl + $nl
-          $summary += "Copy/paste:" + $nl + $url + $nl
-
-          Set-Content -Path $env:GITHUB_STEP_SUMMARY -Value $summary -Encoding utf8
-
-          New-Item -ItemType Directory -Force -Path reports | Out-Null
-          Set-Content -Path 'reports/raw_url.txt' -Value $url -Encoding utf8
+    New-Item -ItemType Directory -Force -Path reports | Out-Null
+    Set-Content -Path "reports\raw_url.txt" -Value $url -Encoding utf8
+        Set-Content -Path 'reports/raw_url.txt' -Value $url -Encoding utf8
       - name: Upload artifacts (bundle)
         if: always()
         uses: actions/upload-artifact@v4
