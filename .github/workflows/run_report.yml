@@ -1,11 +1,11 @@
-# Version: v4.2.1-price-engine-summary-linkfix-2026-01-06
-# Last updated: 2026-01-06T01:05:00+01:00
+# Version: v4.2.3-price-engine-summary-rawurl-full-2026-01-06
+# Last updated: 2026-01-06T01:55:00+01:00
 #
-# FIX v4.2.1:
-# - Job Summary-ban a "Raw URL" MOSTANTÓL mindig TELJES LINK (nem csak a random guid).
-# - A link cache-busting: ?nocache=<guid>
-# - Kattintható markdown link: [Open raw report](...)
-# - UTF-8 output (ne legyen "ettől még frissült" karakterhibás a logban)
+# FIX v4.2.3:
+# - Job Summary "Raw URL" sor MOSTANTÓL tényleg a TELJES URL-t írja ki (nem csak a guid-et).
+# - "Raw URL (copy)" kódformában van (`...`), hogy egyben másolható legyen.
+# - MASTER_CSV_URL az alapértelmezett (103 soros) Sheets CSV (DEFAULT megszüntetve).
+# - Kattintható link marad: [Open raw report](...)
 #
 # Verzió-szabály: bármely fájl módosításakor a verziószámot folytatólagosan kell növelni, kihagyás nélkül.
 
@@ -25,7 +25,9 @@ jobs:
     env:
       PYTHONUNBUFFERED: "1"
       GIST_ID_1: 5df443b8a46ef863cdc97aad62756510
-      DEFAULT_CSV_URL: "https://docs.google.com/spreadsheets/d/e/2PACX-1vQkgyw0ONwSfc2KnrmWGqf8fWVQxS-R08RySndB69KDJ8L1Cz-H2F1AZtyDfhBGedC0qdC1SFo_aDye/pub?output=csv"
+
+      # MASTER watchlist CSV (alapértelmezett)
+      MASTER_CSV_URL: "https://docs.google.com/spreadsheets/d/e/2PACX-1vQkgyw0ONwSfc2KnrmWGqf8fWVQxS-R08RySndB69KDJ8L1Cz-H2F1AZtyDfhBGedC0qdC1SFo_aDye/pub?output=csv"
 
     steps:
       - name: Checkout
@@ -52,8 +54,12 @@ jobs:
         run: |
           [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
           New-Item -ItemType Directory -Force -Path reports | Out-Null
+
           $url = "${env:MASTER_CSV_URL}"
-          if ([string]::IsNullOrWhiteSpace($url)) { $url = "${env:DEFAULT_CSV_URL}" }
+          if ([string]::IsNullOrWhiteSpace($url)) {
+            throw "MASTER_CSV_URL is empty – cannot fetch master.csv"
+          }
+
           Write-Host "MASTER CSV URL: $url"
           curl.exe -L --fail "$url" -o "reports\master.csv"
           Write-Host "MASTER CSV lines:" (Get-Content "reports\master.csv" | Measure-Object -Line).Lines
@@ -120,7 +126,6 @@ jobs:
         run: |
           [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
-          # hard fallback, so you ALWAYS get a valid URL
           $gistId = "${env:GIST_ID_1}"
           if ([string]::IsNullOrWhiteSpace($gistId)) { $gistId = "5df443b8a46ef863cdc97aad62756510" }
 
@@ -128,8 +133,12 @@ jobs:
           $krix = [guid]::NewGuid().ToString("N")
           $raw = "$rawStable?nocache=$krix"
 
-          "Job summary generated at run-time ($(Get-Date -Format 'yyyy-MM-ddTHH:mmzzz'))" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-          "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-          "[Open raw report]($raw)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-          "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-          "Raw URL: $raw" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          $lines = @(
+            "Job summary generated at run-time ($(Get-Date -Format 'yyyy-MM-ddTHH:mmzzz'))",
+            "",
+            "[Open raw report]($raw)",
+            "",
+            "Raw URL (copy): `$raw`"
+          )
+
+          $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
