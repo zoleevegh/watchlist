@@ -1,11 +1,12 @@
-# Version: v4.2.6-price-engine-summary-indent-codeblock-2026-01-06
-# Last updated: 2026-01-06T02:55:00+01:00
+# Version: v4.2.7-price-engine-summary-setcontent-fullurl-2026-01-06
+# Last updated: 2026-01-06T03:10:00+01:00
 #
-# FIX v4.2.6:
-# - PowerShell-ben a ``` okozhat parser hibát / YAML-ben szétcsúszhat.
-# - Ezért NEM használunk backtick fence-t. A "Raw URL (copy)" most 4 szóközzel behúzott code block (Markdown),
-#   így 100% stabil és egyben másolható.
-# - Logba is kiírjuk: RAW_URL=<teljes url>
+# FIX v4.2.7:
+# - A "Raw URL (copy)" eddig azért lett csak "=<token>", mert a Summary tartalmat APPEND-eltük,
+#   és a GitHub UI a régi (hibás) sorokból a legutolsó kódrészletet mutatta.
+# - Mostantól a summary step NEM appendel: Set-Content-tel felülírja a teljes summary-t.
+# - A Raw URL teljesen kiírva, sima szövegként (külön sorban), így mindig egyben másolható.
+# - Plusz: reports/raw_url.txt-be is kiírjuk és artifactként feltöltjük (ha telefonról kell kinyerni).
 #
 # Verzió-szabály: bármely fájl módosításakor a verziószámot folytatólagosan kell növelni, kihagyás nélkül.
 
@@ -81,16 +82,6 @@ jobs:
             throw "Runner failed with exit code $code"
           }
 
-      - name: Upload artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: report-bundle
-          path: |
-            reports/summary_report_1.md
-            reports/runner.log
-            reports/master.csv
-
       - name: Update Gist (#1)
         shell: pwsh
         env:
@@ -133,16 +124,33 @@ jobs:
           $krix = [guid]::NewGuid().ToString("N")
           $raw = "$rawStable?nocache=$krix"
 
+          # írd ki logba is
           Write-Host "RAW_URL=$raw"
 
-          $lines = @()
-          $lines += "Job summary generated at run-time ($(Get-Date -Format 'yyyy-MM-ddTHH:mmzzz'))"
-          $lines += ""
-          $lines += "[Open raw report]($raw)"
-          $lines += ""
-          $lines += "Raw URL (copy):"
-          $lines += ""
-          # 4-space indent => markdown code block, nincs ```-mizéria
-          $lines += ("    " + $raw)
+          # írd ki fájlba is (artifact)
+          $raw | Set-Content -Path "reports\raw_url.txt" -Encoding utf8
 
-          $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          $ts = Get-Date -Format 'yyyy-MM-ddTHH:mmzzz'
+
+          $summary = @"
+Job summary generated at run-time ($ts)
+
+[Open raw report]($raw)
+
+Raw URL (copy):
+$raw
+"@
+
+          # NEM append, felülírjuk
+          $summary | Set-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8
+
+      - name: Upload artifacts (bundle)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: report-bundle
+          path: |
+            reports/summary_report_1.md
+            reports/runner.log
+            reports/master.csv
+            reports/raw_url.txt
