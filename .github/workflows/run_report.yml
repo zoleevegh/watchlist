@@ -122,42 +122,22 @@ jobs:
           Write-Host "Gist updated."
 
       # --- Job summary: full, clickable URL + split copy lines ---
-      - name: Job summary (one clickable nocache URL + split copy lines)
+      - name: Job summary (single nocache URL)
         if: always()
         shell: pwsh
+        env:
+          GIST_RAW_BASE: https://gist.githubusercontent.com/zoleevegh/5df443b8a46ef863cdc97aad62756510/raw/summary_report_1.md
         run: |
-          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-          New-Item -ItemType Directory -Force -Path reports | Out-Null
-
-          $gistId = "${env:GIST_ID}"
-          $rawStable = "https://gist.githubusercontent.com/zoleevegh/$gistId/raw/summary_report_1.md"
-
-          # krix-krax: GUID + run_id (dupla biztosíték)
-          $krix = [guid]::NewGuid().ToString("N")
-          $runId = $env:GITHUB_RUN_ID
-          if ([string]::IsNullOrWhiteSpace($runId)) { $runId = "0" }
-
-          $raw = "$rawStable?nocache=$krix-$runId"
-
-          # file (artifact)
-          $raw | Out-File -FilePath "reports\raw_url.txt" -Encoding utf8
-
-          $ts = Get-Date -Format 'yyyy-MM-ddTHH:mmzzz'
-
-          "Job summary generated at run-time ($ts)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-          "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-
-          # kattintható, teljes URL (ez a lényeg)
-          "[Open raw report (nocache)]($raw)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-          "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-
-          "**Copy raw URL (split):**" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-          $rawStable | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-          "?nocache=$krix-$runId" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-          "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-
-          '**Copy raw URL (artifact):** download `report-bundle` → `reports/raw_url.txt`' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-
+          $base = "$env:GIST_RAW_BASE"
+          $nonce = [guid]::NewGuid().ToString("N")
+          $url = "$base?nocache=$nonce"
+          $nl = [Environment]::NewLine
+          $out = @()
+          $out += "Job summary generated at run-time ($env:GITHUB_RUN_ID)"
+          $out += ""
+          $out += "Raw report URL (nocache):"
+          $out += $url
+          ($out -join $nl) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
       - name: Upload artifacts (bundle)
         if: always()
         uses: actions/upload-artifact@v4
