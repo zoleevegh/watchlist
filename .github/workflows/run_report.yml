@@ -1,10 +1,11 @@
-# Version: v4.2.8-price-engine-yamlfix-summary-lines-2026-01-06
-# Last updated: 2026-01-06T03:20:00+01:00
+# Version: v4.2.9-price-engine-summary-copylink-2026-01-06
+# Last updated: 2026-01-06T03:35:00+01:00
 #
-# FIX v4.2.8:
-# - YAML syntax hiba oka: a PowerShell here-string tartalma nem volt behúzva a `run: |` blokkban.
-# - Megoldás: NINCS here-string. A summary-t soronként építjük és Set-Content-tel felülírjuk.
-# - A teljes cache-busted URL kiírásra kerül a Summary-ba ÉS reports/raw_url.txt-be (artifact).
+# FIX v4.2.9:
+# - A GitHub UI a nagyon hosszú URL-eket vizuálisan a végéről mutatja (ezért látszik csak "=<nocache GUID>").
+# - Ezért a Summary-ba beteszünk egy KÜLÖN "Copy raw URL" linket, amiről jobbklikk / copy link address (vagy mobilon long-press),
+#   és nem kell a teljes URL-t látni.
+# - A teljes URL továbbra is ki van írva sima sorban + artifact: reports/raw_url.txt
 #
 # Verzió-szabály: bármely fájl módosításakor a verziószámot folytatólagosan kell növelni, kihagyás nélkül.
 
@@ -134,7 +135,10 @@ jobs:
           $summaryLines += ""
           $summaryLines += "[Open raw report]($raw)"
           $summaryLines += ""
-          $summaryLines += "Raw URL (copy):"
+          $summaryLines += "**Copy raw URL (right‑click → copy link address):**"
+          $summaryLines += "[Copy raw URL]($raw)"
+          $summaryLines += ""
+          $summaryLines += "Raw URL (plain text):"
           $summaryLines += $raw
 
           ($summaryLines -join "`n") | Set-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8
