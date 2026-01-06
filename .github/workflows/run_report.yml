@@ -1,10 +1,11 @@
-# Version: v4.1.9-price-engine-cachebuster-guid-2026-01-06
-# Last updated: 2026-01-06T00:15:00+01:00
+# Version: v4.2.0-price-engine-single-cachebusted-url-2026-01-06
+# Last updated: 2026-01-06T00:25:00+01:00
 #
-# FIXEK (v4.1.9):
-# - Summary-ban automatikus random cache-buster a gist raw link végén (?cb=<guid>).
-# - ALL_NA (exit 5) esetén NEM frissítjük a gist-et.
-# - Gist frissítés GitHub API-val (Invoke-RestMethod) — nincs külső action dependency.
+# FIXEK (v4.2.0):
+# - A Job Summary-ban csak 1 link legyen: a stable raw URL VÉGÉRE automatikusan rárakunk egy random "krix-kraxot".
+#   Példa: .../summary_report_1.md?<guid>
+# - NINCS "fresh" külön sorban, nincs "mit csináljak ezzel" helyzet.
+# - A Gist frissítés GitHub API-val (Invoke-RestMethod).
 #
 # Verzió-szabály: bármely fájl módosításakor a verziószámot folytatólagosan kell növelni, kihagyás nélkül.
 
@@ -24,7 +25,7 @@ jobs:
     env:
       PYTHONUNBUFFERED: "1"
       GIST_ID_1: 5df443b8a46ef863cdc97aad62756510
-      DEFAULT_CSV_URL: "https://docs.google.com/spreadsheets/d/e/2PACX-1vS0vpBd1ADF3_Godyflgh3-TbJoj_CCRBJ4QHeLiZCY12tHPWuTIL5OZBTByMApdT92vjS2pRpI1koM/pub?output=csv"
+      DEFAULT_CSV_URL: "https://docs.google.com/spreadsheets/d/e/2PACX-1vQkgyw0ONwSfc2KnrmWGqf8fWVQxS-R08RySndB69KDJ8L1Cz-H2F1AZtyDfhBGedC0qdC1SFo_aDye/pub?output=csv"
 
     steps:
       - name: Checkout
@@ -55,7 +56,7 @@ jobs:
           curl.exe -L --fail "$url" -o "reports\master.csv"
           Write-Host "MASTER CSV lines:" (Get-Content "reports\master.csv" | Measure-Object -Line).Lines
 
-      - name: Run PRICE ENGINE (#1) — capture runner.log (ALL_NA skip gist)
+      - name: Run PRICE ENGINE (#1) — capture runner.log
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path reports | Out-Null
@@ -67,15 +68,8 @@ jobs:
           if (Test-Path "reports\runner.log") { Get-Content -Path "reports\runner.log" -Tail 200 } else { Write-Host "runner.log missing" }
           Write-Host "-------------------------------------"
 
-          if ($code -eq 0) {
-            "SHOULD_UPDATE_GIST=1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          } elseif ($code -eq 5) {
-            "SHOULD_UPDATE_GIST=0" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-            Write-Warning "ALL_NA (exit 5): Gist update kihagyva."
-            exit 0
-          } else {
-            "SHOULD_UPDATE_GIST=0" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-            exit $code
+          if ($code -ne 0) {
+            throw "Runner failed with exit code $code"
           }
 
       - name: Upload artifacts
@@ -88,8 +82,7 @@ jobs:
             reports/runner.log
             reports/master.csv
 
-      - name: Update Gist (#1) — SKIP on ALL_NA
-        if: env.SHOULD_UPDATE_GIST == '1'
+      - name: Update Gist (#1)
         shell: pwsh
         env:
           GH_GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
@@ -117,17 +110,14 @@ jobs:
           Invoke-RestMethod -Method PATCH -Uri $url -Headers $headers -Body $body | Out-Null
           Write-Host "Gist updated."
 
-      - name: Run summary (stable + cache-buster)
+      - name: Job summary (single cache-busted raw link)
         if: always()
         shell: pwsh
         run: |
           $rawStable = "https://gist.githubusercontent.com/zoleevegh/${env:GIST_ID_1}/raw/summary_report_1.md"
-          $cb = [guid]::NewGuid().ToString("N")
-          $rawFresh  = "$rawStable?cb=$cb"
+          $krix = [guid]::NewGuid().ToString("N")
+          $raw = "$rawStable?$krix"
 
-          "### Job summary generated at run-time ($(Get-Date -Format 'yyyy-MM-ddTHH:mmzzz'))" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          "Job summary generated at run-time ($(Get-Date -Format 'yyyy-MM-ddTHH:mmzzz'))" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
           "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-          "**Raw URL (stable):** $rawStable" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-          "**Raw URL (fresh):**  $rawFresh"  | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-          "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-          "**SHOULD_UPDATE_GIST:** $env:SHOULD_UPDATE_GIST" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          "Raw URL: $raw" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
