@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# report_runner.py — v4.4.6-price-engine-stablelink-2026-01-06
+# report_runner.py — v4.4.7-price-engine-master-url-2026-01-06
 #
 # FIX / CÉL:
 # - Stabil #1 riport: AH elöl, PM utána, külön blokkban: Pozíciók (Darabszam>0), majd Watchlist.
@@ -14,6 +14,7 @@
 # Verzió-szabály: bármely fájl módosításakor a verziószámot folytatólagosan kell növelni, kihagyás nélkül.
 
 import csv
+import io
 import json
 import sys
 import traceback
@@ -22,7 +23,7 @@ import urllib.request
 import time
 from typing import Optional, Tuple, List, Dict, Any
 
-VERSION = "v4.4.6-price-engine-stablelink-2026-01-06"
+VERSION = "v4.4.7-price-engine-master-url-2026-01-06"
 
 
 def pct(a, b):
@@ -55,24 +56,45 @@ def _to_float(x) -> Optional[float]:
         return None
 
 
-def load_master_rows(path: str) -> List[Dict[str, Any]]:
+def _read_text_from_path_or_url(path_or_url: str) -> str:
     """
-    Elvárt oszlopok (Google Sheets): Ticker, Darabszam, Bekerulesi ar ($/db), Broker, Eladasi ar
+    Accepts either a local file path OR a http(s) URL.
+    Returns UTF-8 text (errors replaced).
+    """
+    if path_or_url.lower().startswith(("http://", "https://")):
+        req = urllib.request.Request(path_or_url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            raw = r.read()
+        return raw.decode("utf-8", errors="replace")
+    # local file
+    with open(path_or_url, "r", encoding="utf-8", errors="replace", newline="") as f:
+        return f.read()
+
+
+def load_master_rows(path_or_url: str) -> List[Dict[str, Any]]:
+    """
+    Elvárt oszlopok (Google Sheets CSV): Ticker, Darabszam, Bekerulesi ar ($/db), Broker, Eladasi ar
     Csak a Ticker kötelező. Darabszam ha >0 -> pozíció.
+
+    Megjegyzés: a workflow gyakran URL-t ad át (--master). Ezt is támogatjuk.
     """
     rows: List[Dict[str, Any]] = []
-    with open(path, encoding="utf-8", newline="") as f:
-        rdr = csv.DictReader(f)
-        for r in rdr:
-            t = (r.get("Ticker") or r.get("ticker") or r.get("Symbol") or r.get("symbol") or "").strip().upper()
-            if not t:
-                continue
-            qty_raw = (r.get("Darabszam") or r.get("darabszam") or r.get("Qty") or r.get("qty") or "").strip()
-            qty = _to_float(qty_raw)
-            rows.append({"ticker": t, "qty": qty})
+    txt = _read_text_from_path_or_url(path_or_url)
+
+    # csv.DictReader expects a file-like object
+    fobj = io.StringIO(txt)
+    rdr = csv.DictReader(fobj)
+    for r in rdr:
+        t = (r.get("Ticker") or r.get("ticker") or r.get("Symbol") or r.get("symbol") or "").strip().upper()
+        if not t:
+            continue
+        qty_raw = (r.get("Darabszam") or r.get("darabszam") or r.get("Qty") or r.get("qty") or "").strip()
+        qty = _to_float(qty_raw)
+        rows.append({"ticker": t, "qty": qty})
+
     # de-dup: első előfordulás nyer (sheet-sorrend)
     seen = set()
-    out = []
+    out: List[Dict[str, Any]] = []
     for r in rows:
         t = r["ticker"]
         if t in seen:
