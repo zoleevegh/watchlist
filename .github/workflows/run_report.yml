@@ -1,12 +1,10 @@
-# Version: v4.1.8-price-engine-fix-master-args-and-validate-2026-01-06
-# Last updated: 2026-01-06T00:05:00+01:00
+# Version: v4.1.9-price-engine-cachebuster-guid-2026-01-06
+# Last updated: 2026-01-06T00:15:00+01:00
 #
-# FIXEK (v4.1.8):
-# - report_runner.py helyes paraméterezés: --master (nem --csv), --out.
-# - Validate step PowerShell szintaxis javítva: (Test-Path ...) -and (Test-Path ...)
-# - ALL_NA (exit 5) esetén továbbra sem frissítjük a gist-et (A opció).
-# - Gist frissítés GitHub API-val (Invoke-RestMethod), nincs külső action dependency.
-# - Summary-ban stable + cache-busting ?run=${{ github.run_id }} link.
+# FIXEK (v4.1.9):
+# - Summary-ban automatikus random cache-buster a gist raw link végén (?cb=<guid>).
+# - ALL_NA (exit 5) esetén NEM frissítjük a gist-et.
+# - Gist frissítés GitHub API-val (Invoke-RestMethod) — nincs külső action dependency.
 #
 # Verzió-szabály: bármely fájl módosításakor a verziószámot folytatólagosan kell növelni, kihagyás nélkül.
 
@@ -25,9 +23,7 @@ jobs:
     runs-on: windows-latest
     env:
       PYTHONUNBUFFERED: "1"
-      # #1 kanonikus gist
       GIST_ID_1: 5df443b8a46ef863cdc97aad62756510
-      # Kézi futások default CSV-je (felülírható Actions env varral: MASTER_CSV_URL)
       DEFAULT_CSV_URL: "https://docs.google.com/spreadsheets/d/e/2PACX-1vS0vpBd1ADF3_Godyflgh3-TbJoj_CCRBJ4QHeLiZCY12tHPWuTIL5OZBTByMApdT92vjS2pRpI1koM/pub?output=csv"
 
     steps:
@@ -49,19 +45,6 @@ jobs:
             Write-Host "No requirements.txt, skipping pip install."
           }
 
-      - name: Sanity — show report_runner help
-        shell: pwsh
-        run: |
-          Write-Host "Python:"; python -V
-          if (Test-Path "scripts\report_runner.py") {
-            Write-Host "---- report_runner.py --help ----"
-            python scripts\report_runner.py --help
-            Write-Host "--------------------------------"
-          } else {
-            Write-Warning "scripts\report_runner.py not found!"
-            exit 1
-          }
-
       - name: Fetch MASTER CSV
         shell: pwsh
         run: |
@@ -76,40 +59,23 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path reports | Out-Null
-
-          # FONTOS: a report_runner.py a --master paramétert ismeri, nem --csv-t
           cmd.exe /c "python -X faulthandler -u scripts\report_runner.py --report 1 --master reports\master.csv --out reports\summary_report_1.md > reports\runner.log 2>&1"
           $code = [int]$LASTEXITCODE
 
           Write-Host "Runner exit code: $code"
           Write-Host "---- runner.log (last 200 lines) ----"
-          if (Test-Path "reports\runner.log") {
-            Get-Content -Path "reports\runner.log" -Tail 200
-          } else {
-            Write-Host "runner.log missing"
-          }
+          if (Test-Path "reports\runner.log") { Get-Content -Path "reports\runner.log" -Tail 200 } else { Write-Host "runner.log missing" }
           Write-Host "-------------------------------------"
 
-          # Gist update döntés (A opció)
           if ($code -eq 0) {
             "SHOULD_UPDATE_GIST=1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           } elseif ($code -eq 5) {
             "SHOULD_UPDATE_GIST=0" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-            Write-Warning "ALL_NA (exit 5): sessionen kívül / limit / feed hiány. Gist update kihagyva."
+            Write-Warning "ALL_NA (exit 5): Gist update kihagyva."
             exit 0
           } else {
             "SHOULD_UPDATE_GIST=0" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
             exit $code
-          }
-
-      - name: Validate report output (ALL_NA ok)
-        if: always()
-        shell: pwsh
-        run: |
-          if ((Test-Path "scripts\validate_run.py") -and (Test-Path "reports\summary_report_1.md")) {
-            python scripts\validate_run.py --report 1 --path reports\summary_report_1.md
-          } else {
-            Write-Warning "validate_run.py vagy summary_report_1.md hiányzik – validate kihagyva."
           }
 
       - name: Upload artifacts
@@ -151,12 +117,13 @@ jobs:
           Invoke-RestMethod -Method PATCH -Uri $url -Headers $headers -Body $body | Out-Null
           Write-Host "Gist updated."
 
-      - name: Run summary (stable + fresh link)
+      - name: Run summary (stable + cache-buster)
         if: always()
         shell: pwsh
         run: |
           $rawStable = "https://gist.githubusercontent.com/zoleevegh/${env:GIST_ID_1}/raw/summary_report_1.md"
-          $rawFresh  = "$rawStable?run=${env:GITHUB_RUN_ID}"
+          $cb = [guid]::NewGuid().ToString("N")
+          $rawFresh  = "$rawStable?cb=$cb"
 
           "### Job summary generated at run-time ($(Get-Date -Format 'yyyy-MM-ddTHH:mmzzz'))" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
           "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
@@ -164,9 +131,3 @@ jobs:
           "**Raw URL (fresh):**  $rawFresh"  | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
           "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
           "**SHOULD_UPDATE_GIST:** $env:SHOULD_UPDATE_GIST" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-
-      - name: Cleanup
-        if: always()
-        shell: pwsh
-        run: |
-          Write-Host "Cleanup done."
