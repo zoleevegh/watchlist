@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
-# report_runner.py — v4.3.4-price-engine-positions-block-ahfirst-cacheclean-2026-01-06
+# report_runner.py — v4.3.5-price-engine-darabszam-headerfix-2026-01-06
 #
-# KÉRÉSEID ALAPJÁN (v4.3.4):
-# 1) Debug/Debug sample: csak akkor írjuk a report aljára, ha ALL_NA (nincs adat).
-# 2) Darabszámos tickerek külön blokkban elöl ("Pozíciók"), alatta "Watchlist".
-# 3) A reportban az értékek sorrendje: AH elöl, PM utána.
-# 4) Rendezettség: mindkét blokkban abs(AH%) szerint (n/a a végére), tie-breaker abs(PM%).
+# FIX v4.3.5:
+# - Google Sheets CSV oszlopnév: "Darabszam"/"Darabszám" felismerése (pozíció-blokkhoz).
 #
-# Megjegyzés:
-# - A Yahoo Chart v8 meta gyakran nem ad postMarketPrice / preMarketPrice értéket,
-#   ezért ablakon belül inferálunk 1 perces chart close-okból (NOW-cap).
+# KÉRÉSEID (változatlanul):
+# - Debug csak ALL_NA esetén.
+# - Pozíciók (darabszámos) blokk elöl, Watchlist alatta.
+# - Sorformátum: AH elöl, PM utána.
+# - Rendezés: abs(AH%) szerint (n/a a végére), tie-breaker abs(PM%).
 #
 # Exit:
 # - 0 OK
@@ -26,7 +25,7 @@ import urllib.request
 import time
 from typing import Optional, Tuple, List, Dict, Any
 
-VERSION = "v4.3.4-price-engine-positions-block-ahfirst-cacheclean-2026-01-06"
+VERSION = "v4.3.5-price-engine-darabszam-headerfix-2026-01-06"
 
 
 def pct(a, b):
@@ -55,10 +54,18 @@ def http_json(url: str) -> Dict[str, Any]:
 
 
 def _parse_qty(row: Dict[str, str]) -> float:
+    """
+    Darabszám kinyerése többféle oszlopnévből, a Google Sheets exporthoz igazítva.
+    Sheets példád: "Darabszam" (esetleg "Darabszám").
+    """
     keys = [
+        # általános
         "qty", "Qty", "quantity", "Quantity", "shares", "Shares",
         "db", "Db", "darab", "Darab", "pieces", "Pieces",
         "position", "Position", "count", "Count",
+        # Sheets/HU variánsok
+        "Darabszam", "darabszam", "Darabszám", "darabszám",
+        "Darabsz", "darabsz",
     ]
     for k in keys:
         if k in row and row[k] not in (None, ""):
@@ -74,12 +81,6 @@ def _parse_qty(row: Dict[str, str]) -> float:
 
 
 def load_master_with_groups(path: str) -> Tuple[List[str], List[str]]:
-    """
-    Visszaad (positions, watchlist) ticker listákat, duplikátum nélkül.
-    - positions: darabszám > 0
-    - watchlist: egyéb
-    Ha nincs qty oszlop a fájlban, akkor minden ticker watchlist-re kerül.
-    """
     positions: List[str] = []
     watchlist: List[str] = []
 
@@ -133,14 +134,8 @@ def _last_close_in_window(
     end: int,
     now_epoch: Optional[int] = None,
 ) -> Optional[float]:
-    """
-    Utolsó close az ablakban.
-    NOW-cap: csak ts <= now_epoch minták.
-    """
     last = None
-    cap_end = end
-    if now_epoch is not None:
-        cap_end = min(end, now_epoch)
+    cap_end = min(end, now_epoch) if now_epoch is not None else end
 
     for ts, cl in zip(timestamps, closes):
         if ts is None:
@@ -189,7 +184,7 @@ def chart_prices(t: str, now_epoch: int) -> Tuple[Optional[float], Optional[floa
         "post_source": None,
     }
 
-    # Premarket
+    # Premarket (csak ablakon belül)
     pre = meta.get("preMarketPrice")
     if pre is not None:
         debug["pre_source"] = "meta"
@@ -208,7 +203,7 @@ def chart_prices(t: str, now_epoch: int) -> Tuple[Optional[float], Optional[floa
             else:
                 debug["pre_source"] = "infer_none"
 
-    # After-hours
+    # After-hours (csak ablakon belül)
     post = meta.get("postMarketPrice")
     if post is not None:
         debug["post_source"] = "meta"
@@ -264,9 +259,9 @@ def main() -> int:
         try:
             prev, regular, pre, post, dbg = chart_prices(t, now_epoch)
 
-            pm = pct(pre, prev)  # PM: prev close bázis
+            pm = pct(pre, prev)
             ah_base = regular if regular not in (None, 0) else prev
-            ah = pct(post, ah_base)  # AH: regular bázis (fallback prev)
+            ah = pct(post, ah_base)
 
             if pm is not None or ah is not None:
                 any_value = True
@@ -294,7 +289,7 @@ def main() -> int:
             if len(sample_dbg) < 10:
                 sample_dbg.append((t, dbg, prev, regular, pre, post, pm, ah))
 
-            rows[t] = {"ticker": t, "pm": pm, "ah": ah, "dbg": dbg, "prev": prev, "regular": regular, "pre": pre, "post": post}
+            rows[t] = {"ticker": t, "pm": pm, "ah": ah}
         except Exception:
             rows[t] = {"ticker": t, "pm": None, "ah": None}
 
@@ -312,13 +307,12 @@ def main() -> int:
             for r in pos_rows:
                 f.write(f"- {r['ticker']} — AH {fmt(r.get('ah'))} | PM {fmt(r.get('pm'))}\n")
         else:
-            f.write("- (nincs darabszámos ticker a MASTER-ben / nincs qty oszlop)\n")
+            f.write("- (nincs darabszámos ticker a MASTER-ben / nincs Darabszam oszlop)\n")
 
         f.write("\n## Watchlist\n\n")
         for r in w_rows:
             f.write(f"- {r['ticker']} — AH {fmt(r.get('ah'))} | PM {fmt(r.get('pm'))}\n")
 
-        # Debug csak akkor, ha nincs adat
         if not any_value:
             f.write("\n## Debug (NO DATA)\n")
             f.write(f"- now_epoch: {now_epoch}\n")
