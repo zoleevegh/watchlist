@@ -21,7 +21,7 @@ import urllib.request
 import time
 from typing import Optional, Tuple, List, Dict, Any
 
-VERSION = "v4.4.4-price-engine-base-regularfix-2026-01-06"
+VERSION = "v4.4.5-price-engine-windowselect-carryforward-2026-01-06"
 
 
 def pct(a: Optional[float], b: Optional[float]) -> Optional[float]:
@@ -92,22 +92,57 @@ def load_master_positions_watchlist(path: str) -> Tuple[List[str], List[str]]:
     return _uniq(positions), _uniq(watch)
 
 
-def _tp(meta: Dict[str, Any], key: str) -> Optional[Tuple[int, int]]:
-    # prefer currentTradingPeriod
-    ctp = meta.get("currentTradingPeriod")
-    if isinstance(ctp, dict) and key in ctp and isinstance(ctp[key], dict):
-        d = ctp[key]
-        if "start" in d and "end" in d:
-            return int(d["start"]), int(d["end"])
+def _tp(meta: Dict[str, Any], key: str, now_epoch: int, mode: str) -> Optional[Tuple[int, int]]:
+    """Select a trading-period window.
 
-    tp = meta.get("tradingPeriods")
-    if isinstance(tp, dict) and key in tp:
-        arr = tp.get(key)
-        if isinstance(arr, list) and arr and isinstance(arr[0], list) and arr[0]:
-            obj = arr[0][0] if isinstance(arr[0][0], dict) else None
-            if obj and "start" in obj and "end" in obj:
-                return int(obj["start"]), int(obj["end"])
-    return None
+    mode:
+      - "current": only return a window that contains now
+      - "current_or_last": return current window if contains now, else the most recent window whose end <= now
+    """
+    periods: List[Dict[str, Any]] = []
+
+    ctp = meta.get("currentTradingPeriod") or {}
+    if isinstance(ctp, dict):
+        p = ctp.get(key)
+        if isinstance(p, dict) and p.get("start") and p.get("end"):
+            periods.append(p)
+
+    tps = (meta.get("tradingPeriods") or {}).get(key)
+    if isinstance(tps, list):
+        for day in tps:
+            if isinstance(day, list):
+                for p in day:
+                    if isinstance(p, dict) and p.get("start") and p.get("end"):
+                        periods.append(p)
+
+    if not periods:
+        return None
+
+    norm: List[Tuple[int, int]] = []
+    for p in periods:
+        try:
+            s = int(p["start"])
+            e = int(p["end"])
+            if e > s:
+                norm.append((s, e))
+        except Exception:
+            continue
+    if not norm:
+        return None
+    norm = sorted(set(norm), key=lambda x: x[0])
+
+    if mode == "current":
+        for s, e in norm:
+            if s <= now_epoch <= e:
+                return (s, e)
+        return None
+
+    # current_or_last
+    for s, e in norm:
+        if s <= now_epoch <= e:
+            return (s, e)
+    completed = [(s, e) for (s, e) in norm if e <= now_epoch]
+    return completed[-1] if completed else None
 
 
 def _last_close_in_window(timestamps: List[int], closes: List[Any], start: int, end: int) -> Optional[float]:
@@ -140,8 +175,8 @@ def chart_prices(t: str, now_epoch: int) -> Tuple[Optional[float], Optional[floa
         or _to_float(meta.get("chartPreviousClose"))
     )
 
-    wpre = _tp(meta, "pre")
-    wpost = _tp(meta, "post")
+    wpre = _tp(meta, "pre", now_epoch, "current")
+    wpost = _tp(meta, "post", now_epoch, "current_or_last")
     pre_start, pre_end = (wpre if wpre else (None, None))
     post_start, post_end = (wpost if wpost else (None, None))
 
@@ -163,17 +198,17 @@ def chart_prices(t: str, now_epoch: int) -> Tuple[Optional[float], Optional[floa
     }
 
     # --- Premarket ---
-    pre = _to_float(meta.get("preMarketPrice"))
-    if pre is not None:
-        debug["pre_source"] = "meta"
+    pre = None
+    if pre_start is None or pre_end is None:
+        debug["pre_source"] = "tp_missing"
+    elif not (pre_start <= now_epoch <= pre_end):
+        # kívül a pre ablakon: PM legyen n/a (ne használjunk stale meta preMarketPrice-t)
+        debug["pre_source"] = "gated_outside_window"
     else:
-        # WINDOW GATING az inferre: csak ha most a pre ablakban vagyunk
-        if pre_start is None or pre_end is None:
-            debug["pre_source"] = "tp_missing"
-            pre = None
-        elif not (pre_start <= now_epoch <= pre_end):
-            debug["pre_source"] = "gated_outside_window"
-            pre = None
+        pre_meta = _to_float(meta.get("preMarketPrice"))
+        if pre_meta is not None:
+            pre = pre_meta
+            debug["pre_source"] = "meta"
         else:
             inf = _last_close_in_window(ts, closes, pre_start, pre_end) if (ts and closes) else None
             if inf is not None:
@@ -183,24 +218,28 @@ def chart_prices(t: str, now_epoch: int) -> Tuple[Optional[float], Optional[floa
                 debug["pre_source"] = "infer_none"
 
     # --- After-hours (postmarket) ---
-    post = _to_float(meta.get("postMarketPrice"))
-    if post is not None:
-        debug["post_source"] = "meta"
+    post = None
+    if post_start is None or post_end is None:
+        debug["post_source"] = "tp_missing"
     else:
-        # WINDOW GATING az inferre: csak ha most a post ablakban vagyunk
-        if post_start is None or post_end is None:
-            debug["post_source"] = "tp_missing"
-            post = None
-        elif not (post_start <= now_epoch <= post_end):
-            debug["post_source"] = "gated_outside_window"
-            post = None
+        # carryforward: a legutóbbi (mostani vagy már lezárt) post ablakból dolgozunk,
+        # de ha túl régi, inkább legyen n/a
+        max_age_sec = 36 * 3600
+        if (now_epoch - post_end) > max_age_sec:
+            debug["post_source"] = "too_old"
         else:
-            inf = _last_close_in_window(ts, closes, post_start, post_end) if (ts and closes) else None
-            if inf is not None:
-                post = inf
-                debug["post_source"] = "infer"
+            inside_post = (post_start <= now_epoch <= post_end)
+            post_meta = _to_float(meta.get("postMarketPrice")) if inside_post else None
+            if post_meta is not None:
+                post = post_meta
+                debug["post_source"] = "meta"
             else:
-                debug["post_source"] = "infer_none"
+                inf = _last_close_in_window(ts, closes, post_start, post_end) if (ts and closes) else None
+                if inf is not None:
+                    post = inf
+                    debug["post_source"] = "infer"
+                else:
+                    debug["post_source"] = "infer_none"
 
     return base_close, pre, post, debug
 
@@ -209,6 +248,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--master", default="reports/master.csv")
     ap.add_argument("--out", default="reports/summary_report_1.md")
+    ap.add_argument("--report", default="1")  # legacy/compat (ignored)
     ap.add_argument("--debug", action="store_true")
     args = ap.parse_args()
 
