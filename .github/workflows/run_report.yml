@@ -31,7 +31,6 @@ jobs:
 
       - name: Run PRICE ENGINE (#1) + build stable nocache link
         shell: bash
-        shell: bash
         env:
           # Default MASTER CSV (latest)
           DEFAULT_MASTER_CSV_URL: "https://docs.google.com/spreadsheets/d/e/2PACX-1vQkgyw0ONwSfc2KnrmWGqf8fWVQxS-R08RySndB69KDJ8L1Cz-H2F1AZtyDfhBGedC0qdC1SFo_aDye/pub?output=csv"
@@ -76,11 +75,15 @@ jobs:
           set -e
 
           if [ "${RC}" -ne 0 ] || [ ! -f "reports/summary_report_1.md" ]; then
-            cat > reports/summary_report_1.md << 'EOF'
-# #1 — Premarket check (PRICE ENGINE)
-
-NO_DATA: a report nem készült el (runner crash / hiányzó fájl / forráshiba).
-EOF
+            python - <<'PY'
+            from pathlib import Path
+            Path('reports').mkdir(parents=True, exist_ok=True)
+            Path('reports/summary_report_1.md').write_text(
+                "# #1 – Premarket check (PRICE ENGINE)\n\n"
+                "NO_DATA: a report nem készült el (runner crash / hiányzó fájl / forráshiba).\n",
+                encoding='utf-8'
+            )
+            PY
             echo "RUNNER_EXIT=${RC}" | tee -a reports/runner.log
           fi
 
