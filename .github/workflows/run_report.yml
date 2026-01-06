@@ -72,10 +72,10 @@ jobs:
           # Always ensure summary exists
           if [ ! -f "reports/summary_report_1.md" ]; then
             cat > reports/summary_report_1.md <<'EOF'
-# #1 — Premarket check (PRICE ENGINE)
+          # #1 — Premarket check (PRICE ENGINE)
 
-NO_DATA: a report nem készült el (runner crash / hiányzó fájl / forráshiba).
-EOF
+          NO_DATA: a report nem készült el (runner crash / hiányzó fájl / forráshiba).
+          EOF
           fi
 
           # Build one single clickable nocache URL (run id + attempt + sha)
