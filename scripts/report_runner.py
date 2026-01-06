@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# report_runner.py — v4.3.8-price-engine-windowselect-basefix-2026-01-06
+# report_runner.py — v4.3.9-price-engine-baseorder-fix-2026-01-06
 #
 # FIXEK v4.3.8:
 # 1) HELYES BÁZIS az AH/PM %-hoz:
@@ -29,7 +29,7 @@ import time
 from typing import Optional, Tuple, List, Dict, Any
 
 
-VERSION = "v4.3.8-price-engine-windowselect-basefix-2026-01-06"
+VERSION = "v4.3.9-price-engine-baseorder-fix-2026-01-06"
 
 
 def pct(price: Optional[float], base: Optional[float]) -> Optional[float]:
@@ -215,7 +215,7 @@ def chart_prices(ticker: str, now_epoch: int) -> Dict[str, Any]:
             rs, re = reg_for_pre
             pm_base = _last_close_in_window(ts, closes, rs, re)
         if pm_base is None:
-            pm_base = meta.get("previousClose") or meta.get("regularMarketPreviousClose")
+            pm_base = meta.get("regularMarketPrice") or meta.get("regularMarketPreviousClose") or meta.get("previousClose")
 
         # ár: meta.preMarketPrice, ha van, különben infer a pre ablakból
         if meta.get("preMarketPrice") is not None:
@@ -255,7 +255,7 @@ def chart_prices(ticker: str, now_epoch: int) -> Dict[str, Any]:
         # fallback (ha infer nem sikerül)
         if ah_base is None:
             # premarketben ez tipikusan tegnapi close, postmarketben a mai close
-            ah_base = meta.get("regularMarketPrice") or meta.get("previousClose") or meta.get("regularMarketPreviousClose")
+            ah_base = meta.get("regularMarketPrice") or meta.get("regularMarketPreviousClose") or meta.get("previousClose")
 
         # ár: meta.postMarketPrice, ha van, különben infer a kiválasztott post ablakból
         if meta.get("postMarketPrice") is not None:
