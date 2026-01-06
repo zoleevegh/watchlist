@@ -1,8 +1,8 @@
-# Version: v4.2.12-price-engine-summary-backtickfix-2026-01-06
-# Last updated: 2026-01-06T10:20:00+01:00
+# Version: v4.2.14-price-engine-summary-fullurl-nocache-2026-01-06
+# Last updated: 2026-01-06T11:05:00+01:00
 #
 # FIX:
-# - Summary-ba kattintható teljes URL (nocache GUID) + split sorok másoláshoz
+# - Summary: 1 sorban TELJES kattintható URL (nocache=run_id-run_attempt-guid), plusz reports/raw_url.txt
 # - Old-style Out-File -Append (ahogy a régi snippetben volt), nincs Set-Content trükközés
 # - A teljes URL fájlba is mentve: reports/raw_url.txt (artifact)
 #
@@ -122,42 +122,23 @@ jobs:
           Write-Host "Gist updated."
 
       # --- Job summary: full, clickable URL + split copy lines ---
-      - name: Job summary (one clickable nocache URL + split copy lines)
+      - name: Job summary (raw URL — full one-line + nocache)
         if: always()
         shell: pwsh
+        env:
+          GIST_RAW_BASE: https://gist.githubusercontent.com/zoleevegh/5df443b8a46ef863cdc97aad62756510/raw/summary_report_1.md
         run: |
-          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+          $base = $env:GIST_RAW_BASE
+          if (-not $base) { $base = 'https://gist.githubusercontent.com/zoleevegh/5df443b8a46ef863cdc97aad62756510/raw/summary_report_1.md' }
+          $nonce = [guid]::NewGuid().ToString('N')
+          $url = "$base?nocache=$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)-$nonce"
+
+          # file for artifact
           New-Item -ItemType Directory -Force -Path reports | Out-Null
+          Set-Content -Path reports/raw_url.txt -Value $url -Encoding utf8
 
-          $gistId = "${env:GIST_ID}"
-          $rawStable = "https://gist.githubusercontent.com/zoleevegh/$gistId/raw/summary_report_1.md"
-
-          # krix-krax: GUID + run_id (dupla biztosíték)
-          $krix = [guid]::NewGuid().ToString("N")
-          $runId = $env:GITHUB_RUN_ID
-          if ([string]::IsNullOrWhiteSpace($runId)) { $runId = "0" }
-
-          $raw = "$rawStable?nocache=$krix-$runId"
-
-          # file (artifact)
-          $raw | Out-File -FilePath "reports\raw_url.txt" -Encoding utf8
-
-          $ts = Get-Date -Format 'yyyy-MM-ddTHH:mmzzz'
-
-          "Job summary generated at run-time ($ts)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-          "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-
-          # kattintható, teljes URL (ez a lényeg)
-          "[Open raw report (nocache)]($raw)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-          "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-
-          "**Copy raw URL (split):**" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-          $rawStable | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-          "?nocache=$krix-$runId" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-          "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-
-          '**Copy raw URL (artifact):** download `report-bundle` → `reports/raw_url.txt`' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-
+          # single-line summary (GitHub auto-linkifies plain URLs)
+          "Raw report URL (nocache): $url" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
       - name: Upload artifacts (bundle)
         if: always()
         uses: actions/upload-artifact@v4
