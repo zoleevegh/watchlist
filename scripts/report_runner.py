@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-# report_runner.py — v4.3.6-price-engine-no-skip-on-allna-2026-01-06
+# report_runner.py — v4.3.7-price-engine-ah-carryforward-2026-01-06
 #
-# FIX v4.3.6:
-# - ALL_NA (minden ticker n/a) esetén is 0-val lépünk ki, hogy a Gist FRISSÜLJÖN
-#   és lásd a blokkokat + az "NO DATA" debug okát.
+# FIX v4.3.7:
+# - "NO_DATA" helyett: AH-t megpróbáljuk "carry-forward" módon számolni a legutóbbi post ablakból,
+#   akkor is, ha most épp NEM vagyunk PM/AH ablakban (pl. reggel európai időben).
+# - PM továbbra is csak akkor él, ha MOST a pre ablakban vagyunk (ne használjunk régi pre tickeket).
+# - Kimenet: külön blokk "Pozíciók" (Darabszam > 0), alatta "Watchlist" (Darabszam üres/0).
+# - Sorformátum: AH elöl, PM utána.
+# - Debug csak akkor kerül a riportba, ha --debug vagy ha minden ticker AH/PM n/a.
 #
-# KÉRÉSEID (változatlanul):
-# 1) Debug csak ALL_NA esetén.
-# 2) Pozíciók (darabszámos) blokk elöl, Watchlist alatta.
-# 3) Sorformátum: AH elöl, PM utána.
-# 4) Rendezés: abs(AH%) szerint (n/a a végére), tie-breaker abs(PM%).
-# 5) Sheets CSV: "Darabszam"/"Darabszám" felismerése.
+# Exit:
+# - 0 OK (mindig 0, még ha minden n/a – ettől még a gist frissül)
 #
 # Verzió-szabály: bármely fájl módosításakor a verziószámot folytatólagosan kell növelni, kihagyás nélkül.
 
@@ -23,20 +23,13 @@ import urllib.request
 import time
 from typing import Optional, Tuple, List, Dict, Any
 
-VERSION = "v4.3.6-price-engine-no-skip-on-allna-2026-01-06"
+VERSION = "v4.3.7-price-engine-ah-carryforward-2026-01-06"
 
 
 def pct(a, b):
     if a is None or b in (None, 0):
         return None
-    try:
-        a = float(a)
-        b = float(b)
-        if b == 0:
-            return None
-        return (a / b - 1) * 100.0
-    except Exception:
-        return None
+    return (a / b - 1) * 100.0
 
 
 def fmt(x):
@@ -47,94 +40,107 @@ def fmt(x):
 
 def http_json(url: str) -> Dict[str, Any]:
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req, timeout=20) as r:
+    with urllib.request.urlopen(req, timeout=25) as r:
         return json.loads(r.read())
 
 
-def _parse_qty(row: Dict[str, str]) -> float:
-    keys = [
-        "qty", "Qty", "quantity", "Quantity", "shares", "Shares",
-        "db", "Db", "darab", "Darab", "pieces", "Pieces",
-        "position", "Position", "count", "Count",
-        "Darabszam", "darabszam", "Darabszám", "darabszám",
-        "Darabsz", "darabsz",
-    ]
-    for k in keys:
-        if k in row and row[k] not in (None, ""):
-            v = str(row[k]).strip()
-            if not v:
-                continue
-            v = v.replace(" ", "").replace(",", ".")
-            try:
-                return float(v)
-            except Exception:
-                continue
-    return 0.0
+def _to_int(x) -> Optional[int]:
+    try:
+        if x is None:
+            return None
+        return int(float(str(x).strip().replace(",", ".")))
+    except Exception:
+        return None
 
 
-def load_master_with_groups(path: str) -> Tuple[List[str], List[str]]:
-    positions: List[str] = []
-    watchlist: List[str] = []
+def load_master_rows(path: str) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """
+    Visszaad (positions, watchlist) sorlistákat.
+    Felismert oszlopok:
+    - ticker: Ticker/ticker/symbol/Symbol
+    - darabszam: Darabszam/darabszám/qty/Qty/quantity/Quantity
+    """
+    positions: List[Dict[str, Any]] = []
+    watch: List[Dict[str, Any]] = []
 
     with open(path, encoding="utf-8", newline="") as f:
-        reader = csv.DictReader(f)
-        for r in reader:
-            t = (r.get("ticker") or r.get("Ticker") or r.get("symbol") or r.get("Symbol") or "").strip().upper()
+        rdr = csv.DictReader(f)
+        for r in rdr:
+            t = (r.get("Ticker") or r.get("ticker") or r.get("Symbol") or r.get("symbol") or "").strip().upper()
             if not t:
                 continue
-            qty = _parse_qty(r)
-            if qty > 0:
-                positions.append(t)
-            else:
-                watchlist.append(t)
 
-    def uniq_keep(seq: List[str]) -> List[str]:
+            ds = (
+                r.get("Darabszam")
+                or r.get("Darabszám")
+                or r.get("qty")
+                or r.get("Qty")
+                or r.get("quantity")
+                or r.get("Quantity")
+                or ""
+            )
+            qty = _to_int(ds)
+
+            row = {"ticker": t, "qty": qty or 0, "raw": r}
+
+            if qty is not None and qty > 0:
+                positions.append(row)
+            else:
+                watch.append(row)
+
+    # unique by ticker (first occurrence wins)
+    def uniq(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         seen = set()
         out = []
-        for x in seq:
-            if x not in seen:
-                out.append(x)
-                seen.add(x)
+        for rr in rows:
+            t = rr["ticker"]
+            if t in seen:
+                continue
+            out.append(rr)
+            seen.add(t)
         return out
 
-    positions_u = uniq_keep(positions)
-    watchlist_u = uniq_keep([t for t in watchlist if t not in set(positions_u)])
-    return positions_u, watchlist_u
+    return uniq(positions), uniq(watch)
 
 
-def _tp(meta: Dict[str, Any], key: str) -> Optional[Tuple[int, int]]:
+def _tps(meta: Dict[str, Any], key: str) -> List[Tuple[int, int]]:
+    """
+    tradingPeriods alapján több napos (pre/post) ablakok listája.
+    """
+    out: List[Tuple[int, int]] = []
+
+    # currentTradingPeriod (ha van) – egy ablak
     ctp = meta.get("currentTradingPeriod")
     if isinstance(ctp, dict) and key in ctp and isinstance(ctp[key], dict):
         d = ctp[key]
         if "start" in d and "end" in d:
-            return int(d["start"]), int(d["end"])
+            try:
+                out.append((int(d["start"]), int(d["end"])))
+            except Exception:
+                pass
 
     tp = meta.get("tradingPeriods")
     if isinstance(tp, dict) and key in tp:
         arr = tp.get(key)
-        if isinstance(arr, list) and arr and isinstance(arr[0], list) and arr[0]:
-            obj = arr[0][0] if isinstance(arr[0][0], dict) else None
-            if obj and "start" in obj and "end" in obj:
-                return int(obj["start"]), int(obj["end"])
-    return None
+        if isinstance(arr, list) and arr and isinstance(arr[0], list):
+            for day in arr[0]:
+                if isinstance(day, dict) and "start" in day and "end" in day:
+                    try:
+                        out.append((int(day["start"]), int(day["end"])))
+                    except Exception:
+                        continue
+
+    # unique + sort
+    out = sorted(set(out), key=lambda x: x[0])
+    return out
 
 
-def _last_close_in_window(
-    timestamps: List[int],
-    closes: List[Any],
-    start: int,
-    end: int,
-    now_epoch: Optional[int] = None,
-) -> Optional[float]:
+def _last_close_in_window(timestamps: List[int], closes: List[Any], start: int, end: int) -> Optional[float]:
     last = None
-    cap_end = min(end, now_epoch) if now_epoch is not None else end
-
     for ts, cl in zip(timestamps, closes):
         if ts is None:
             continue
-        if now_epoch is not None and ts > now_epoch:
-            continue
-        if start <= ts <= cap_end:
+        if start <= ts <= end:
             try:
                 if cl is None:
                     continue
@@ -144,30 +150,38 @@ def _last_close_in_window(
     return last
 
 
-def chart_prices(t: str, now_epoch: int) -> Tuple[Optional[float], Optional[float], Optional[float], Optional[float], Dict[str, Any]]:
+def _latest_window_before(now_epoch: int, windows: List[Tuple[int, int]]) -> Optional[Tuple[int, int]]:
+    """
+    Legutóbbi olyan ablak, amelynek vége <= now.
+    """
+    cand = [w for w in windows if w[1] <= now_epoch]
+    if not cand:
+        return None
+    return max(cand, key=lambda w: w[1])
+
+
+def chart_prices(t: str, now_epoch: int) -> Tuple[Optional[float], Optional[float], Optional[float], Dict[str, Any]]:
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{t}?interval=1m&range=2d&includePrePost=true"
     j = http_json(url)
     res = j["chart"]["result"][0]
     meta = res.get("meta", {})
 
     prev = meta.get("previousClose") or meta.get("regularMarketPreviousClose")
-    regular = meta.get("regularMarketPrice")
 
-    wpre = _tp(meta, "pre")
-    wpost = _tp(meta, "post")
-    pre_start, pre_end = (wpre if wpre else (None, None))
-    post_start, post_end = (wpost if wpost else (None, None))
+    pre_windows = _tps(meta, "pre")
+    post_windows = _tps(meta, "post")
+
+    pre_start, pre_end = (pre_windows[-1] if pre_windows else (None, None))  # legutóbbi pre ablak
+    post_start, post_end = (post_windows[-1] if post_windows else (None, None))  # legutóbbi post ablak
 
     ts = res.get("timestamp") or []
     ind = (res.get("indicators") or {}).get("quote") or []
     closes = []
-    if ind and isinstance(ind, list) and ind[0].get("close") is not None:
+    if ind and isinstance(ind, list) and isinstance(ind[0], dict) and ind[0].get("close") is not None:
         closes = ind[0].get("close") or []
 
     debug = {
         "now": now_epoch,
-        "prev": prev,
-        "regular": regular,
         "pre_start": pre_start,
         "pre_end": pre_end,
         "post_start": post_start,
@@ -176,11 +190,17 @@ def chart_prices(t: str, now_epoch: int) -> Tuple[Optional[float], Optional[floa
         "post_source": None,
     }
 
-    # Premarket (csak ablakon belül)
+    # --- Premarket (PM) ---
     pre = meta.get("preMarketPrice")
     if pre is not None:
-        debug["pre_source"] = "meta"
+        # PM-et csak akkor mutatjuk, ha MOST a pre ablakban vagyunk
+        if pre_start is not None and pre_end is not None and (pre_start <= now_epoch <= pre_end):
+            debug["pre_source"] = "meta_in_window"
+        else:
+            pre = None
+            debug["pre_source"] = "meta_gated_outside_window"
     else:
+        # infer, de csak ha MOST a pre ablakban vagyunk
         if pre_start is None or pre_end is None:
             pre = None
             debug["pre_source"] = "tp_missing"
@@ -188,41 +208,58 @@ def chart_prices(t: str, now_epoch: int) -> Tuple[Optional[float], Optional[floa
             pre = None
             debug["pre_source"] = "gated_outside_window"
         else:
-            inf = _last_close_in_window(ts, closes, pre_start, pre_end, now_epoch=now_epoch) if (ts and closes) else None
+            inf = _last_close_in_window(ts, closes, pre_start, pre_end) if (ts and closes) else None
             if inf is not None:
                 pre = inf
-                debug["pre_source"] = "infer"
+                debug["pre_source"] = "infer_in_window"
             else:
                 debug["pre_source"] = "infer_none"
 
-    # After-hours (csak ablakon belül)
+    # --- After-hours (AH) ---
     post = meta.get("postMarketPrice")
     if post is not None:
-        debug["post_source"] = "meta"
+        # ha most post ablakban vagyunk, ok; ha nem, akkor is elfogadjuk (carry-forward),
+        # mert a postMarketPrice jellemzően a legutóbbi AH árat hordozza
+        if post_start is not None and post_end is not None and (post_start <= now_epoch <= post_end):
+            debug["post_source"] = "meta_in_window"
+        else:
+            debug["post_source"] = "meta_carry"
     else:
-        if post_start is None or post_end is None:
+        # infer: először ha most post ablakban vagyunk, különben carry-forward a legutóbbi post ablakból
+        if not post_windows:
             post = None
             debug["post_source"] = "tp_missing"
-        elif not (post_start <= now_epoch <= post_end):
-            post = None
-            debug["post_source"] = "gated_outside_window"
         else:
-            inf = _last_close_in_window(ts, closes, post_start, post_end, now_epoch=now_epoch) if (ts and closes) else None
-            if inf is not None:
-                post = inf
-                debug["post_source"] = "infer"
+            if post_start is not None and post_end is not None and (post_start <= now_epoch <= post_end):
+                inf = _last_close_in_window(ts, closes, post_start, post_end) if (ts and closes) else None
+                if inf is not None:
+                    post = inf
+                    debug["post_source"] = "infer_in_window"
+                else:
+                    post = None
+                    debug["post_source"] = "infer_none"
             else:
-                debug["post_source"] = "infer_none"
+                w = _latest_window_before(now_epoch, post_windows)
+                if w is None:
+                    post = None
+                    debug["post_source"] = "no_prior_post_window"
+                else:
+                    inf = _last_close_in_window(ts, closes, w[0], w[1]) if (ts and closes) else None
+                    if inf is not None:
+                        post = inf
+                        debug["post_source"] = "carry_last_post_window"
+                    else:
+                        post = None
+                        debug["post_source"] = "carry_infer_none"
 
-    return prev, regular, pre, post, debug
+    return prev, pre, post, debug
 
 
-def _sort_key(row: Dict[str, Any]):
-    ah = row.get("ah")
-    pm = row.get("pm")
-    ah_rank = abs(ah) if ah is not None else -1.0
-    pm_rank = abs(pm) if pm is not None else -1.0
-    return (ah_rank, pm_rank)
+def sort_key(row):
+    # row: (ticker, ah, pm)
+    ah = row[1]
+    pm = row[2]
+    return (abs(ah) if ah is not None else -1.0, abs(pm) if pm is not None else -1.0)
 
 
 def main() -> int:
@@ -235,96 +272,84 @@ def main() -> int:
 
     now_epoch = int(time.time())
 
-    positions, watchlist = load_master_with_groups(args.master)
-    tickers = positions + watchlist
+    positions, watchlist = load_master_rows(args.master)
+    tickers_positions = [r["ticker"] for r in positions]
+    tickers_watch = [r["ticker"] for r in watchlist]
 
-    rows: Dict[str, Dict[str, Any]] = {}
-    any_value = False
+    all_tickers = tickers_positions + [t for t in tickers_watch if t not in set(tickers_positions)]
 
-    dbg_counts = {
-        "pre_meta": 0, "pre_infer": 0, "pre_gated": 0, "pre_none": 0,
-        "post_meta": 0, "post_infer": 0, "post_gated": 0, "post_none": 0,
-    }
+    pos_rows: List[Tuple[str, Optional[float], Optional[float]]] = []
+    wl_rows: List[Tuple[str, Optional[float], Optional[float]]] = []
+
+    dbg_counts: Dict[str, int] = {}
     sample_dbg = []
 
-    for t in tickers:
+    def bump(k: str):
+        dbg_counts[k] = dbg_counts.get(k, 0) + 1
+
+    for t in all_tickers:
         try:
-            prev, regular, pre, post, dbg = chart_prices(t, now_epoch)
-
+            prev, pre, post, dbg = chart_prices(t, now_epoch)
             pm = pct(pre, prev)
-            ah_base = regular if regular not in (None, 0) else prev
-            ah = pct(post, ah_base)
+            ah = pct(post, prev)
 
-            if pm is not None or ah is not None:
-                any_value = True
-
-            ps = dbg.get("pre_source")
-            if ps == "meta":
-                dbg_counts["pre_meta"] += 1
-            elif ps == "infer":
-                dbg_counts["pre_infer"] += 1
-            elif ps == "gated_outside_window":
-                dbg_counts["pre_gated"] += 1
-            else:
-                dbg_counts["pre_none"] += 1
-
-            qs = dbg.get("post_source")
-            if qs == "meta":
-                dbg_counts["post_meta"] += 1
-            elif qs == "infer":
-                dbg_counts["post_infer"] += 1
-            elif qs == "gated_outside_window":
-                dbg_counts["post_gated"] += 1
-            else:
-                dbg_counts["post_none"] += 1
+            ps = dbg.get("pre_source") or "pre_none"
+            qs = dbg.get("post_source") or "post_none"
+            bump(f"pre:{ps}")
+            bump(f"post:{qs}")
 
             if len(sample_dbg) < 10:
-                sample_dbg.append((t, dbg, prev, regular, pre, post, pm, ah))
+                sample_dbg.append((t, dbg, ah, pm))
 
-            rows[t] = {"ticker": t, "pm": pm, "ah": ah}
+            if t in tickers_positions:
+                pos_rows.append((t, ah, pm))
+            else:
+                wl_rows.append((t, ah, pm))
         except Exception:
-            rows[t] = {"ticker": t, "pm": None, "ah": None}
+            if t in tickers_positions:
+                pos_rows.append((t, None, None))
+            else:
+                wl_rows.append((t, None, None))
+            bump("err")
 
-    pos_rows = [rows[t] for t in positions if t in rows]
-    w_rows = [rows[t] for t in watchlist if t in rows]
-    pos_rows.sort(key=_sort_key, reverse=True)
-    w_rows.sort(key=_sort_key, reverse=True)
+    # sort: abs(AH) desc, then abs(PM) desc
+    pos_rows.sort(key=sort_key, reverse=True)
+    wl_rows.sort(key=sort_key, reverse=True)
+
+    all_na = all((ah is None and pm is None) for _, ah, pm in (pos_rows + wl_rows))
 
     with open(args.out, "w", encoding="utf-8", newline="\n") as f:
         f.write("# #1 — Premarket check (PRICE ENGINE)\n\n")
         f.write(f"Verzió: {VERSION}\n\n")
+        f.write("Formátum: AH elöl, PM utána.\n\n")
 
-        f.write("## Pozíciók (darabszámos)\n\n")
-        if pos_rows:
-            for r in pos_rows:
-                f.write(f"- {r['ticker']} — AH {fmt(r.get('ah'))} | PM {fmt(r.get('pm'))}\n")
-        else:
-            f.write("- (nincs darabszámos ticker a MASTER-ben / nincs Darabszam oszlop)\n")
+        f.write("## Pozíciók\n\n")
+        for t, ah, pm in pos_rows:
+            f.write(f"- {t} — AH {fmt(ah)} | PM {fmt(pm)}\n")
 
         f.write("\n## Watchlist\n\n")
-        for r in w_rows:
-            f.write(f"- {r['ticker']} — AH {fmt(r.get('ah'))} | PM {fmt(r.get('pm'))}\n")
+        for t, ah, pm in wl_rows:
+            f.write(f"- {t} — AH {fmt(ah)} | PM {fmt(pm)}\n")
 
-        if not any_value:
-            f.write("\n## Debug (NO DATA)\n")
+        if args.debug or all_na:
+            f.write("\n## Debug\n")
             f.write(f"- now_epoch: {now_epoch}\n")
-            for k in ["pre_meta","pre_infer","pre_gated","pre_none","post_meta","post_infer","post_gated","post_none"]:
+            for k in sorted(dbg_counts.keys()):
                 f.write(f"- {k}: {dbg_counts[k]}\n")
 
             f.write("\n### Debug sample (first 10 tickers)\n")
-            for t, dbg, prev, regular, pre, post, pm, ah in sample_dbg:
+            for t, dbg, ah, pm in sample_dbg:
                 f.write(
-                    f"- {t}: prev={prev} regular={regular} pre={pre} post={post} | "
-                    f"AH {fmt(ah)} (post_source={dbg.get('post_source')}, post_start={dbg.get('post_start')}, post_end={dbg.get('post_end')}) | "
+                    f"- {t}: AH {fmt(ah)} (post_source={dbg.get('post_source')}, post_start={dbg.get('post_start')}, post_end={dbg.get('post_end')}) | "
                     f"PM {fmt(pm)} (pre_source={dbg.get('pre_source')}, pre_start={dbg.get('pre_start')}, pre_end={dbg.get('pre_end')})\n"
                 )
 
+    # GH Actions log (stderr)
     print(f"RUNNER_VERSION={VERSION}", file=sys.stderr, flush=True)
-    print(f"positions={len(positions)} watchlist={len(watchlist)} total={len(tickers)}", file=sys.stderr, flush=True)
-    if not any_value:
-        print("NO_DATA: most nem PM/AH ablakban vagy (vagy nincs chart adat). A report ettől még frissült.", file=sys.stderr, flush=True)
+    print(f"positions={len(pos_rows)} watchlist={len(wl_rows)} total={len(pos_rows)+len(wl_rows)}", file=sys.stderr, flush=True)
+    if all_na:
+        print("NO_DATA: most nincs friss PM adat (nem pre ablak), és/vagy nincs elérhető AH adat.", file=sys.stderr, flush=True)
 
-    # FONTOS: mindig 0, hogy a workflow ne skip-elje a gist frissítést
     return 0
 
 
