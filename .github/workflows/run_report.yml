@@ -1,11 +1,11 @@
-# Version: v4.2.0-price-engine-single-cachebusted-url-2026-01-06
-# Last updated: 2026-01-06T00:25:00+01:00
+# Version: v4.2.1-price-engine-summary-linkfix-2026-01-06
+# Last updated: 2026-01-06T01:05:00+01:00
 #
-# FIXEK (v4.2.0):
-# - A Job Summary-ban csak 1 link legyen: a stable raw URL VÉGÉRE automatikusan rárakunk egy random "krix-kraxot".
-#   Példa: .../summary_report_1.md?<guid>
-# - NINCS "fresh" külön sorban, nincs "mit csináljak ezzel" helyzet.
-# - A Gist frissítés GitHub API-val (Invoke-RestMethod).
+# FIX v4.2.1:
+# - Job Summary-ban a "Raw URL" MOSTANTÓL mindig TELJES LINK (nem csak a random guid).
+# - A link cache-busting: ?nocache=<guid>
+# - Kattintható markdown link: [Open raw report](...)
+# - UTF-8 output (ne legyen "ettől még frissült" karakterhibás a logban)
 #
 # Verzió-szabály: bármely fájl módosításakor a verziószámot folytatólagosan kell növelni, kihagyás nélkül.
 
@@ -39,6 +39,7 @@ jobs:
       - name: Install deps (if requirements.txt)
         shell: pwsh
         run: |
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
           if (Test-Path "requirements.txt") {
             python -m pip install --upgrade pip
             pip install -r requirements.txt
@@ -49,6 +50,7 @@ jobs:
       - name: Fetch MASTER CSV
         shell: pwsh
         run: |
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
           New-Item -ItemType Directory -Force -Path reports | Out-Null
           $url = "${env:MASTER_CSV_URL}"
           if ([string]::IsNullOrWhiteSpace($url)) { $url = "${env:DEFAULT_CSV_URL}" }
@@ -59,6 +61,7 @@ jobs:
       - name: Run PRICE ENGINE (#1) — capture runner.log
         shell: pwsh
         run: |
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
           New-Item -ItemType Directory -Force -Path reports | Out-Null
           cmd.exe /c "python -X faulthandler -u scripts\report_runner.py --report 1 --master reports\master.csv --out reports\summary_report_1.md > reports\runner.log 2>&1"
           $code = [int]$LASTEXITCODE
@@ -87,6 +90,7 @@ jobs:
         env:
           GH_GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
         run: |
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
           if (-not (Test-Path "reports\summary_report_1.md")) {
             throw "Missing reports\summary_report_1.md – cannot update gist."
           }
@@ -114,10 +118,18 @@ jobs:
         if: always()
         shell: pwsh
         run: |
-          $rawStable = "https://gist.githubusercontent.com/zoleevegh/${env:GIST_ID_1}/raw/summary_report_1.md"
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
+          # hard fallback, so you ALWAYS get a valid URL
+          $gistId = "${env:GIST_ID_1}"
+          if ([string]::IsNullOrWhiteSpace($gistId)) { $gistId = "5df443b8a46ef863cdc97aad62756510" }
+
+          $rawStable = "https://gist.githubusercontent.com/zoleevegh/$gistId/raw/summary_report_1.md"
           $krix = [guid]::NewGuid().ToString("N")
-          $raw = "$rawStable?$krix"
+          $raw = "$rawStable?nocache=$krix"
 
           "Job summary generated at run-time ($(Get-Date -Format 'yyyy-MM-ddTHH:mmzzz'))" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          "[Open raw report]($raw)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
           "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
           "Raw URL: $raw" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
