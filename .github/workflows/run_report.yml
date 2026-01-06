@@ -1,7 +1,21 @@
+# run_report.yml — v4.2.21-price-engine-stablelink-ubuntu-2026-01-06
+#
+# CÉL:
+# - Ubuntu runner (bash) -> nincs PowerShell quote/backtick káosz
+# - Mindig 1 darab kattintható nocache link a Step Summary-ban
+# - Runner hibánál is készül fallback summary + link, a workflow nem dől el a "link miatt"
+#
+# Verzió-szabály: bármely fájl módosításakor a verziószámot folytatólagosan kell növelni, kihagyás nélkül.
+
 name: Run Report — PRICE ENGINE
 
 on:
   workflow_dispatch:
+    inputs:
+      master_csv_url:
+        description: "MASTER CSV URL (default = current MASTER)"
+        required: false
+        default: "https://docs.google.com/spreadsheets/d/e/2PACX-1vQkgyw0ONwSfc2KnrmWGqf8fWVQxS-R08RySndB69KDJ8L1Cz-H2F1AZtyDfhBGedC0qdC1SFo_aDye/pub?output=csv"
 
 jobs:
   run:
@@ -14,84 +28,91 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
       - name: Run PRICE ENGINE (#1)
-        id: runner
         shell: bash
         env:
-          MASTER_URL: "https://docs.google.com/spreadsheets/d/e/2PACX-1vQkgyw0ONwSfc2KnrmWGqf8fWVQxS-R08RySndB69KDJ8L1Cz-H2F1AZtyDfhBGedC0qdC1SFo_aDye/pub?output=csv"
+          MASTER_URL: ${{ inputs.master_csv_url }}
         run: |
           set -euo pipefail
           mkdir -p reports
-          echo "MASTER_URL=${MASTER_URL}"
 
+          echo "MASTER_URL=${MASTER_URL}" | tee reports/runner.log
+
+          curl -L "${MASTER_URL}" -o reports/master.csv
+
+          # Runner: ne álljon meg a workflow csak azért, mert a runner exit code-ja nem 0.
           set +e
-          python scripts/report_runner.py --master "${MASTER_URL}" --out "reports/summary_report_1.md" --report 1 2> "reports/runner.log"
+          python scripts/report_runner.py --master reports/master.csv --out reports/summary_report_1.md 2>> reports/runner.log
           code=$?
           set -e
+          echo "RUNNER_EXIT=${code}" | tee -a reports/runner.log
 
-          echo "Runner exit code: ${code}" >> "reports/runner.log"
-          echo "exit_code=${code}" >> "$GITHUB_OUTPUT"
+          # Fallback summary, ha a runner nem hozta létre
+          if [ ! -f reports/summary_report_1.md ]; then
+            cat > reports/summary_report_1.md <<'EOF'
+# #1 — Premarket check (PRICE ENGINE)
 
-      - name: Build nocache link + summary
-        if: steps.runner.outputs.exit_code == '0'
-        shell: bash
-        env:
-          GIST_ID: "5df443b8a46ef863cdc97aad62756510"
-        run: |
-          set -euo pipefail
-
-          NONCE="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_SHA}-$(date +%s)"
-          URL="https://gist.githubusercontent.com/zoleevegh/${GIST_ID}/raw/summary_report_1.md?nocache=${NONCE}"
-
-          echo "${URL}" > reports/raw_url_1.txt
-
-          {
-            echo "Job summary generated at run-time (${GITHUB_RUN_ID})"
-            echo
-            echo "Raw report URL (nocache):"
-            echo "${URL}"
-            echo
-            echo "[Open raw report (nocache)](${URL})"
-          } >> "$GITHUB_STEP_SUMMARY"
+NO_DATA: a report nem készült el (runner crash / hiányzó fájl / forráshiba).
+EOF
+          fi
 
       - name: Update Gist (summary_report_1.md)
-        if: steps.runner.outputs.exit_code == '0'
         shell: bash
         env:
-          GIST_ID: "5df443b8a46ef863cdc97aad62756510"
+          GIST_ID: 5df443b8a46ef863cdc97aad62756510
           GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
         run: |
           set -euo pipefail
-
+          if [ -z "${GIST_TOKEN}" ]; then
+            echo "No GIST_TOKEN secret - skip Gist update."
+            exit 0
+          fi
           if [ ! -f reports/summary_report_1.md ]; then
-            echo "summary_report_1.md not found — runner likely failed. Skip Gist update." >> "$GITHUB_STEP_SUMMARY"
+            echo "summary_report_1.md not found - skip Gist update."
             exit 0
           fi
 
-          python -c "import json; from pathlib import Path; content = Path('reports/summary_report_1.md').read_text(encoding='utf-8', errors='replace'); payload = {'files': {'summary_report_1.md': {'content': content}}}; Path('reports/gist_payload.json').write_text(json.dumps(payload), encoding='utf-8')"
+          python - <<'PY'
+import json
+from pathlib import Path
+content = Path("reports/summary_report_1.md").read_text(encoding="utf-8", errors="replace")
+payload = {"files": {"summary_report_1.md": {"content": content}}}
+Path("reports/gist_payload.json").write_text(json.dumps(payload), encoding="utf-8")
+PY
 
           curl -sS -X PATCH "https://api.github.com/gists/${GIST_ID}" \
             -H "Authorization: Bearer ${GIST_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
             -H "Content-Type: application/json" \
-            --data-binary @reports/gist_payload.json \
-            > /dev/null
+            --data-binary @reports/gist_payload.json > /dev/null
+
+      - name: Build nocache link + summary (ONE clickable URL)
+        shell: bash
+        run: |
+          set -euo pipefail
+          ts=$(date +%s)
+          sha="${GITHUB_SHA:0:12}"
+          nocache="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${sha}-${ts}"
+
+          raw="https://gist.githubusercontent.com/zoleevegh/5df443b8a46ef863cdc97aad62756510/raw/summary_report_1.md?nocache=${nocache}"
+
+          # 1) kattintható link
+          echo "Raw report URL (nocache): ${raw}" >> "${GITHUB_STEP_SUMMARY}"
+          echo "" >> "${GITHUB_STEP_SUMMARY}"
+          echo "[Open raw report]( ${raw} )" >> "${GITHUB_STEP_SUMMARY}"
+          echo "" >> "${GITHUB_STEP_SUMMARY}"
+          # 2) plain text (copy)
+          echo "Copy (plain text): ${raw}" >> "${GITHUB_STEP_SUMMARY}"
+
+          echo "${raw}" > reports/raw_url.txt
 
       - name: Upload artifacts (bundle)
-        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: report-bundle
           path: |
             reports/summary_report_1.md
-            reports/raw_url_1.txt
             reports/runner.log
-
-      - name: Fail job if runner failed
-        if: steps.runner.outputs.exit_code != '0'
-        shell: bash
-        run: |
-          echo "Runner failed with exit code: ${{ steps.runner.outputs.exit_code }}"
-          exit 1
+            reports/raw_url.txt
