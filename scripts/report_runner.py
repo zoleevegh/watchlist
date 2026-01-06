@@ -1,20 +1,15 @@
 #!/usr/bin/env python3
-# report_runner.py — v4.3.3-chartv8-ah-basefix-nowcap-2026-01-06
+# report_runner.py — v4.3.4-price-engine-positions-block-ahfirst-cacheclean-2026-01-06
 #
-# MI VOLT A HIBA a v4.3.2-ben?
-# - Az "AH %" számolás bázisa rossz volt: post vs PREVIOUS CLOSE (prev),
-#   ezért AH%-nak a napi (regular session) %-hoz hasonló értékek jöttek ki.
-#   Helyes: AH% = (postMarketPrice / regularMarketPrice - 1) * 100.
+# KÉRÉSEID ALAPJÁN (v4.3.4):
+# 1) Debug/Debug sample: csak akkor írjuk a report aljára, ha ALL_NA (nincs adat).
+# 2) Darabszámos tickerek külön blokkban elöl ("Pozíciók"), alatta "Watchlist".
+# 3) A reportban az értékek sorrendje: AH elöl, PM utána.
+# 4) Rendezettség: mindkét blokkban abs(AH%) szerint (n/a a végére), tie-breaker abs(PM%).
 #
-# FIX v4.3.3:
-# - AH% bázisa: regularMarketPrice (záró/utolsó regular ár). Fallback: prev close, ha regular hiányzik.
-# - PM% bázisa: previousClose (prev) marad.
-# - Inferált pre/post árnál "now-cap": csak a NOW-ig létező timestamp-eket vesszük figyelembe,
-#   ne tudjon "jövőbeli" (range-ben benne lévő) tick befolyni.
-# - Debug sample bővítve: prev, regular, pre, post, bázisok + számolt értékek.
-#
-# Logging:
-# - A runner.log-ba kiírunk egy rövid összegzést + 10-es debug sample-t, hogy a GH Actionsben is lásd.
+# Megjegyzés:
+# - A Yahoo Chart v8 meta gyakran nem ad postMarketPrice / preMarketPrice értéket,
+#   ezért ablakon belül inferálunk 1 perces chart close-okból (NOW-cap).
 #
 # Exit:
 # - 0 OK
@@ -31,7 +26,7 @@ import urllib.request
 import time
 from typing import Optional, Tuple, List, Dict, Any
 
-VERSION = "v4.3.3-chartv8-ah-basefix-nowcap-2026-01-06"
+VERSION = "v4.3.4-price-engine-positions-block-ahfirst-cacheclean-2026-01-06"
 
 
 def pct(a, b):
@@ -59,24 +54,62 @@ def http_json(url: str) -> Dict[str, Any]:
         return json.loads(r.read())
 
 
-def load_master(path: str) -> List[str]:
-    out = []
+def _parse_qty(row: Dict[str, str]) -> float:
+    keys = [
+        "qty", "Qty", "quantity", "Quantity", "shares", "Shares",
+        "db", "Db", "darab", "Darab", "pieces", "Pieces",
+        "position", "Position", "count", "Count",
+    ]
+    for k in keys:
+        if k in row and row[k] not in (None, ""):
+            v = str(row[k]).strip()
+            if not v:
+                continue
+            v = v.replace(" ", "").replace(",", ".")
+            try:
+                return float(v)
+            except Exception:
+                continue
+    return 0.0
+
+
+def load_master_with_groups(path: str) -> Tuple[List[str], List[str]]:
+    """
+    Visszaad (positions, watchlist) ticker listákat, duplikátum nélkül.
+    - positions: darabszám > 0
+    - watchlist: egyéb
+    Ha nincs qty oszlop a fájlban, akkor minden ticker watchlist-re kerül.
+    """
+    positions: List[str] = []
+    watchlist: List[str] = []
+
     with open(path, encoding="utf-8", newline="") as f:
-        for r in csv.DictReader(f):
+        reader = csv.DictReader(f)
+        for r in reader:
             t = (r.get("ticker") or r.get("Ticker") or r.get("symbol") or r.get("Symbol") or "").strip().upper()
-            if t:
-                out.append(t)
-    seen = set()
-    uniq = []
-    for t in out:
-        if t not in seen:
-            uniq.append(t)
-            seen.add(t)
-    return uniq
+            if not t:
+                continue
+            qty = _parse_qty(r)
+            if qty > 0:
+                positions.append(t)
+            else:
+                watchlist.append(t)
+
+    def uniq_keep(seq: List[str]) -> List[str]:
+        seen = set()
+        out = []
+        for x in seq:
+            if x not in seen:
+                out.append(x)
+                seen.add(x)
+        return out
+
+    positions_u = uniq_keep(positions)
+    watchlist_u = uniq_keep([t for t in watchlist if t not in set(positions_u)])
+    return positions_u, watchlist_u
 
 
 def _tp(meta: Dict[str, Any], key: str) -> Optional[Tuple[int, int]]:
-    # prefer currentTradingPeriod (ez a legjobb "mai" periódusokra)
     ctp = meta.get("currentTradingPeriod")
     if isinstance(ctp, dict) and key in ctp and isinstance(ctp[key], dict):
         d = ctp[key]
@@ -101,8 +134,8 @@ def _last_close_in_window(
     now_epoch: Optional[int] = None,
 ) -> Optional[float]:
     """
-    Visszaadja az ablakban lévő legutolsó záró árat.
-    NOW-cap: ha now_epoch adott, akkor csak ts <= now_epoch mintákat vesz figyelembe.
+    Utolsó close az ablakban.
+    NOW-cap: csak ts <= now_epoch minták.
     """
     last = None
     cap_end = end
@@ -131,11 +164,10 @@ def chart_prices(t: str, now_epoch: int) -> Tuple[Optional[float], Optional[floa
     meta = res.get("meta", {})
 
     prev = meta.get("previousClose") or meta.get("regularMarketPreviousClose")
-    regular = meta.get("regularMarketPrice")  # záró/utolsó regular ár
+    regular = meta.get("regularMarketPrice")
 
     wpre = _tp(meta, "pre")
     wpost = _tp(meta, "post")
-
     pre_start, pre_end = (wpre if wpre else (None, None))
     post_start, post_end = (wpost if wpost else (None, None))
 
@@ -157,12 +189,11 @@ def chart_prices(t: str, now_epoch: int) -> Tuple[Optional[float], Optional[floa
         "post_source": None,
     }
 
-    # --- Premarket ---
+    # Premarket
     pre = meta.get("preMarketPrice")
     if pre is not None:
         debug["pre_source"] = "meta"
     else:
-        # WINDOW GATING: PM csak akkor, ha MOST pre ablakban vagyunk
         if pre_start is None or pre_end is None:
             pre = None
             debug["pre_source"] = "tp_missing"
@@ -177,12 +208,11 @@ def chart_prices(t: str, now_epoch: int) -> Tuple[Optional[float], Optional[floa
             else:
                 debug["pre_source"] = "infer_none"
 
-    # --- After-hours (postmarket) ---
+    # After-hours
     post = meta.get("postMarketPrice")
     if post is not None:
         debug["post_source"] = "meta"
     else:
-        # AH csak akkor, ha MOST post ablakban vagyunk
         if post_start is None or post_end is None:
             post = None
             debug["post_source"] = "tp_missing"
@@ -200,6 +230,14 @@ def chart_prices(t: str, now_epoch: int) -> Tuple[Optional[float], Optional[floa
     return prev, regular, pre, post, debug
 
 
+def _sort_key(row: Dict[str, Any]):
+    ah = row.get("ah")
+    pm = row.get("pm")
+    ah_rank = abs(ah) if ah is not None else -1.0
+    pm_rank = abs(pm) if pm is not None else -1.0
+    return (ah_rank, pm_rank)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--report", type=int, default=1)
@@ -210,37 +248,28 @@ def main() -> int:
 
     now_epoch = int(time.time())
 
-    tickers = load_master(args.master)
-    rows = []
-    any_pm = False
+    positions, watchlist = load_master_with_groups(args.master)
+    tickers = positions + watchlist
+
+    rows: Dict[str, Dict[str, Any]] = {}
+    any_value = False
 
     dbg_counts = {
-        "pre_meta": 0,
-        "pre_infer": 0,
-        "pre_gated": 0,
-        "pre_none": 0,
-        "post_meta": 0,
-        "post_infer": 0,
-        "post_gated": 0,
-        "post_none": 0,
+        "pre_meta": 0, "pre_infer": 0, "pre_gated": 0, "pre_none": 0,
+        "post_meta": 0, "post_infer": 0, "post_gated": 0, "post_none": 0,
     }
-
-    sample_dbg = []  # 10 ticker debug
+    sample_dbg = []
 
     for t in tickers:
         try:
             prev, regular, pre, post, dbg = chart_prices(t, now_epoch)
 
-            # PM a prev close-hoz viszonyítva (helyes)
-            pm = pct(pre, prev)
-
-            # AH a regular close-hoz viszonyítva (helyes).
-            # Ha regular hiányzik, fallback prev close (jobb mint semmi, de ritka).
+            pm = pct(pre, prev)  # PM: prev close bázis
             ah_base = regular if regular not in (None, 0) else prev
-            ah = pct(post, ah_base)
+            ah = pct(post, ah_base)  # AH: regular bázis (fallback prev)
 
-            if pm is not None:
-                any_pm = True
+            if pm is not None or ah is not None:
+                any_value = True
 
             ps = dbg.get("pre_source")
             if ps == "meta":
@@ -265,46 +294,50 @@ def main() -> int:
             if len(sample_dbg) < 10:
                 sample_dbg.append((t, dbg, prev, regular, pre, post, pm, ah))
 
-            rows.append((t, pm, ah))
+            rows[t] = {"ticker": t, "pm": pm, "ah": ah, "dbg": dbg, "prev": prev, "regular": regular, "pre": pre, "post": post}
         except Exception:
-            rows.append((t, None, None))
+            rows[t] = {"ticker": t, "pm": None, "ah": None}
 
-    # 1 lista rendezés
-    if any_pm:
-        rows.sort(key=lambda r: abs(r[1]) if r[1] is not None else -1.0, reverse=True)
-        mode = "PM"
-    else:
-        rows.sort(key=lambda r: abs(r[2]) if r[2] is not None else -1.0, reverse=True)
-        mode = "AH"
+    pos_rows = [rows[t] for t in positions if t in rows]
+    w_rows = [rows[t] for t in watchlist if t in rows]
+    pos_rows.sort(key=_sort_key, reverse=True)
+    w_rows.sort(key=_sort_key, reverse=True)
 
     with open(args.out, "w", encoding="utf-8", newline="\n") as f:
         f.write("# #1 — Premarket check (PRICE ENGINE)\n\n")
         f.write(f"Verzió: {VERSION}\n\n")
-        f.write(f"Lista — {mode} abs% szerint (1 lista)\n\n")
-        for t, pm, ah in rows:
-            f.write(f"- {t} — PM {fmt(pm)} | AH {fmt(ah)}\n")
 
-        f.write("\n## Debug\n")
-        f.write(f"- now_epoch: {now_epoch}\n")
-        for k in ["pre_meta","pre_infer","pre_gated","pre_none","post_meta","post_infer","post_gated","post_none"]:
-            f.write(f"- {k}: {dbg_counts[k]}\n")
+        f.write("## Pozíciók (darabszámos)\n\n")
+        if pos_rows:
+            for r in pos_rows:
+                f.write(f"- {r['ticker']} — AH {fmt(r.get('ah'))} | PM {fmt(r.get('pm'))}\n")
+        else:
+            f.write("- (nincs darabszámos ticker a MASTER-ben / nincs qty oszlop)\n")
 
-        f.write("\n### Debug sample (first 10 tickers)\n")
-        for t, dbg, prev, regular, pre, post, pm, ah in sample_dbg:
-            f.write(
-                f"- {t}: prev={prev} regular={regular} pre={pre} post={post} | "
-                f"PM {fmt(pm)} (pre_source={dbg.get('pre_source')}, pre_start={dbg.get('pre_start')}, pre_end={dbg.get('pre_end')}) | "
-                f"AH {fmt(ah)} (post_source={dbg.get('post_source')}, post_start={dbg.get('post_start')}, post_end={dbg.get('post_end')})\n"
-            )
+        f.write("\n## Watchlist\n\n")
+        for r in w_rows:
+            f.write(f"- {r['ticker']} — AH {fmt(r.get('ah'))} | PM {fmt(r.get('pm'))}\n")
 
-    # rövid log a runner.log-ba (GH Actionsben legyen "életjel")
+        # Debug csak akkor, ha nincs adat
+        if not any_value:
+            f.write("\n## Debug (NO DATA)\n")
+            f.write(f"- now_epoch: {now_epoch}\n")
+            for k in ["pre_meta","pre_infer","pre_gated","pre_none","post_meta","post_infer","post_gated","post_none"]:
+                f.write(f"- {k}: {dbg_counts[k]}\n")
+
+            f.write("\n### Debug sample (first 10 tickers)\n")
+            for t, dbg, prev, regular, pre, post, pm, ah in sample_dbg:
+                f.write(
+                    f"- {t}: prev={prev} regular={regular} pre={pre} post={post} | "
+                    f"AH {fmt(ah)} (post_source={dbg.get('post_source')}, post_start={dbg.get('post_start')}, post_end={dbg.get('post_end')}) | "
+                    f"PM {fmt(pm)} (pre_source={dbg.get('pre_source')}, pre_start={dbg.get('pre_start')}, pre_end={dbg.get('pre_end')})\n"
+                )
+
     print(f"RUNNER_VERSION={VERSION}", file=sys.stderr, flush=True)
-    print(f"MODE={mode} any_pm={any_pm} tickers={len(rows)}", file=sys.stderr, flush=True)
-    print(f"DBG pre_meta={dbg_counts['pre_meta']} pre_infer={dbg_counts['pre_infer']} pre_gated={dbg_counts['pre_gated']} pre_none={dbg_counts['pre_none']}", file=sys.stderr, flush=True)
-    print(f"DBG post_meta={dbg_counts['post_meta']} post_infer={dbg_counts['post_infer']} post_gated={dbg_counts['post_gated']} post_none={dbg_counts['post_none']}", file=sys.stderr, flush=True)
+    print(f"positions={len(positions)} watchlist={len(watchlist)} total={len(tickers)}", file=sys.stderr, flush=True)
 
-    if all(pm is None and ah is None for _, pm, ah in rows):
-        print("ALL_NA: chart v8 nem adott használható pre/post adatot (window gating + infer).", file=sys.stderr, flush=True)
+    if not any_value:
+        print("ALL_NA: nincs használható pre/post adat (window gating + infer).", file=sys.stderr, flush=True)
         return 5
     return 0
 
