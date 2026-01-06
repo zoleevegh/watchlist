@@ -257,6 +257,7 @@ def chart_prices(t: str, now_epoch: int) -> Tuple[Optional[float], Optional[floa
 
 def main() -> int:
     ap = argparse.ArgumentParser()
+    ap.add_argument("--report", type=int, default=1, help="Back-compat (ignored): report id 1/2/3")
     ap.add_argument("--master", default="reports/master.csv")
     ap.add_argument("--out", default="reports/summary_report_1.md")
     ap.add_argument("--debug", action="store_true")
@@ -282,7 +283,7 @@ def main() -> int:
     for t in all_tickers:
         try:
             base_prev, base_regular, pre, post, dbg = chart_prices(t, now_epoch)
-            pm = pct(pre, base_prev)
+            pm = pct(pre, base_regular)
             ah = pct(post, base_regular)
             data[t] = (ah, pm, dbg)
 
