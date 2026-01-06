@@ -1,18 +1,16 @@
 #!/usr/bin/env python3
-# report_runner.py — v4.3.5-price-engine-darabszam-headerfix-2026-01-06
+# report_runner.py — v4.3.6-price-engine-no-skip-on-allna-2026-01-06
 #
-# FIX v4.3.5:
-# - Google Sheets CSV oszlopnév: "Darabszam"/"Darabszám" felismerése (pozíció-blokkhoz).
+# FIX v4.3.6:
+# - ALL_NA (minden ticker n/a) esetén is 0-val lépünk ki, hogy a Gist FRISSÜLJÖN
+#   és lásd a blokkokat + az "NO DATA" debug okát.
 #
 # KÉRÉSEID (változatlanul):
-# - Debug csak ALL_NA esetén.
-# - Pozíciók (darabszámos) blokk elöl, Watchlist alatta.
-# - Sorformátum: AH elöl, PM utána.
-# - Rendezés: abs(AH%) szerint (n/a a végére), tie-breaker abs(PM%).
-#
-# Exit:
-# - 0 OK
-# - 5 ALL_NA (minden ticker PM/AH n/a)
+# 1) Debug csak ALL_NA esetén.
+# 2) Pozíciók (darabszámos) blokk elöl, Watchlist alatta.
+# 3) Sorformátum: AH elöl, PM utána.
+# 4) Rendezés: abs(AH%) szerint (n/a a végére), tie-breaker abs(PM%).
+# 5) Sheets CSV: "Darabszam"/"Darabszám" felismerése.
 #
 # Verzió-szabály: bármely fájl módosításakor a verziószámot folytatólagosan kell növelni, kihagyás nélkül.
 
@@ -25,7 +23,7 @@ import urllib.request
 import time
 from typing import Optional, Tuple, List, Dict, Any
 
-VERSION = "v4.3.5-price-engine-darabszam-headerfix-2026-01-06"
+VERSION = "v4.3.6-price-engine-no-skip-on-allna-2026-01-06"
 
 
 def pct(a, b):
@@ -54,16 +52,10 @@ def http_json(url: str) -> Dict[str, Any]:
 
 
 def _parse_qty(row: Dict[str, str]) -> float:
-    """
-    Darabszám kinyerése többféle oszlopnévből, a Google Sheets exporthoz igazítva.
-    Sheets példád: "Darabszam" (esetleg "Darabszám").
-    """
     keys = [
-        # általános
         "qty", "Qty", "quantity", "Quantity", "shares", "Shares",
         "db", "Db", "darab", "Darab", "pieces", "Pieces",
         "position", "Position", "count", "Count",
-        # Sheets/HU variánsok
         "Darabszam", "darabszam", "Darabszám", "darabszám",
         "Darabsz", "darabsz",
     ]
@@ -329,10 +321,10 @@ def main() -> int:
 
     print(f"RUNNER_VERSION={VERSION}", file=sys.stderr, flush=True)
     print(f"positions={len(positions)} watchlist={len(watchlist)} total={len(tickers)}", file=sys.stderr, flush=True)
-
     if not any_value:
-        print("ALL_NA: nincs használható pre/post adat (window gating + infer).", file=sys.stderr, flush=True)
-        return 5
+        print("NO_DATA: most nem PM/AH ablakban vagy (vagy nincs chart adat). A report ettől még frissült.", file=sys.stderr, flush=True)
+
+    # FONTOS: mindig 0, hogy a workflow ne skip-elje a gist frissítést
     return 0
 
 
