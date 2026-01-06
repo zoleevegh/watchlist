@@ -1,10 +1,10 @@
-# Version: v4.2.4-price-engine-summary-rawurl-escape-2026-01-06
-# Last updated: 2026-01-06T02:15:00+01:00
+# Version: v4.2.5-price-engine-summary-codeblock-url-2026-01-06
+# Last updated: 2026-01-06T02:35:00+01:00
 #
-# FIX v4.2.4:
-# - Job Summary step javítva: PowerShell-ben a backtick (`) escape karakter, ezért a markdown `...` szétverte a stringet.
-# - Most biztonságosan fűzöm össze: 'Raw URL (copy): `' + $raw + '`'
-# - Minden más marad (MASTER_CSV_URL, gist update, stb.)
+# FIX v4.2.5:
+# - Job Summary: a "Raw URL (copy)" MOSTANTÓL kódblokkban van (``` ... ```), így mindig teljes URL jelenik meg és könnyen másolható.
+# - Plusz: a job log-ba is kiírjuk: RAW_URL=<teljes url>
+# - MASTER_CSV_URL az alapértelmezett (103 soros) Sheets CSV (DEFAULT nincs).
 #
 # Verzió-szabály: bármely fájl módosításakor a verziószámot folytatólagosan kell növelni, kihagyás nélkül.
 
@@ -132,11 +132,17 @@ jobs:
           $krix = [guid]::NewGuid().ToString("N")
           $raw = "$rawStable?nocache=$krix"
 
+          Write-Host "RAW_URL=$raw"
+
           $lines = @()
           $lines += "Job summary generated at run-time ($(Get-Date -Format 'yyyy-MM-ddTHH:mmzzz'))"
           $lines += ""
           $lines += "[Open raw report]($raw)"
           $lines += ""
-          $lines += ('Raw URL (copy): `' + $raw + '`')
+          $lines += "Raw URL (copy):"
+          $lines += ""
+          $lines += "```"
+          $lines += $raw
+          $lines += "```"
 
           $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
