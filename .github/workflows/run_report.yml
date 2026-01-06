@@ -1,26 +1,16 @@
-# run_report.yml — v4.2.21-price-engine-stablelink-ubuntu-2026-01-06
-#
-# CÉL:
-# - Ubuntu runner (bash) -> nincs PowerShell quote/backtick káosz
-# - Mindig 1 darab kattintható nocache link a Step Summary-ban
-# - Runner hibánál is készül fallback summary + link, a workflow nem dől el a "link miatt"
-#
-# Verzió-szabály: bármely fájl módosításakor a verziószámot folytatólagosan kell növelni, kihagyás nélkül.
-
 name: Run Report — PRICE ENGINE
 
 on:
   workflow_dispatch:
     inputs:
       master_csv_url:
-        description: "MASTER CSV URL (default = current MASTER)"
+        description: "MASTER CSV URL (optional). Leave empty to use default."
         required: false
-        default: "https://docs.google.com/spreadsheets/d/e/2PACX-1vQkgyw0ONwSfc2KnrmWGqf8fWVQxS-R08RySndB69KDJ8L1Cz-H2F1AZtyDfhBGedC0qdC1SFo_aDye/pub?output=csv"
+        default: ""
 
 jobs:
   run:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -30,27 +20,57 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Run PRICE ENGINE (#1)
+      - name: Install deps
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f requirements.txt ]; then
+            python -m pip install --upgrade pip
+            pip install -r requirements.txt
+          else
+            python -m pip install --upgrade pip
+          fi
+
+      - name: Run PRICE ENGINE (#1) + build stable nocache link
         shell: bash
         env:
-          MASTER_URL: ${{ inputs.master_csv_url }}
+          # Default MASTER CSV (latest)
+          DEFAULT_MASTER_CSV_URL: "https://docs.google.com/spreadsheets/d/e/2PACX-1vQkgyw0ONwSfc2KnrmWGqf8fWVQxS-R08RySndB69KDJ8L1Cz-H2F1AZtyDfhBGedC0qdC1SFo_aDye/pub?output=csv"
         run: |
           set -euo pipefail
           mkdir -p reports
 
+          # Resolve MASTER URL (input overrides default)
+          MASTER_URL="${{ github.event.inputs.master_csv_url }}"
+          if [ -z "${MASTER_URL}" ]; then
+            MASTER_URL="${DEFAULT_MASTER_CSV_URL}"
+          fi
           echo "MASTER_URL=${MASTER_URL}" | tee reports/runner.log
 
-          curl -L "${MASTER_URL}" -o reports/master.csv
+          # Find runner script (root or scripts/)
+          RUNNER=""
+          if [ -f "report_runner.py" ]; then
+            RUNNER="report_runner.py"
+          elif [ -f "scripts/report_runner.py" ]; then
+            RUNNER="scripts/report_runner.py"
+          fi
 
-          # Runner: ne álljon meg a workflow csak azért, mert a runner exit code-ja nem 0.
-          set +e
-          python scripts/report_runner.py --master reports/master.csv --out reports/summary_report_1.md 2>> reports/runner.log
-          code=$?
-          set -e
-          echo "RUNNER_EXIT=${code}" | tee -a reports/runner.log
+          # Run runner (never let workflow die before we create summary)
+          EXIT_CODE=0
+          if [ -z "${RUNNER}" ]; then
+            echo "Runner script not found (report_runner.py / scripts/report_runner.py)." | tee -a reports/runner.log
+            EXIT_CODE=2
+          else
+            set +e
+            python "${RUNNER}" --master "${MASTER_URL}" --out "reports/summary_report_1.md"
+            EXIT_CODE=$?
+            set -e
+          fi
 
-          # Fallback summary, ha a runner nem hozta létre
-          if [ ! -f reports/summary_report_1.md ]; then
+          echo "RUNNER_EXIT=${EXIT_CODE}" | tee -a reports/runner.log
+
+          # Always ensure summary exists
+          if [ ! -f "reports/summary_report_1.md" ]; then
             cat > reports/summary_report_1.md <<'EOF'
 # #1 — Premarket check (PRICE ENGINE)
 
@@ -58,19 +78,45 @@ NO_DATA: a report nem készült el (runner crash / hiányzó fájl / forráshiba
 EOF
           fi
 
+          # Build one single clickable nocache URL (run id + attempt + sha)
+          NOCACHE="${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}"
+          RAW_URL="https://gist.githubusercontent.com/zoleevegh/5df443b8a46ef863cdc97aad62756510/raw/summary_report_1.md?nocache=${NOCACHE}"
+
+          # Save raw url to artifact-friendly file too
+          echo "${RAW_URL}" > reports/raw_url_1.txt
+
+          # Job summary (single link + copyable)
+          {
+            echo "Job summary generated at run-time (${{ github.run_id }})"
+            echo ""
+            echo "Raw report URL (nocache):"
+            echo ""
+            echo "[Open raw report](${RAW_URL})"
+            echo ""
+            echo "Raw report URL (copy):"
+            echo ""
+            echo "<${RAW_URL}>"
+            echo ""
+            echo "Runner exit code: ${EXIT_CODE}"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          # Also print to log for quick copy
+          echo "RAW_URL=${RAW_URL}"
+
       - name: Update Gist (summary_report_1.md)
+        if: always()
         shell: bash
         env:
-          GIST_ID: 5df443b8a46ef863cdc97aad62756510
+          GIST_ID: "5df443b8a46ef863cdc97aad62756510"
           GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
         run: |
           set -euo pipefail
-          if [ -z "${GIST_TOKEN}" ]; then
+          if [ -z "${GIST_TOKEN:-}" ]; then
             echo "No GIST_TOKEN secret - skip Gist update."
             exit 0
           fi
-          if [ ! -f reports/summary_report_1.md ]; then
-            echo "summary_report_1.md not found - skip Gist update."
+          if [ ! -f "reports/summary_report_1.md" ]; then
+            echo "reports/summary_report_1.md not found - skip Gist update."
             exit 0
           fi
 
@@ -82,37 +128,13 @@ payload = {"files": {"summary_report_1.md": {"content": content}}}
 Path("reports/gist_payload.json").write_text(json.dumps(payload), encoding="utf-8")
 PY
 
-          curl -sS -X PATCH "https://api.github.com/gists/${GIST_ID}" \
-            -H "Authorization: Bearer ${GIST_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            -H "Content-Type: application/json" \
-            --data-binary @reports/gist_payload.json > /dev/null
+          curl -sS -X PATCH "https://api.github.com/gists/${GIST_ID}"             -H "Authorization: Bearer ${GIST_TOKEN}"             -H "Accept: application/vnd.github+json"             -H "Content-Type: application/json"             --data-binary "@reports/gist_payload.json" > /dev/null
 
-      - name: Build nocache link + summary (ONE clickable URL)
-        shell: bash
-        run: |
-          set -euo pipefail
-          ts=$(date +%s)
-          sha="${GITHUB_SHA:0:12}"
-          nocache="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${sha}-${ts}"
-
-          raw="https://gist.githubusercontent.com/zoleevegh/5df443b8a46ef863cdc97aad62756510/raw/summary_report_1.md?nocache=${nocache}"
-
-          # 1) kattintható link
-          echo "Raw report URL (nocache): ${raw}" >> "${GITHUB_STEP_SUMMARY}"
-          echo "" >> "${GITHUB_STEP_SUMMARY}"
-          echo "[Open raw report]( ${raw} )" >> "${GITHUB_STEP_SUMMARY}"
-          echo "" >> "${GITHUB_STEP_SUMMARY}"
-          # 2) plain text (copy)
-          echo "Copy (plain text): ${raw}" >> "${GITHUB_STEP_SUMMARY}"
-
-          echo "${raw}" > reports/raw_url.txt
+          echo "Gist updated."
 
       - name: Upload artifacts (bundle)
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: report-bundle
-          path: |
-            reports/summary_report_1.md
-            reports/runner.log
-            reports/raw_url.txt
+          path: reports/
