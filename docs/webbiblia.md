@@ -1,6 +1,6 @@
 # 📘 WEBBIBLIA v1.6.0
 Web‑alapú #1 / #ALL‑IN jelentések kanonikus szabálykönyve
-
+https://raw.githubusercontent.com/zoleevegh/watchlist/main/docs/webbiblia.md
 ---
 
 ## 0️⃣ Hogyan használd ezt a dokumentumot
