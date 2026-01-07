@@ -23,6 +23,15 @@ import urllib.request
 import time
 import datetime
 
+def write_header(f, interval_start: str, interval_end: str):
+    run_time = datetime.datetime.now().strftime("%H:%M")
+    header = (
+        "# #1 — Premarket check (PRICE ENGINE)\n\n"
+        f"Verzió: {VERSION} | Futás ideje: {run_time}\n"
+        f"Időintervallum (ellenőrzés): {interval_start} – {interval_end}\n\n"
+    )
+    f.write(header)
+
 def write_header(f, interval_start, interval_end):
     run_time = datetime.datetime.now().strftime("%H:%M")
     header = (
@@ -87,7 +96,7 @@ def _budapest_windows(now_epoch: int, last_regular_market_time: int | None = Non
 
     return (pm_start, pm_end, ah_start, ah_end, now_local.isoformat(), close_day.isoformat())
 
-VERSION = "v4.5.6-price-engine-header-interval-global-2026-01-07"
+VERSION = "v4.5.7-price-engine-header-interval-global-argsfix-2026-01-07"
 
 
 def pct(a, b):
@@ -416,7 +425,7 @@ def main() -> int:
         interval_start = (_now_local.date() - datetime.timedelta(days=1)).strftime("%Y-%m-%d") + " 22:00"
 
     with open(args.out, "w", encoding="utf-8", newline="\n") as f:
-        write_header(f, VERSION, interval_start, interval_end)
+        write_header(f, interval_start, interval_end)
 
         f.write("## Pozíciók\n\n")
         for t, ah, pm in out_rows_pos:
