@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# report_runner.py — v4.5.4-price-engine-header-interval-fix-2026-01-07
+# report_runner.py — v4.5.5-price-engine-header-interval-2026-01-07
 #
 # FIX / CÉL:
 # - Stabil #1 riport: AH elöl, PM utána, külön blokkban: Pozíciók (Darabszam>0), majd Watchlist.
@@ -23,14 +23,24 @@ import urllib.request
 import time
 import datetime
 
-def write_header(f, interval_start, interval_end):
+def _fmt_local_hhmm(iso_local: str) -> str:
+    """Return 'YYYY-MM-DD HH:MM' from an ISO local datetime string (may include offset)."""
+    try:
+        dt = datetime.datetime.fromisoformat(iso_local)
+        return dt.strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        # fallback: trim to minutes
+        return iso_local.replace("T", " ")[:16]
+
+def write_header(f, runner_version: str, interval_start: str, interval_end: str):
     run_time = datetime.datetime.now().strftime("%H:%M")
     header = (
-        "# #1 – Premarket check (PRICE ENGINE)\n\n"
-        f"Verzió: v4.5.4-price-engine-header-interval-fix-2026-01-07 | Futás ideje: {run_time}\n"
+        "# #1 — Premarket check (PRICE ENGINE)\n\n"
+        f"Verzió: {runner_version} | Futás ideje: {run_time}\n"
         f"Időintervallum (ellenőrzés): {interval_start} – {interval_end}\n\n"
     )
     f.write(header)
+
 from typing import Optional, Tuple, List, Dict, Any
 
 
@@ -87,7 +97,7 @@ def _budapest_windows(now_epoch: int, last_regular_market_time: int | None = Non
 
     return (pm_start, pm_end, ah_start, ah_end, now_local.isoformat(), close_day.isoformat())
 
-VERSION = "v4.5.4-price-engine-header-interval-fix-2026-01-07"
+VERSION = "v4.5.5-price-engine-header-interval-2026-01-07"
 
 
 def pct(a, b):
@@ -390,9 +400,10 @@ def main() -> int:
     any_data = any((ah is not None or pm is not None) for _, ah, pm in (out_rows_pos + out_rows_wl))
 
     with open(args.out, "w", encoding="utf-8", newline="\n") as f:
-        f.write("# #1 — Premarket check (PRICE ENGINE)\n\n")
-        f.write(f"Verzió: {VERSION}\n")
-        f.write("Formátum: AH elöl, PM utána.\n\n")
+        # Compute interval strings for audit header (web logic uses last close -> now; script window anchored to last close day)
+        interval_start = interval_start or f"{close_day_iso} 22:00"
+        interval_end = interval_end or _fmt_local_hhmm(now_local_iso)
+        write_header(f, VERSION, interval_start, interval_end)
 
         f.write("## Pozíciók\n\n")
         for t, ah, pm in out_rows_pos:
