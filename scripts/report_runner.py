@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# report_runner.py — v4.5.2-price-engine-lastclose-anchor-2026-01-07
+# report_runner.py — v4.5.3-price-engine-header-interval-2026-01-07
 #
 # FIX / CÉL:
 # - Stabil #1 riport: AH elöl, PM utána, külön blokkban: Pozíciók (Darabszam>0), majd Watchlist.
@@ -78,7 +78,7 @@ def _budapest_windows(now_epoch: int, last_regular_market_time: int | None = Non
 
     return (pm_start, pm_end, ah_start, ah_end, now_local.isoformat(), close_day.isoformat())
 
-VERSION = "v4.5.2-price-engine-lastclose-anchor-2026-01-07"
+VERSION = "v4.5.3-price-engine-header-interval-2026-01-07"
 
 
 def pct(a, b):
@@ -382,7 +382,9 @@ def main() -> int:
 
     with open(args.out, "w", encoding="utf-8", newline="\n") as f:
         f.write("# #1 — Premarket check (PRICE ENGINE)\n\n")
-        f.write(f"Verzió: {VERSION}\n")
+        f.write(f"Verzió: v4.5.3-price-engine-header-interval-2026-01-07 | Futás ideje: 07:50
+Időintervallum (ellenőrzés): {interval_start} – {interval_end}
+ {VERSION}\n")
         f.write("Formátum: AH elöl, PM utána.\n\n")
 
         f.write("## Pozíciók\n\n")
