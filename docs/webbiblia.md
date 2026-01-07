@@ -1,6 +1,10 @@
+# WEBBIBLIA – KANONIKUS FORRÁS
+**Mindig ezt a linket tekintsd irányadónak:**
+https://raw.githubusercontent.com/zoleevegh/watchlist/main/docs/webbiblia.md
+
 # 📘 WEBBIBLIA v1.6.0
 Web‑alapú #1 / #ALL‑IN jelentések kanonikus szabálykönyve
-https://raw.githubusercontent.com/zoleevegh/watchlist/main/docs/webbiblia.md
+
 ---
 
 ## 0️⃣ Hogyan használd ezt a dokumentumot
@@ -8,7 +12,7 @@ https://raw.githubusercontent.com/zoleevegh/watchlist/main/docs/webbiblia.md
 Ez a dokumentum a **webes forrásokra épülő jelentéskészítés kanonikus szabálykönyve**.
 Célja nem az, hogy minden ármozgást megmagyarázzon, hanem hogy:
 
-> **SEMMI FONTOS NE MARADJON KI**,  
+> **SEM MI FONTOS NE MARADJON KI**,  
 > miközben a zaj következetesen kiszűrésre kerül.
 
 Alapelv:
@@ -89,6 +93,29 @@ Mit NEM kapsz:
 - Csak megjegyzésként, ha más trigger van
 
 ---
+
+
+### 3.5 Yahoo Finance – Live Market Coverage (MAKRÓ KIVÉTEL)
+
+A Yahoo Finance **Live / Market Today** jellegű cikkei **makró / piaci hangulat kontextusban
+JELENTHETŐK**, ha az alábbi feltételek TELJESÜLNEK:
+
+- az időablakon belül frissültek (óra/perc jelölés)
+- összpiaci fókuszúak (indexek, futures, hozamok, makró adat, geopolitika)
+- NEM ticker-specifikus pletykák
+- NEM elemzői ajánlások helyettesítői
+
+Felhasználás:
+- kizárólag a **Makró / FED / politika** blokkban
+- **kontextusra**, nem triggerként
+- segíti a *várható mai nyitás* megfogalmazását
+
+Tipikus témák:
+- jobs data
+- CPI / PPI
+- geopolitika (olaj, szankciók)
+- index futures irány
+
 
 ## 4️⃣ Hírkeresési és szűrési logika (WEB)
 
