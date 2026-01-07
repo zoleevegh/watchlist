@@ -1,224 +1,195 @@
-# 📘 WEBBIBLIA.md
-## Webes hír- és kontextus-lekérdezési szabálykönyv (KANONIKUS)
-*(AH/PM PRICE ENGINE script mellett, manuális / on-demand riportokhoz)*
-
-**Verzió:** v1.2.0  
-**Érvényes:** azonnal  
-**Megjegyzés:** ez a dokumentum a WEBES lekérdezések kanonikus szabálykönyve.
+# 📘 WEBBIBLIA v1.6.0
+Web‑alapú #1 / #ALL‑IN jelentések kanonikus szabálykönyve
 
 ---
 
-## 0️⃣ Alapfilozófia (nem alkuképes)
+## 0️⃣ Hogyan használd ezt a dokumentumot
 
-A webbiblia célja **nem a hírfogyasztás**, hanem a **szűrt, időfegyelmezett döntéstámogatás**.
+Ez a dokumentum a **webes forrásokra épülő jelentéskészítés kanonikus szabálykönyve**.
+Célja nem az, hogy minden ármozgást megmagyarázzon, hanem hogy:
 
-- ❌ nincs szellemhír  
-- ❌ nincs beragadt (2–3 napos) adat  
-- ❌ nincs találgatás  
-- ❌ nincs „hátha érdekes” zaj  
+> **SEM MI FONTOS NE MARADJON KI**,  
+> miközben a zaj következetesen kiszűrésre kerül.
 
-- ✅ időablak-fegyelem  
-- ✅ forrás-hierarchia  
-- ✅ ellenőrzött kontextus  
-- ✅ döntést segítő összkép  
-
-> **Ami az adott időablakon kívül van → nem létezik.**
+Alapelv:
+- Script ≠ Web
+- Ármozgás ≠ Trigger
+- Kontextus **csak trigger után**
+- „Nincs hír” is lehet **érvényes állapot**
 
 ---
 
-## 1️⃣ Riporttípusok
+## 1️⃣ #1 ALL‑IN – KÖTELEZŐ MINI‑CHECKLIST (GATE)
 
-### `#1` — After-hours + Premarket
-- Ár: **PRICE ENGINE script**
-- Hírek és kontextus: **web**
-- Cél: *mi történt zárás után / nyitás előtt, és milyen hangulatba nyitunk bele*
+Ez a **kapu**. Ha ez nincs végigpipálva, **NINCS #ALL‑IN jelentés**.
 
-### `#1 all-in`
-- A teljes kanonikus struktúra
-- Üres blokkok **megmaradnak** (ellenőrzés bizonyítása)
-
-### `#2`
-- Előző kereskedési nap (Open → Close)
-- ≥±3% mozgások **okkal**
-
-### `#3`
-- Mai Open → Most
-- ≥±3% mozgások **friss katalizátorral**
+1. Időintervallum helyesen meghatározva  
+2. Utolsó tényleges zárás azonosítva (hétfő / ünnep kezelve)  
+3. Ármozgás és trigger szétválasztva  
+4. Elemzői lépések teljes körűen ellenőrizve  
+5. **Yahoo Finance analyst overlay külön ellenőrizve**  
+6. Reuters adat vs Reuters hír különválasztva  
+7. 7 napon belüli earnings ellenőrizve  
+8. Kontextus csak trigger után  
+9. Zajszűrés lefuttatva  
+10. Tudunk válaszolni: *„miért maradt ki?”*
 
 ---
 
-## 2️⃣ Időintervallum-szabályok (KRITIKUS)
+## 2️⃣ Jelentéstípusok és időablakok
 
-### Aranyszabály
-**Minden hírnél ellenőrizni kell a publikálási időt.**
-Ha nem esik bele az adott riport időablakába → **kizárás**.
+### #1 – After‑hours + Premarket
+- **Script (PRICE ENGINE):**
+  - AH: előző kereskedési nap 22:00–02:00 CET
+  - PM: 10:00–15:30 CET
+- **Webes lekérdezés:**
+  - **előző tényleges zárástól a lekérdezés pillanatáig**
+  - hétfőn: péntek 22:00 CET‑től
+  - ünnep esetén: utolsó nyitva tartó nap zárásától
 
-### Időablakok
-- `#1`: utolsó tényleges piaczárás → lekérdezés pillanata  
-- `#2`: adott nap Open → Close  
-- `#3`: mai Open → Most  
+Mit kapsz:
+- Mi történt zárás után / nyitás előtt
+- Mire reagál a piac
+- Várható hatás a nyitáskor
 
----
+Mit NEM kapsz:
+- intraday max/min
+- open→now
+- zaj
 
-## 3️⃣ Forrás-hierarchia (mi számít igaznak)
+### #2 – Open → Close  
+### #3 – Open → Now  
 
-1. SEC EDGAR (8-K, 6-K, 10-Q, 10-K)  
-2. Company IR / Newsroom  
-3. Reuters / AP  
-4. Bloomberg / Dow Jones / The Fly  
-5. MarketBeat (elemzői lépések – kanonikus)  
-6. Yahoo Finance (aggregált, kontextus-jellegű)  
-7. StreetInsider  
-8. TipRanks (csak ellenőrzésre)
-
----
-
-## 4️⃣ Szellemhír-tilalom (ZERO TOLERANCE)
-
-Kizárva:
-- időablakon kívüli publikáció  
-- régi earnings újramelegítése  
-- „korábban azt mondta” típusú visszautalás  
-- aggregátor által újracímkézett régi sztori  
-
-Ha nem friss → **nem kerül be**.
+(A szabályok megegyeznek, az időablak különbözik.)
 
 ---
 
-## 5️⃣ Elemzői lépések — kötelező forma
+## 3️⃣ Forrás‑hierarchia (KANONIKUS)
 
-Elemzői lépés **csak akkor jelenhet meg**, ha:
-- időablakon belüli  
-- egyértelmű **from → to** van  
+### 3.1 Hivatalos cégforrások
+- SEC: 8‑K, 6‑K, 10‑Q, 10‑K
+- IR / Newsroom
+- PR Newswire, Business Wire
 
-Példák:
-- Buy → Hold  
-- PT: 155 $ → 180 $  
+### 3.2 Gyors wire
+- **Reuters (elsődleges)**
+- AP (megerősítés)
+- Bloomberg / Dow Jones / The Fly (ha elérhető)
 
-Aggregátor (Yahoo) **nem** kanonikus elemzőforrás.
+### 3.3 Elemzői források
+- **MarketBeat (kanonikus)**
+- **Yahoo Finance – FAST TRIGGER (kivételszabály)**
+- StreetInsider / The Fly (kiegészítés)
+- TipRanks (ellenőrzés)
 
----
-
-## 6️⃣ Makró / piaci hangulat blokk (LAZÍTOTT, DE SZABÁLYOZOTT)
-
-### A) Friss makró / FED / politikai hír
-- csak ha időablakos  
-- csak ha tényleges piaci hatása van  
-
-### B) Általános piaci hangulat (előző kereskedési nap)
-Megengedett:
-- indexek iránya  
-- hozamok iránya  
-- USD / olaj / BTC irány  
-- risk-on / risk-off érzet  
-
-### C) Várható mai nyitás
-- futures / overnight irány  
-- indikáció, nem jóslat  
+### 3.4 IBKR FYI helye
+- Lagging indicator
+- Konszenzus‑eloszlás változás
+- **Önmagában nem jelenthető**
+- Csak megjegyzésként, ha más trigger van
 
 ---
 
-## 7️⃣ Kontextus-jellegű hírek (Yahoo Finance)
+## 4️⃣ Hírkeresési és szűrési logika (WEB)
 
-### Mikor használható?
-- ha nincs egyetlen kanonikus headline  
-- de a piac érthetően áraz (szektor / hozam / sentiment)  
-- publikáció időablakon belüli  
+### 4.1 Kötelező szűrők
+- Publikációs idő az intervallumban
+- Hiteles forrás
+- Duplikáció kizárása
+- **3 napos „beragadt” hír kizárása**
 
-### Hogyan jelenik meg?
-Yahoo **soha nem tényként**, hanem **kontektsusként**.
+### 4.2 Kulcsszó / parancslogika
+- upgrade / downgrade
+- cuts target / raises target
+- guidance / outlook
+- SEC formák
+- earnings miss / beat
 
----
+### 4.3 Szellem hír definíció
+- nincs új információ
+- nincs időbeli relevancia
+- nincs piaci hatás
 
-## 8️⃣ Hírkeresési szűrők (RÉSZLETES)
-
-Minden tickerre az alábbi szűrőlánc fut le:
-
-1. **Időszűrő** – publikáció ideje ∈ időablak?  
-2. **Típus-szűrő** – filing / IR / analyst / makró / kontextus  
-3. **Relevancia-szűrő** – ármozgással összeegyeztethető?  
-4. **Forrás-szűrő** – kanonikus vagy kiegészítő?  
-5. **Duplikáció-szűrő** – szerepelt már korábban?  
-
----
-
-## 9️⃣ Közelgő katalizátorok
-
-- earnings  
-- regulatory döntés  
-- event / known deal close  
-
-Ha nincs → **explicit „nincs”** (ellenőrizve).
+→ **nem jelentjük**
 
 ---
 
-## 🔟 Listán kívüli high-conviction
+## 5️⃣ #ALL‑IN JELENTÉS – KANONIKUS FELÉPÍTÉS (OUTPUT)
 
-### 1–3 hónap
-- konkrét katalizátor  
-- ≥2 megerősítő jelzés  
-
-### 3–6 hónap
-- strukturális sztori  
-- elemzői konvergencia  
-
-Soha nem lehet listás vagy portfóliós ticker.
-
----
-
-## 1️⃣1️⃣ PARANCSNYELV (ÚJ – KÖTELEZŐ)
-
-A webes riportok **parancsszavakkal vezérelhetők**.
-
-### Alap parancsok
-- `#1`  
-- `#1 all-in`  
-- `#2`  
-- `#3`
-
-### Szűrők (kombinálhatók)
-- `pozíciók-only`
-- `watchlist-only`
-- `≥3%`
-- `news-only`
-- `analyst-only`
-- `no-noise`
-- `hide-empty`
-
-### Elemzői finomítás
-- `rating-change-only`
-- `pt-change-only`
-- `pt-delta≥10%`
-
-### Katalizátor fókusz
-- `+catalysts`
-
-### Példák
-- `#1 all-in`
-- `#1 pozíciók-only no-noise`
-- `#3 ≥3% news-only`
-- `#2 analyst-only pt-delta≥10%`
+1. Lefedettség‑ellenőrzés  
+2. Makró / FED / politika  
+   - éles makróhír (ha van)
+   - előző napi piaci hangulat
+   - várható nyitási irány
+3. Ármozgások (PRICE ENGINE)  
+4. 🔴 Elemzői lépések & filingek (**ELSŐDLEGES TRIGGEREK**)  
+5. Kontextus / szektor (kiegészítés)  
+6. **Közelgő katalizátorok**  
+7. Listán kívüli high‑conviction  
+   - 1–3 hónap  
+   - 3–6 hónap  
+8. Összkép / narratíva  
 
 ---
 
-## 1️⃣2️⃣ `#1 all-in` jelentése
+## 6️⃣ Közelgő katalizátorok (OUTPUT)
 
-Teljes struktúra, üres blokkokkal.
-Ez **ellenőrzési bizonyíték**, nem zaj.
+Ha releváns ticker van:
+
+- Earnings dátum (EST + CET)
+- Konszenzus várakozás (EPS / Revenue)
+- Elemzői elvárás (ha van)
+- **Várható hatás**
+  - ↑ pozitív
+  - ↓ negatív
+  - vegyes
+  - bináris
+- 1 mondatos értelmezés
+
+Ha nincs:
+> „Ellenőrizve, 7 napon belül nincs releváns earnings.”
 
 ---
 
-## 1️⃣3️⃣ Amit soha nem kapsz
+## 7️⃣ Közelgő katalizátorok – SZABÁLYRENDSZER (RULES)
 
-- intraday max/min  
-- open→most a #1-ben  
-- pletyka önmagában  
-- régi hír „háttérként”  
+- Earnings katalizátor = 7 napon belüli jelentés
+- Forrás: Yahoo, IR oldal, Reuters earnings calendar
+- Kötelező, ha:
+  - nagy pozíció
+  - magas implied move
+- Tilos, ha:
+  - dátum bizonytalan
+  - nem releváns ticker
+- AH vs PM earnings külön jelölendő
 
 ---
 
-## 1️⃣4️⃣ Meta-szabály (zárás)
+## 8️⃣ Mit NEM jelentünk
 
-> A webbiblia **szűrő**, nem hírolvasó.  
-> Ami benne van → friss, ellenőrzött, időablakos.  
-> Ami nincs benne → szándékosan hiányzik.
+- IBKR FYI önmagában
+- Konszenzus‑statisztika trigger nélkül
+- Kontextus esemény nélkül
+- Ármagyarázat hír nélkül (kivéve jelölve)
+
+---
+
+## 9️⃣ Edge case‑ek
+
+- Reuters adat van, hír nincs
+- Yahoo hoz le, más nem
+- Elemzői lépés árreakció nélkül
+- Árreakció hír nélkül
+
+Mindig dokumentálni kell a **miértet**.
+
+---
+
+## 🔚 Záróelv
+
+> **Nem az a cél, hogy minden mozgást megmagyarázzunk,  
+hanem hogy semmi lényeges ne maradjon ki – és semmi zaj ne keveredjen be.**
+
+---
+
+Verzió: **v1.6.0 – KANONIKUS REBUILD**
