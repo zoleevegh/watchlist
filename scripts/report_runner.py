@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# report_runner.py — v4.5.1-price-engine-ah-meta-sanity-2026-01-07
+# report_runner.py — v4.5.2-price-engine-lastclose-anchor-2026-01-07
 #
 # FIX / CÉL:
 # - Stabil #1 riport: AH elöl, PM utána, külön blokkban: Pozíciók (Darabszam>0), majd Watchlist.
@@ -25,11 +25,17 @@ import datetime
 from typing import Optional, Tuple, List, Dict, Any
 
 
-def _budapest_windows(now_epoch: int):
+def _budapest_windows(now_epoch: int, last_regular_market_time: int | None = None):
     """Return fixed report windows in UTC epoch seconds for Europe/Budapest.
-    #1 spec:
-      AH: prev day 22:00 -> today 02:00 (local)
-      PM: today 10:00 -> today 15:30 (local)
+
+    Anchor logic:
+      - Use the *last regular market time* (epoch) from Yahoo meta when available.
+        This makes Monday morning (or holiday) runs anchor to the last real close (e.g. Friday),
+        instead of using calendar 'yesterday'.
+
+    #1 spec (local):
+      AH: last close day 22:00 -> next day 02:00
+      PM: today 10:00 -> today 15:30 (only if already started)
     """
     try:
         from zoneinfo import ZoneInfo  # py3.9+
@@ -40,20 +46,29 @@ def _budapest_windows(now_epoch: int):
     now_utc = datetime.datetime.fromtimestamp(now_epoch, tz=datetime.timezone.utc)
     now_local = now_utc.astimezone(tz)
 
-    # "today" in local terms
-    d = now_local.date()
+    # Determine "close day" in local terms
+    close_day = None
+    if last_regular_market_time is not None:
+        try:
+            close_local = datetime.datetime.fromtimestamp(int(last_regular_market_time), tz=datetime.timezone.utc).astimezone(tz)
+            close_day = close_local.date()
+        except Exception:
+            close_day = None
+    if close_day is None:
+        close_day = (now_local.date() - datetime.timedelta(days=1))  # fallback
+
+    today = now_local.date()
 
     def loc_dt(day, hh, mm):
         return datetime.datetime(day.year, day.month, day.day, hh, mm, tzinfo=tz)
 
-    # AH spans midnight: yesterday 22:00 -> today 02:00 (local)
-    y = d - datetime.timedelta(days=1)
-    ah_start_local = loc_dt(y, 22, 0)
-    ah_end_local   = loc_dt(d, 2, 0)
+    # AH: close_day 22:00 -> next day 02:00 (local)
+    ah_start_local = loc_dt(close_day, 22, 0)
+    ah_end_local   = loc_dt(close_day + datetime.timedelta(days=1), 2, 0)
 
     # PM: today 10:00 -> 15:30 (local)
-    pm_start_local = loc_dt(d, 10, 0)
-    pm_end_local   = loc_dt(d, 15, 30)
+    pm_start_local = loc_dt(today, 10, 0)
+    pm_end_local   = loc_dt(today, 15, 30)
 
     # Convert to UTC epoch seconds
     ah_start = int(ah_start_local.astimezone(datetime.timezone.utc).timestamp())
@@ -61,9 +76,9 @@ def _budapest_windows(now_epoch: int):
     pm_start = int(pm_start_local.astimezone(datetime.timezone.utc).timestamp())
     pm_end   = int(pm_end_local.astimezone(datetime.timezone.utc).timestamp())
 
-    return (pm_start, pm_end, ah_start, ah_end, now_local.isoformat())
+    return (pm_start, pm_end, ah_start, ah_end, now_local.isoformat(), close_day.isoformat())
 
-VERSION = "v4.5.1-price-engine-ah-meta-sanity-2026-01-07"
+VERSION = "v4.5.2-price-engine-lastclose-anchor-2026-01-07"
 
 
 def pct(a, b):
@@ -232,7 +247,9 @@ def chart_prices(t: str, now_epoch: int) -> Tuple[Optional[float], Optional[floa
         "base_prev": prev,
     }
     # --- Fixed windows (Europe/Budapest) ---
-    pm_start, pm_end, ah_start, ah_end, now_local_iso = _budapest_windows(now_epoch)
+    last_rmt = meta.get("regularMarketTime")
+    pm_start, pm_end, ah_start, ah_end, now_local_iso, close_day_iso = _budapest_windows(now_epoch, last_rmt)
+    debug["close_day_local"] = close_day_iso
     debug["now_local"] = now_local_iso
     debug["pre_start"] = pm_start
     debug["pre_end"] = pm_end
