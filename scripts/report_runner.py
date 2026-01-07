@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# report_runner.py — v4.4.7-price-engine-master-url-2026-01-06
+# report_runner.py — v4.4.8-price-engine-fixed-windows-2026-01-07
 #
 # FIX / CÉL:
 # - Stabil #1 riport: AH elöl, PM utána, külön blokkban: Pozíciók (Darabszam>0), majd Watchlist.
@@ -23,7 +23,46 @@ import urllib.request
 import time
 from typing import Optional, Tuple, List, Dict, Any
 
-VERSION = "v4.4.7-price-engine-master-url-2026-01-06"
+
+def _budapest_windows(now_epoch: int):
+    """Return fixed report windows in UTC epoch seconds for Europe/Budapest.
+    #1 spec:
+      AH: prev day 22:00 -> today 02:00 (local)
+      PM: today 10:00 -> today 15:30 (local)
+    """
+    try:
+        from zoneinfo import ZoneInfo  # py3.9+
+        tz = ZoneInfo("Europe/Budapest")
+    except Exception:
+        tz = datetime.timezone(datetime.timedelta(hours=1))  # fallback (winter CET)
+
+    now_utc = datetime.datetime.fromtimestamp(now_epoch, tz=datetime.timezone.utc)
+    now_local = now_utc.astimezone(tz)
+
+    # "today" in local terms
+    d = now_local.date()
+
+    def loc_dt(day, hh, mm):
+        return datetime.datetime(day.year, day.month, day.day, hh, mm, tzinfo=tz)
+
+    # AH spans midnight: yesterday 22:00 -> today 02:00 (local)
+    y = d - datetime.timedelta(days=1)
+    ah_start_local = loc_dt(y, 22, 0)
+    ah_end_local   = loc_dt(d, 2, 0)
+
+    # PM: today 10:00 -> 15:30 (local)
+    pm_start_local = loc_dt(d, 10, 0)
+    pm_end_local   = loc_dt(d, 15, 30)
+
+    # Convert to UTC epoch seconds
+    ah_start = int(ah_start_local.astimezone(datetime.timezone.utc).timestamp())
+    ah_end   = int(ah_end_local.astimezone(datetime.timezone.utc).timestamp())
+    pm_start = int(pm_start_local.astimezone(datetime.timezone.utc).timestamp())
+    pm_end   = int(pm_end_local.astimezone(datetime.timezone.utc).timestamp())
+
+    return (pm_start, pm_end, ah_start, ah_end, now_local.isoformat())
+
+VERSION = "v4.4.8-price-engine-fixed-windows-2026-01-07"
 
 
 def pct(a, b):
@@ -173,57 +212,37 @@ def chart_prices(t: str, now_epoch: int) -> Tuple[Optional[float], Optional[floa
         "pre_source": None, "post_source": None,
         "base_prev": prev,
     }
+    # --- Fixed windows (Europe/Budapest) ---
+    pm_start, pm_end, ah_start, ah_end, now_local_iso = _budapest_windows(now_epoch)
+    debug["now_local"] = now_local_iso
+    debug["pre_start"] = pm_start
+    debug["pre_end"] = pm_end
+    debug["post_start"] = ah_start
+    debug["post_end"] = ah_end
 
-    # --- PM (csak ha MOST pre ablakban vagyunk) ---
-    pre = meta.get("preMarketPrice")
-    if pre is not None and pre_start is not None and pre_end is not None and (pre_start <= now_epoch <= pre_end):
-        debug["pre_source"] = "meta"
+    # PM: take last close inside PM window if available; if window is in the future -> n/a
+    if now_epoch < pm_start:
+        pre = None
+        debug["pre_source"] = "future_window"
     else:
-        if pre_start is None or pre_end is None:
-            pre = None
-            debug["pre_source"] = "tp_missing"
-        elif not (pre_start <= now_epoch <= pre_end):
-            pre = None
-            debug["pre_source"] = "gated_outside_window"
+        inf = _last_close_in_window(ts, closes, pm_start, pm_end) if (ts and closes) else None
+        if inf is not None:
+            pre = inf
+            debug["pre_source"] = "infer_fixed"
         else:
-            inf = _last_close_in_window(ts, closes, pre_start, pre_end) if (ts and closes) else None
-            if inf is not None:
-                pre = inf
-                debug["pre_source"] = "infer"
-            else:
-                pre = None
-                debug["pre_source"] = "infer_none"
+            pre = None
+            debug["pre_source"] = "none_fixed"
 
-    # --- AH (carryforward premarketben is) ---
-    post = meta.get("postMarketPrice")
-    if post is not None:
-        debug["post_source"] = "meta"
+    # AH: always compute yesterday 22:00 -> today 02:00 (local)
+    inf = _last_close_in_window(ts, closes, ah_start, ah_end) if (ts and closes) else None
+    if inf is not None:
+        post = inf
+        debug["post_source"] = "infer_fixed"
     else:
-        # ha MOST post ablakban vagyunk, infer
-        if post_start is None or post_end is None:
-            post = None
-            debug["post_source"] = "tp_missing"
-        elif post_start <= now_epoch <= post_end:
-            inf = _last_close_in_window(ts, closes, post_start, post_end) if (ts and closes) else None
-            if inf is not None:
-                post = inf
-                debug["post_source"] = "infer"
-            else:
-                post = None
-                debug["post_source"] = "infer_none"
-        else:
-            # premarketben/regularben is: próbáljuk a tegnapi post ablak legutolsó close-ját (carryforward)
-            inf = _last_close_in_window(ts, closes, post_start, post_end) if (ts and closes and post_start and post_end) else None
-            if inf is not None:
-                post = inf
-                debug["post_source"] = "carry_infer"
-            else:
-                post = None
-                debug["post_source"] = "carry_none"
+        post = None
+        debug["post_source"] = "none_fixed"
 
     return _to_float(prev), _to_float(pre), _to_float(post), debug
-
-
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--master", default="reports/master.csv")
