@@ -24,7 +24,13 @@ import time
 import datetime
 
 def write_header(f, interval_start: str, interval_end: str):
-    run_time = datetime.datetime.now().strftime("%H:%M")
+    try:
+        from zoneinfo import ZoneInfo
+        _tz = ZoneInfo("Europe/Budapest")
+        run_time = datetime.datetime.now(_tz).strftime("%H:%M")
+    except Exception:
+        # Fallback: assume runner uses UTC; add 1h for CET (best effort)
+        run_time = (datetime.datetime.utcnow() + datetime.timedelta(hours=1)).strftime("%H:%M")
     header = (
         "# #1 — Premarket check (PRICE ENGINE)\n\n"
         f"Verzió: {VERSION} | Futás ideje: {run_time}\n"
@@ -33,7 +39,13 @@ def write_header(f, interval_start: str, interval_end: str):
     f.write(header)
 
 def write_header(f, interval_start, interval_end):
-    run_time = datetime.datetime.now().strftime("%H:%M")
+    try:
+        from zoneinfo import ZoneInfo
+        _tz = ZoneInfo("Europe/Budapest")
+        run_time = datetime.datetime.now(_tz).strftime("%H:%M")
+    except Exception:
+        # Fallback: assume runner uses UTC; add 1h for CET (best effort)
+        run_time = (datetime.datetime.utcnow() + datetime.timedelta(hours=1)).strftime("%H:%M")
     header = (
         "# #1 – Premarket check (PRICE ENGINE)\n\n"
         f"Verzió: v4.5.4-price-engine-header-interval-fix-2026-01-07 | Futás ideje: {run_time}\n"
@@ -96,7 +108,7 @@ def _budapest_windows(now_epoch: int, last_regular_market_time: int | None = Non
 
     return (pm_start, pm_end, ah_start, ah_end, now_local.isoformat(), close_day.isoformat())
 
-VERSION = "v4.5.7-price-engine-header-interval-global-argsfix-2026-01-07"
+VERSION = "v4.5.8-price-engine-header-localtime-2026-01-07"
 
 
 def pct(a, b):
