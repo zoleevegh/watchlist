@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# report_runner.py — v4.5.5-price-engine-header-interval-2026-01-07
+# report_runner.py — v4.5.4-price-engine-header-interval-fix-2026-01-07
 #
 # FIX / CÉL:
 # - Stabil #1 riport: AH elöl, PM utána, külön blokkban: Pozíciók (Darabszam>0), majd Watchlist.
@@ -23,24 +23,14 @@ import urllib.request
 import time
 import datetime
 
-def _fmt_local_hhmm(iso_local: str) -> str:
-    """Return 'YYYY-MM-DD HH:MM' from an ISO local datetime string (may include offset)."""
-    try:
-        dt = datetime.datetime.fromisoformat(iso_local)
-        return dt.strftime("%Y-%m-%d %H:%M")
-    except Exception:
-        # fallback: trim to minutes
-        return iso_local.replace("T", " ")[:16]
-
-def write_header(f, runner_version: str, interval_start: str, interval_end: str):
+def write_header(f, interval_start, interval_end):
     run_time = datetime.datetime.now().strftime("%H:%M")
     header = (
-        "# #1 — Premarket check (PRICE ENGINE)\n\n"
-        f"Verzió: {runner_version} | Futás ideje: {run_time}\n"
+        "# #1 – Premarket check (PRICE ENGINE)\n\n"
+        f"Verzió: v4.5.4-price-engine-header-interval-fix-2026-01-07 | Futás ideje: {run_time}\n"
         f"Időintervallum (ellenőrzés): {interval_start} – {interval_end}\n\n"
     )
     f.write(header)
-
 from typing import Optional, Tuple, List, Dict, Any
 
 
@@ -97,7 +87,7 @@ def _budapest_windows(now_epoch: int, last_regular_market_time: int | None = Non
 
     return (pm_start, pm_end, ah_start, ah_end, now_local.isoformat(), close_day.isoformat())
 
-VERSION = "v4.5.5-price-engine-header-interval-2026-01-07"
+VERSION = "v4.5.6-price-engine-header-interval-global-2026-01-07"
 
 
 def pct(a, b):
@@ -399,10 +389,33 @@ def main() -> int:
     # Determine if we have any data at all
     any_data = any((ah is not None or pm is not None) for _, ah, pm in (out_rows_pos + out_rows_wl))
 
+    # ---- Header interval (global) ----
+    # Anchor the displayed interval to the last real US close using a liquid proxy (SPY),
+    # so Monday mornings / holidays are correct.
+    interval_start = None
+    interval_end = None
+    try:
+        _p, _pre, _post, _dbg = chart_prices("SPY", now_epoch)
+        now_iso = _dbg.get("now_local_iso") or _dbg.get("now_local") or _dbg.get("now_local_isoformat")
+        close_day = _dbg.get("close_day_local") or _dbg.get("close_day")
+        if now_iso and close_day:
+            interval_start = f"{close_day} 22:00"
+            hhmm = now_iso.split("T")[1][:5] if "T" in now_iso else now_iso[11:16]
+            interval_end = f"{now_iso[:10]} {hhmm}"
+    except Exception:
+        pass
+
+    if interval_start is None or interval_end is None:
+        try:
+            from zoneinfo import ZoneInfo
+            tz = ZoneInfo("Europe/Budapest")
+        except Exception:
+            tz = datetime.timezone(datetime.timedelta(hours=1))
+        _now_local = datetime.datetime.fromtimestamp(now_epoch, tz=datetime.timezone.utc).astimezone(tz)
+        interval_end = _now_local.strftime("%Y-%m-%d %H:%M")
+        interval_start = (_now_local.date() - datetime.timedelta(days=1)).strftime("%Y-%m-%d") + " 22:00"
+
     with open(args.out, "w", encoding="utf-8", newline="\n") as f:
-        # Compute interval strings for audit header (web logic uses last close -> now; script window anchored to last close day)
-        interval_start = interval_start or f"{close_day_iso} 22:00"
-        interval_end = interval_end or _fmt_local_hhmm(now_local_iso)
         write_header(f, VERSION, interval_start, interval_end)
 
         f.write("## Pozíciók\n\n")
