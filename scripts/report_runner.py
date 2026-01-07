@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# report_runner.py — v4.4.8-price-engine-fixed-windows-2026-01-07
+# report_runner.py — v4.4.9-price-engine-fixed-datetime-2026-01-07
 #
 # FIX / CÉL:
 # - Stabil #1 riport: AH elöl, PM utána, külön blokkban: Pozíciók (Darabszam>0), majd Watchlist.
@@ -21,6 +21,7 @@ import traceback
 import argparse
 import urllib.request
 import time
+import datetime
 from typing import Optional, Tuple, List, Dict, Any
 
 
@@ -62,7 +63,7 @@ def _budapest_windows(now_epoch: int):
 
     return (pm_start, pm_end, ah_start, ah_end, now_local.isoformat())
 
-VERSION = "v4.4.8-price-engine-fixed-windows-2026-01-07"
+VERSION = "v4.4.9-price-engine-fixed-datetime-2026-01-07"
 
 
 def pct(a, b):
@@ -276,9 +277,9 @@ def main() -> int:
         ps = dbg.get("pre_source")
         if ps == "meta":
             dbg_counts["pre_meta"] += 1
-        elif ps == "infer":
+        elif ps in ("infer", "infer_fixed"):
             dbg_counts["pre_infer"] += 1
-        elif ps == "gated_outside_window":
+        elif ps in ("gated_outside_window", "future_window"):
             dbg_counts["pre_gated"] += 1
         else:
             dbg_counts["pre_none"] += 1
@@ -286,7 +287,7 @@ def main() -> int:
         qs = dbg.get("post_source")
         if qs == "meta":
             dbg_counts["post_meta"] += 1
-        elif qs == "infer":
+        elif qs in ("infer", "infer_fixed"):
             dbg_counts["post_infer"] += 1
         elif qs == "carry_infer":
             dbg_counts["post_carry"] += 1
