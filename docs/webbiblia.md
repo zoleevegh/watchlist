@@ -8,7 +8,7 @@ Web‑alapú #1 / #ALL‑IN jelentések kanonikus szabálykönyve
 Ez a dokumentum a **webes forrásokra épülő jelentéskészítés kanonikus szabálykönyve**.
 Célja nem az, hogy minden ármozgást megmagyarázzon, hanem hogy:
 
-> **SEM MI FONTOS NE MARADJON KI**,  
+> **SEMMI FONTOS NE MARADJON KI**,  
 > miközben a zaj következetesen kiszűrésre kerül.
 
 Alapelv:
