@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# report_runner.py — v4.4.9-price-engine-fixed-datetime-2026-01-07
+# report_runner.py — v4.5.1-price-engine-ah-meta-sanity-2026-01-07
 #
 # FIX / CÉL:
 # - Stabil #1 riport: AH elöl, PM utána, külön blokkban: Pozíciók (Darabszam>0), majd Watchlist.
@@ -63,7 +63,7 @@ def _budapest_windows(now_epoch: int):
 
     return (pm_start, pm_end, ah_start, ah_end, now_local.isoformat())
 
-VERSION = "v4.4.9-price-engine-fixed-datetime-2026-01-07"
+VERSION = "v4.5.1-price-engine-ah-meta-sanity-2026-01-07"
 
 
 def pct(a, b):
@@ -189,7 +189,25 @@ def chart_prices(t: str, now_epoch: int) -> Tuple[Optional[float], Optional[floa
     res0 = res[0]
     meta = res0.get("meta", {}) or {}
 
-    prev = meta.get("previousClose") or meta.get("regularMarketPreviousClose")
+    # Meta extended-hours fields (more stable than sparse extended-hours candles)
+    post_meta_price = meta.get("postMarketPrice")
+    post_meta_time = meta.get("postMarketTime")
+    if post_meta_price is not None and post_meta_time is not None:
+        try:
+            post_meta_time = int(post_meta_time)
+            post_meta_price = float(post_meta_price)
+            debug["post_meta_time"] = post_meta_time
+            debug["post_meta_price"] = post_meta_price
+        except Exception:
+            post_meta_time = None
+            post_meta_price = None
+    else:
+        post_meta_time = None
+        post_meta_price = None
+
+
+    # Base close for AH/PM %: prefer regularMarketPrice when market is closed; fallback to previousClose.
+    prev = meta.get("regularMarketPrice") or meta.get("previousClose") or meta.get("regularMarketPreviousClose")
 
     wpre = _tp(meta, "pre")
     wpost = _tp(meta, "post")
@@ -234,7 +252,7 @@ def chart_prices(t: str, now_epoch: int) -> Tuple[Optional[float], Optional[floa
             pre = None
             debug["pre_source"] = "none_fixed"
 
-    # AH: always compute yesterday 22:00 -> today 02:00 (local)
+    # AH: compute previous session after-hours window (local); prefer meta.postMarketPrice if it belongs to this window.
     inf = _last_close_in_window(ts, closes, ah_start, ah_end) if (ts and closes) else None
     if inf is not None:
         post = inf
@@ -242,6 +260,21 @@ def chart_prices(t: str, now_epoch: int) -> Tuple[Optional[float], Optional[floa
     else:
         post = None
         debug["post_source"] = "none_fixed"
+
+    # Override with meta postMarketPrice when it belongs to this AH window
+    if post_meta_time is not None and post_meta_price is not None and (ah_start <= post_meta_time <= ah_end):
+        post = post_meta_price
+        debug["post_source"] = "meta_postMarketPrice"
+
+    # Sanity filter for inferred AH: if absurd move, drop to avoid noisy spikes
+    try:
+        if debug.get("post_source") == "infer_fixed" and prev not in (None, 0) and post is not None:
+            test_ah = (float(post) / float(prev) - 1.0) * 100.0
+            if abs(test_ah) > 25.0:
+                debug["post_source"] = "suspect_infer"
+                post = None
+    except Exception:
+        pass
 
     return _to_float(prev), _to_float(pre), _to_float(post), debug
 def main() -> int:
