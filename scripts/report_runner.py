@@ -23,20 +23,6 @@ import urllib.request
 import time
 import datetime
 
-def write_header(f, interval_start: str, interval_end: str):
-    try:
-        from zoneinfo import ZoneInfo
-        _tz = ZoneInfo("Europe/Budapest")
-        run_time = datetime.datetime.now(_tz).strftime("%H:%M")
-    except Exception:
-        # Fallback: assume runner uses UTC; add 1h for CET (best effort)
-        run_time = (datetime.datetime.utcnow() + datetime.timedelta(hours=1)).strftime("%H:%M")
-    header = (
-        "# #1 — Premarket check (PRICE ENGINE)\n\n"
-        f"Verzió: {VERSION} | Futás ideje: {run_time}\n"
-        f"Időintervallum (ellenőrzés): {interval_start} – {interval_end}\n\n"
-    )
-    f.write(header)
 
 def write_header(f, interval_start, interval_end):
     try:
@@ -108,7 +94,7 @@ def _budapest_windows(now_epoch: int, last_regular_market_time: int | None = Non
 
     return (pm_start, pm_end, ah_start, ah_end, now_local.isoformat(), close_day.isoformat())
 
-VERSION = "v4.5.8-price-engine-header-localtime-2026-01-07"
+VERSION = "v4.5.9-price-engine-earnings7d-yahoo-2026-01-08"
 
 
 def pct(a, b):
@@ -127,6 +113,58 @@ def fmt(x):
 
 
 def http_json(url: str) -> Dict[str, Any]:
+
+
+def http_json_retry(url: str, retries: int = 3, base_sleep: float = 0.6) -> Dict[str, Any]:
+    """HTTP JSON with basic retry/backoff for transient errors (incl. 429/5xx)."""
+    last_err = None
+    for i in range(retries):
+        try:
+            return http_json(url)
+        except Exception as e:
+            last_err = e
+            time.sleep(base_sleep * (2 ** i))
+    raise last_err  # type: ignore
+
+
+def yahoo_earnings_next(ticker: str) -> Tuple[Optional[int], Optional[str]]:
+    """Return next earnings datetime (UTC epoch) from Yahoo quoteSummary calendarEvents."""
+    t = ticker.strip().upper()
+    url = f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{t}?modules=calendarEvents"
+    j = http_json_retry(url, retries=3, base_sleep=0.6)
+    qs = (j.get("quoteSummary") or {}).get("result") or []
+    if not qs:
+        return None, None
+    cal = (qs[0].get("calendarEvents") or {})
+    earnings = (cal.get("earnings") or {})
+    ed = earnings.get("earningsDate")
+    epoch = None
+    if isinstance(ed, list) and ed:
+        raw = ed[0].get("raw") if isinstance(ed[0], dict) else None
+        if raw is not None:
+            try:
+                epoch = int(raw)
+            except Exception:
+                epoch = None
+    call_time = earnings.get("earningsCallTime")
+    call_str = None
+    if isinstance(call_time, dict):
+        call_str = call_time.get("fmt") or call_time.get("raw")
+        if call_str is not None:
+            call_str = str(call_str).upper()
+    return epoch, call_str
+
+
+def fmt_dt_budapest(epoch_utc: int) -> str:
+    """Format UTC epoch into Europe/Budapest local datetime YYYY-MM-DD HH:MM."""
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo("Europe/Budapest")
+    except Exception:
+        tz = datetime.timezone(datetime.timedelta(hours=1))
+    dt = datetime.datetime.fromtimestamp(int(epoch_utc), tz=datetime.timezone.utc).astimezone(tz)
+    return dt.strftime("%Y-%m-%d %H:%M")
+
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     with urllib.request.urlopen(req, timeout=25) as r:
         return json.loads(r.read())
@@ -234,48 +272,7 @@ def chart_prices(t: str, now_epoch: int) -> Tuple[Optional[float], Optional[floa
     res0 = res[0]
     meta = res0.get("meta", {}) or {}
 
-    # Meta extended-hours fields (more stable than sparse extended-hours candles)
-    post_meta_price = meta.get("postMarketPrice")
-    post_meta_time = meta.get("postMarketTime")
-    if post_meta_price is not None and post_meta_time is not None:
-        try:
-            post_meta_time = int(post_meta_time)
-            post_meta_price = float(post_meta_price)
-            debug["post_meta_time"] = post_meta_time
-            debug["post_meta_price"] = post_meta_price
-        except Exception:
-            post_meta_time = None
-            post_meta_price = None
-    else:
-        post_meta_time = None
-        post_meta_price = None
-
-
-    # Base close for AH/PM %: prefer regularMarketPrice when market is closed; fallback to previousClose.
-    prev = meta.get("regularMarketPrice") or meta.get("previousClose") or meta.get("regularMarketPreviousClose")
-
-    wpre = _tp(meta, "pre")
-    wpost = _tp(meta, "post")
-    wreg = _tp(meta, "regular")
-
-    pre_start, pre_end = (wpre if wpre else (None, None))
-    post_start, post_end = (wpost if wpost else (None, None))
-    reg_start, reg_end = (wreg if wreg else (None, None))
-
-    ts = res0.get("timestamp") or []
-    ind = (res0.get("indicators") or {}).get("quote") or []
-    closes = []
-    if ind and isinstance(ind, list) and ind[0].get("close") is not None:
-        closes = ind[0].get("close") or []
-
-    debug = {
-        "now": now_epoch,
-        "pre_start": pre_start, "pre_end": pre_end,
-        "post_start": post_start, "post_end": post_end,
-        "reg_start": reg_start, "reg_end": reg_end,
-        "pre_source": None, "post_source": None,
-        "base_prev": prev,
-    }
+    debug["base_prev"] = prev
     # --- Fixed windows (Europe/Budapest) ---
     last_rmt = meta.get("regularMarketTime")
     pm_start, pm_end, ah_start, ah_end, now_local_iso, close_day_iso = _budapest_windows(now_epoch, last_rmt)
