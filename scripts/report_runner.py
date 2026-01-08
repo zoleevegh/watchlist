@@ -22,7 +22,7 @@ import argparse
 import urllib.request
 import time
 import datetime
-from typing import Any, Dict, Tuple, Optional
+from typing import Any, Dict, Tuple, Optional, List
 
 def write_header(f, interval_start: str, interval_end: str):
     try:
@@ -199,7 +199,7 @@ def _read_text_from_path_or_url(path_or_url: str) -> str:
         return f.read()
 
 
-def load_master_rows(path_or_url: str) -> list[Dict[str, Any]]:
+def load_master_rows(path_or_url: str) -> List[Dict[str, Any]]:
     """
     Elvárt oszlopok (Google Sheets CSV): Ticker, Darabszam, Bekerulesi ar ($/db), Broker, Eladasi ar
     Csak a Ticker kötelező. Darabszam ha >0 -> pozíció.
@@ -250,7 +250,7 @@ def _tp(meta: Dict[str, Any], key: str) -> Optional[Tuple[int, int]]:
     return None
 
 
-def _last_close_in_window(timestamps: list[int], closes: list[Any], start: int, end: int) -> Optional[float]:
+def _last_close_in_window(timestamps: List[int], closes: List[Any], start: int, end: int) -> Optional[float]:
     last = None
     for ts, cl in zip(timestamps, closes):
         if ts is None:
