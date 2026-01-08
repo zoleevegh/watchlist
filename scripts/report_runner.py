@@ -22,6 +22,7 @@ import argparse
 import urllib.request
 import time
 import datetime
+from typing import Any, Dict, Tuple, Optional
 
 def write_header(f, interval_start: str, interval_end: str):
     try:
@@ -94,7 +95,7 @@ def _budapest_windows(now_epoch: int, last_regular_market_time: int | None = Non
 
     return (pm_start, pm_end, ah_start, ah_end, now_local.isoformat(), close_day.isoformat())
 
-VERSION = "v4.6.2-price-engine-earnings7d-yahoo-versionfix-2026-01-08"
+VERSION = "v4.6.3-price-engine-earnings7d-yahoo-typingfix-2026-01-08"
 
 
 def pct(a, b):
