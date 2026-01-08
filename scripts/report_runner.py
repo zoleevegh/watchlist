@@ -23,6 +23,20 @@ import urllib.request
 import time
 import datetime
 
+def write_header(f, interval_start: str, interval_end: str):
+    try:
+        from zoneinfo import ZoneInfo
+        _tz = ZoneInfo("Europe/Budapest")
+        run_time = datetime.datetime.now(_tz).strftime("%H:%M")
+    except Exception:
+        # Fallback: assume runner uses UTC; add 1h for CET (best effort)
+        run_time = (datetime.datetime.utcnow() + datetime.timedelta(hours=1)).strftime("%H:%M")
+    header = (
+        "# #1 — Premarket check (PRICE ENGINE)\n\n"
+        f"Verzió: {VERSION} | Futás ideje: {run_time}\n"
+        f"Időintervallum (ellenőrzés): {interval_start} – {interval_end}\n\n"
+    )
+    f.write(header)
 
 def write_header(f, interval_start, interval_end):
     try:
@@ -94,7 +108,7 @@ def _budapest_windows(now_epoch: int, last_regular_market_time: int | None = Non
 
     return (pm_start, pm_end, ah_start, ah_end, now_local.isoformat(), close_day.isoformat())
 
-VERSION = "v4.5.9-price-engine-earnings7d-yahoo-2026-01-08"
+VERSION = "v4.6.1-price-engine-earnings7d-yahoo-2026-01-08"
 
 
 def pct(a, b):
@@ -113,18 +127,23 @@ def fmt(x):
 
 
 def http_json(url: str) -> Dict[str, Any]:
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=25) as r:
+        return json.loads(r.read())
 
 
 def http_json_retry(url: str, retries: int = 3, base_sleep: float = 0.6) -> Dict[str, Any]:
     """HTTP JSON with basic retry/backoff for transient errors (incl. 429/5xx)."""
-    last_err = None
+    last_err: Optional[Exception] = None
     for i in range(retries):
         try:
             return http_json(url)
         except Exception as e:
             last_err = e
             time.sleep(base_sleep * (2 ** i))
-    raise last_err  # type: ignore
+    if last_err:
+        raise last_err
+    raise RuntimeError("http_json_retry: unknown error")
 
 
 def yahoo_earnings_next(ticker: str) -> Tuple[Optional[int], Optional[str]]:
@@ -138,7 +157,8 @@ def yahoo_earnings_next(ticker: str) -> Tuple[Optional[int], Optional[str]]:
     cal = (qs[0].get("calendarEvents") or {})
     earnings = (cal.get("earnings") or {})
     ed = earnings.get("earningsDate")
-    epoch = None
+
+    epoch: Optional[int] = None
     if isinstance(ed, list) and ed:
         raw = ed[0].get("raw") if isinstance(ed[0], dict) else None
         if raw is not None:
@@ -146,12 +166,14 @@ def yahoo_earnings_next(ticker: str) -> Tuple[Optional[int], Optional[str]]:
                 epoch = int(raw)
             except Exception:
                 epoch = None
+
     call_time = earnings.get("earningsCallTime")
-    call_str = None
+    call_str: Optional[str] = None
     if isinstance(call_time, dict):
         call_str = call_time.get("fmt") or call_time.get("raw")
         if call_str is not None:
             call_str = str(call_str).upper()
+
     return epoch, call_str
 
 
@@ -164,10 +186,6 @@ def fmt_dt_budapest(epoch_utc: int) -> str:
         tz = datetime.timezone(datetime.timedelta(hours=1))
     dt = datetime.datetime.fromtimestamp(int(epoch_utc), tz=datetime.timezone.utc).astimezone(tz)
     return dt.strftime("%Y-%m-%d %H:%M")
-
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req, timeout=25) as r:
-        return json.loads(r.read())
 
 
 def _to_float(x) -> Optional[float]:
@@ -272,7 +290,48 @@ def chart_prices(t: str, now_epoch: int) -> Tuple[Optional[float], Optional[floa
     res0 = res[0]
     meta = res0.get("meta", {}) or {}
 
-    debug["base_prev"] = prev
+    # Meta extended-hours fields (more stable than sparse extended-hours candles)
+    post_meta_price = meta.get("postMarketPrice")
+    post_meta_time = meta.get("postMarketTime")
+    if post_meta_price is not None and post_meta_time is not None:
+        try:
+            post_meta_time = int(post_meta_time)
+            post_meta_price = float(post_meta_price)
+            debug["post_meta_time"] = post_meta_time
+            debug["post_meta_price"] = post_meta_price
+        except Exception:
+            post_meta_time = None
+            post_meta_price = None
+    else:
+        post_meta_time = None
+        post_meta_price = None
+
+
+    # Base close for AH/PM %: prefer regularMarketPrice when market is closed; fallback to previousClose.
+    prev = meta.get("regularMarketPrice") or meta.get("previousClose") or meta.get("regularMarketPreviousClose")
+
+    wpre = _tp(meta, "pre")
+    wpost = _tp(meta, "post")
+    wreg = _tp(meta, "regular")
+
+    pre_start, pre_end = (wpre if wpre else (None, None))
+    post_start, post_end = (wpost if wpost else (None, None))
+    reg_start, reg_end = (wreg if wreg else (None, None))
+
+    ts = res0.get("timestamp") or []
+    ind = (res0.get("indicators") or {}).get("quote") or []
+    closes = []
+    if ind and isinstance(ind, list) and ind[0].get("close") is not None:
+        closes = ind[0].get("close") or []
+
+    debug = {
+        "now": now_epoch,
+        "pre_start": pre_start, "pre_end": pre_end,
+        "post_start": post_start, "post_end": post_end,
+        "reg_start": reg_start, "reg_end": reg_end,
+        "pre_source": None, "post_source": None,
+        "base_prev": prev,
+    }
     # --- Fixed windows (Europe/Budapest) ---
     last_rmt = meta.get("regularMarketTime")
     pm_start, pm_end, ah_start, ah_end, now_local_iso, close_day_iso = _budapest_windows(now_epoch, last_rmt)
@@ -439,6 +498,49 @@ def main() -> int:
         f.write("## Pozíciók\n\n")
         for t, ah, pm in out_rows_pos:
             f.write(f"- {t} — AH {fmt(ah)} | PM {fmt(pm)}\n")
+
+        # -------------------------------
+        # 7D EARNINGS AUDIT (Yahoo calendarEvents)
+        # -------------------------------
+        f.write("\n## Közelgő katalizátorok (7 napon belüli earnings) — ellenőrzött\n\n")
+
+        now_utc = int(time.time())
+        horizon_utc = now_utc + 7 * 24 * 60 * 60
+
+        tickers_all = [r["ticker"] for r in (positions + watchlist)]
+        checked = 0
+        hits = []
+        missing = []
+
+        for tkr in tickers_all:
+            try:
+                checked += 1
+                ep, call_time = yahoo_earnings_next(tkr)
+                if ep is None:
+                    missing.append(tkr)
+                    continue
+                if ep <= horizon_utc:
+                    hits.append((tkr, ep, call_time))
+            except Exception:
+                missing.append(tkr)
+            time.sleep(0.15)
+
+        hits.sort(key=lambda x: x[1])
+
+        if hits:
+            for tkr, ep, call_time in hits:
+                when = fmt_dt_budapest(ep)
+                suffix = f" ({call_time})" if call_time else ""
+                f.write(f"- {tkr} — {when}{suffix}\n")
+        else:
+            f.write("- Nincs 7 napon belüli earnings a listában (ellenőrizve).\n")
+
+        f.write(f"\nEarnings audit lefedettség: {checked}/{len(tickers_all)} ticker ellenőrizve; találat: {len(hits)} db\n")
+        if missing:
+            sample = ", ".join(missing[:25])
+            more = "…" if len(missing) > 25 else ""
+            f.write(f"Adat nem elérhető (kihagyva): {sample}{more}\n")
+
 
         f.write("\n## Watchlist\n\n")
         for t, ah, pm in out_rows_wl:
