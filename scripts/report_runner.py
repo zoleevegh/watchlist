@@ -199,7 +199,7 @@ def _read_text_from_path_or_url(path_or_url: str) -> str:
         return f.read()
 
 
-def load_master_rows(path_or_url: str) -> List[Dict[str, Any]]:
+def load_master_rows(path_or_url: str) -> list[Dict[str, Any]]:
     """
     Elvárt oszlopok (Google Sheets CSV): Ticker, Darabszam, Bekerulesi ar ($/db), Broker, Eladasi ar
     Csak a Ticker kötelező. Darabszam ha >0 -> pozíció.
