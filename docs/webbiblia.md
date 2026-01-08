@@ -1,3 +1,22 @@
+
+## 🔒 Earnings-dátum – KANONIKUS SZABÁLY (#1 ALL-IN)
+
+**Earnings dátum forrása kizárólag: Yahoo Finance – “Earnings Date” mező.**
+
+Tilos használni:
+- becsült earnings window-kat,
+- EarningsWhispers / MarketBeat / historical timing dátumokat,
+- elemzői „várható” időablakokat.
+
+Logika:
+- csak akkor kerül be a jelentésbe,
+  - ha a ticker **a Gist / MASTER listában szerepel**, ÉS
+  - a Yahoo Finance **konkrét dátumot** mutat, ÉS
+  - az **≤ 7 napon belül** van a futás idejétől.
+
+Ha a Yahoo mező üres / tartományos → **nem jelentjük**.
+
+
 # WEBBIBLIA – KANONIKUS FORRÁS
 **Mindig ezt a linket tekintsd irányadónak:**
 https://raw.githubusercontent.com/zoleevegh/watchlist/main/docs/webbiblia.md
