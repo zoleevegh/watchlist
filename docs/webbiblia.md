@@ -21,6 +21,42 @@ Ha a Yahoo mező üres / tartományos → **nem jelentjük**.
 **Mindig ezt a linket tekintsd irányadónak:**
 https://raw.githubusercontent.com/zoleevegh/watchlist/main/docs/webbiblia.md
 
+## ✅ Kötelező módszertan – hogyan „auditáljuk” az earnings dátumot (NEHOGY KIMARADJON)
+
+**Cél:** 0 db kihagyás. Nincs „fejből”, nincs becslés, nincs naptár-átvétel. Csak determinisztikus ellenőrzés.
+
+### Lépések (EARNINGS AUDIT RUNBOOK)
+1) **Univerzum rögzítése**
+   - A vizsgálat alapja **kizárólag a Gist / MASTER tickerei**.
+   - Először kiírjuk: „Tickerek száma: N = …” (pozíciók + watchlist).
+
+2) **Ticker → Yahoo „Earnings Date” mező (KANONIKUS)**
+   - Minden tickerre külön, **egyenként** megnézzük a Yahoo Finance oldalon az **„Earnings Date”** mezőt.
+   - Ha a mező **konkrét dátumot** ad: rögzítjük.
+   - Ha a mező üres / tartományos / „—”: **NEM kerül be**.
+
+3) **7 napos szűrő**
+   - Csak az kerül a „Közelgő katalizátorok” blokkba, ahol:
+     - ticker ∈ Gist/Master, **ÉS**
+     - Yahoo „Earnings Date” **konkrét**, **ÉS**
+     - dátum **≤ futás ideje + 7 nap**.
+
+4) **Bizonyíték-követelmény (auditálhatóság)**
+   - A riportban az earnings-listához **kötelező**:
+     - a ticker,
+     - a dátum,
+     - és legalább **egy forráslink**, ami a Yahoo quote oldalra mutat:  
+       `https://finance.yahoo.com/quote/<TICKER>/`
+   - (Nem kell mindenre külön hosszan idézni, de a link ott legyen, hogy visszanézhető legyen.)
+
+5) **Lefedettségi zárás**
+   - A blokk végén kötelező sor:
+     - „Earnings audit lefedettség: N/N ticker ellenőrizve; 7 napon belüli találat: K db.”
+
+### Tiltások (hogy ne legyen több Netflix‑01.14 típusú félrecsúszás)
+- TILOS: EarningsWhispers / MarketBeat / „estimated window” / historikus mintázat alapján dátumot mondani.
+- TILOS: listán kívüli ticker bevonása („calendar dobta ki”) – csak Gist/Master univerzum.
+
 # 📘 WEBBIBLIA v1.6.0
 Web‑alapú #1 / #ALL‑IN jelentések kanonikus szabálykönyve
 
