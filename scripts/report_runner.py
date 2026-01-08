@@ -38,21 +38,7 @@ def write_header(f, interval_start: str, interval_end: str):
     )
     f.write(header)
 
-def write_header(f, interval_start, interval_end):
-    try:
-        from zoneinfo import ZoneInfo
-        _tz = ZoneInfo("Europe/Budapest")
-        run_time = datetime.datetime.now(_tz).strftime("%H:%M")
-    except Exception:
-        # Fallback: assume runner uses UTC; add 1h for CET (best effort)
-        run_time = (datetime.datetime.utcnow() + datetime.timedelta(hours=1)).strftime("%H:%M")
-    header = (
-        "# #1 – Premarket check (PRICE ENGINE)\n\n"
-        f"Verzió: v4.5.4-price-engine-header-interval-fix-2026-01-07 | Futás ideje: {run_time}\n"
-        f"Időintervallum (ellenőrzés): {interval_start} – {interval_end}\n\n"
-    )
-    f.write(header)
-from typing import Optional, Tuple, List, Dict, Any
+
 
 
 def _budapest_windows(now_epoch: int, last_regular_market_time: int | None = None):
@@ -108,7 +94,7 @@ def _budapest_windows(now_epoch: int, last_regular_market_time: int | None = Non
 
     return (pm_start, pm_end, ah_start, ah_end, now_local.isoformat(), close_day.isoformat())
 
-VERSION = "v4.6.1-price-engine-earnings7d-yahoo-2026-01-08"
+VERSION = "v4.6.2-price-engine-earnings7d-yahoo-versionfix-2026-01-08"
 
 
 def pct(a, b):
