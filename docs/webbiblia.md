@@ -1,3 +1,19 @@
+# WEBBIBLIA – v1.7.0 (KANONIKUS)
+KANONIKUS RAW LINK (mindig ez az irányadó):
+https://raw.githubusercontent.com/zoleevegh/watchlist/main/docs/webbiblia.md
+
+VERZIÓZÁS – KŐSZABÁLY:
+- Minden módosításnál a verziószámot FOLYTATÓLAGOSAN növeljük.
+- Új verzió = előző FULL tartalom + hozzáadások (törlés csak indokoltan, külön jelölve).
+- A fájlban szereplő verziószámnak EGYEZNIE kell a fájlnév verziójával.
+
+Változások v1.6.4 → v1.7.0 (összefoglaló):
+- Yahoo Finance LIVE (Market Today) kötelező makró/nyitáskép kontextusforrás lett.
+- ALL-IN kapu/checklist kiegészült: „Yahoo LIVE átnézve” és „nincs szellem hír” tiltás erősítve.
+- Earnings-dátum: továbbra is Yahoo „Earnings Date” a kanonikus mező, de eltérés esetén kötelező megjegyzés és ellenőrző link.
+- Cél: 0 kihagyás a 7 napon belüli earnings auditban, determinisztikus runbook szerint.
+
+---
 
 ## 🔒 Earnings-dátum – KANONIKUS SZABÁLY (#1 ALL-IN)
 
@@ -57,7 +73,7 @@ https://raw.githubusercontent.com/zoleevegh/watchlist/main/docs/webbiblia.md
 - TILOS: EarningsWhispers / MarketBeat / „estimated window” / historikus mintázat alapján dátumot mondani.
 - TILOS: listán kívüli ticker bevonása („calendar dobta ki”) – csak Gist/Master univerzum.
 
-# 📘 WEBBIBLIA v1.6.0
+# 📘 WEBBIBLIA v1.7.0
 Web‑alapú #1 / #ALL‑IN jelentések kanonikus szabálykönyve
 
 ---
@@ -274,4 +290,4 @@ hanem hogy semmi lényeges ne maradjon ki – és semmi zaj ne keveredjen be.**
 
 ---
 
-Verzió: **v1.6.0 – KANONIKUS REBUILD**
+Verzió: **v1.7.0 – KANONIKUS**
