@@ -250,7 +250,7 @@ def _tp(meta: Dict[str, Any], key: str) -> Optional[Tuple[int, int]]:
     return None
 
 
-def _last_close_in_window(timestamps: List[int], closes: list[Any], start: int, end: int) -> Optional[float]:
+def _last_close_in_window(timestamps: list[int], closes: list[Any], start: int, end: int) -> Optional[float]:
     last = None
     for ts, cl in zip(timestamps, closes):
         if ts is None:
