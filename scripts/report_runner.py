@@ -95,7 +95,7 @@ def _budapest_windows(now_epoch: int, last_regular_market_time: int | None = Non
 
     return (pm_start, pm_end, ah_start, ah_end, now_local.isoformat(), close_day.isoformat())
 
-VERSION = "v4.6.3-price-engine-earnings7d-yahoo-typingfix-2026-01-08"
+VERSION = "v4.6.5-price-engine-earnings7d-batch-2026-01-08"
 
 
 def pct(a, b):
@@ -132,6 +132,71 @@ def http_json_retry(url: str, retries: int = 3, base_sleep: float = 0.6) -> Dict
         raise last_err
     raise RuntimeError("http_json_retry: unknown error")
 
+
+
+def yahoo_quote_batch(symbols: List[str], retries: int = 2) -> Dict[str, Dict[str, Any]]:
+    """Batch quote lookup via Yahoo v7 quote endpoint.
+
+    Returns: {SYMBOL: quote_dict}
+    """
+    syms = [s.strip().upper() for s in symbols if s and s.strip()]
+    out: Dict[str, Dict[str, Any]] = {}
+    if not syms:
+        return out
+
+    # Yahoo v7 quote supports many symbols in one request (URL length is the main limit).
+    # We'll chunk to keep URLs sane.
+    CHUNK = 80
+    base = "https://query2.finance.yahoo.com/v7/finance/quote?symbols="
+    for i in range(0, len(syms), CHUNK):
+        chunk = syms[i:i+CHUNK]
+        url = base + ",".join(chunk)
+        data = http_json_retry(url, retries=retries)
+        res = (((data or {}).get("quoteResponse") or {}).get("result")) or []
+        for q in res:
+            sym = (q.get("symbol") or "").upper()
+            if sym:
+                out[sym] = q
+    return out
+
+
+def earnings_ts_from_quote(q: Dict[str, Any]) -> Optional[int]:
+    """Pick the best-available earnings timestamp (epoch seconds) from a v7 quote result."""
+    # Prefer START if present (more deterministic), then main, then END.
+    for k in ("earningsTimestampStart", "earningsTimestamp", "earningsTimestampEnd"):
+        v = q.get(k)
+        if isinstance(v, (int, float)) and v > 0:
+            return int(v)
+    return None
+
+
+def yahoo_earnings_trend(ticker: str) -> Tuple[Optional[float], Optional[float], Optional[str]]:
+    """Fetch EPS + revenue estimate (avg) for the next reported period (best-effort)."""
+    t = ticker.strip().upper()
+    if not t:
+        return None, None, None
+    url = (
+        f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{t}"
+        "?modules=earningsTrend"
+    )
+    data = http_json_retry(url, retries=2)
+    try:
+        qs = (((data or {}).get("quoteSummary") or {}).get("result") or [None])[0] or {}
+        et = qs.get("earningsTrend") or {}
+        trend = (et.get("trend") or [])
+        if not trend:
+            return None, None, None
+        # Usually the first entry is current quarter.
+        cur = trend[0] or {}
+        eps = (((cur.get("earningsEstimate") or {}).get("avg") or {}).get("raw"))
+        rev = (((cur.get("revenueEstimate") or {}).get("avg") or {}).get("raw"))
+        curcy = (((cur.get("revenueEstimate") or {}).get("avg") or {}).get("fmt"))  # not currency, but formatted
+        # Currency isn't directly in earningsTrend; we'll leave None.
+        eps_v = float(eps) if isinstance(eps, (int, float)) else None
+        rev_v = float(rev) if isinstance(rev, (int, float)) else None
+        return eps_v, rev_v, None
+    except Exception:
+        return None, None, None
 
 def yahoo_earnings_next(ticker: str) -> Tuple[Optional[int], Optional[str]]:
     """Return next earnings datetime (UTC epoch) from Yahoo quoteSummary calendarEvents."""
@@ -488,63 +553,79 @@ def main() -> int:
 
         # -------------------------------
         # 7D EARNINGS AUDIT (Yahoo calendarEvents)
-        # -------------------------------
-        f.write("\n## Közelgő katalizátorok (7 napon belüli earnings) — ellenőrzött\n\n")
+    # --- Earnings (next 7 days) — batch-first, then estimates for hits ---
+    now_utc = datetime.datetime.utcnow()
+    horizon_utc = now_utc + datetime.timedelta(days=7)
 
-        now_utc = int(time.time())
-        horizon_utc = now_utc + 7 * 24 * 60 * 60
+    quote_map = yahoo_quote_batch(tickers_all, retries=2)
+    checked = 0
+    hits: List[Tuple[str, datetime.datetime, Optional[float], Optional[float]]] = []
+    missing: List[str] = []
 
-        tickers_all = [r["ticker"] for r in (positions + watchlist)]
-        checked = 0
-        hits = []
-        missing = []
+    for t in tickers_all:
+        q = quote_map.get(t)
+        ts = earnings_ts_from_quote(q or {})
+        if ts is None:
+            missing.append(t)
+            continue
+        checked += 1
+        dt_utc = datetime.datetime.utcfromtimestamp(ts)
+        if now_utc <= dt_utc <= horizon_utc:
+            eps_est, rev_est, _ = yahoo_earnings_trend(t)
+            hits.append((t, dt_utc, eps_est, rev_est))
 
-        for tkr in tickers_all:
+    hits.sort(key=lambda x: x[1])
+
+    f.write("\n## Közelgő katalizátorok (ellenőrzött)\n\n")
+    f.write("7 napon belüli earnings / event:\n\n")
+
+    if hits:
+        for (t, dt_utc, eps_est, rev_est) in hits:
+            # Display in Europe/Budapest local date for consistency with report.
             try:
-                checked += 1
-                ep, call_time = yahoo_earnings_next(tkr)
-                if ep is None:
-                    missing.append(tkr)
-                    continue
-                if ep <= horizon_utc:
-                    hits.append((tkr, ep, call_time))
+                from zoneinfo import ZoneInfo
+                dt_local = dt_utc.replace(tzinfo=datetime.timezone.utc).astimezone(ZoneInfo("Europe/Budapest"))
+                dstr = dt_local.strftime("%Y-%m-%d")
             except Exception:
-                missing.append(tkr)
-            time.sleep(0.15)
+                dstr = dt_utc.strftime("%Y-%m-%d")
 
-        hits.sort(key=lambda x: x[1])
+            parts = [f"**{t}** — earnings: {dstr}"]
+            if eps_est is not None:
+                parts.append(f"EPS est.: {eps_est:.2f}")
+            if rev_est is not None:
+                # revenue is usually in raw dollars; show in B/M where reasonable
+                rev = float(rev_est)
+                if rev >= 1e9:
+                    parts.append(f"Revenue est.: {rev/1e9:.2f}B")
+                elif rev >= 1e6:
+                    parts.append(f"Revenue est.: {rev/1e6:.0f}M")
+                else:
+                    parts.append(f"Revenue est.: {rev:.0f}")
+            f.write("- " + " | ".join(parts) + "\n")
+        f.write("\n")
+    else:
+        f.write(
+            "A listában nincs olyan ticker, ahol az earnings a következő 7 napon belül lenne "
+            "(Yahoo v7 quote timestamp alapján).\n\n"
+        )
 
-        if hits:
-            for tkr, ep, call_time in hits:
-                when = fmt_dt_budapest(ep)
-                suffix = f" ({call_time})" if call_time else ""
-                f.write(f"- {tkr} — {when}{suffix}\n")
-        else:
-            f.write("- Nincs 7 napon belüli earnings a listában (ellenőrizve).\n")
+    f.write(f"Earnings-audit lefedettség: {checked}/{len(tickers_all)} (missing timestamp: {len(missing)})\n\n")
+    f.write("\n## Watchlist\n\n")
+    for t, ah, pm in out_rows_wl:
+        f.write(f"- {t} — AH {fmt(ah)} | PM {fmt(pm)}\n")
 
-        f.write(f"\nEarnings audit lefedettség: {checked}/{len(tickers_all)} ticker ellenőrizve; találat: {len(hits)} db\n")
-        if missing:
-            sample = ", ".join(missing[:25])
-            more = "…" if len(missing) > 25 else ""
-            f.write(f"Adat nem elérhető (kihagyva): {sample}{more}\n")
-
-
-        f.write("\n## Watchlist\n\n")
-        for t, ah, pm in out_rows_wl:
-            f.write(f"- {t} — AH {fmt(ah)} | PM {fmt(pm)}\n")
-
-        # Debug csak akkor, ha teljesen üres
-        if (not any_data) or args.debug:
-            f.write("\n## Debug (only if no data / --debug)\n")
-            f.write(f"- now_epoch: {now_epoch}\n")
-            for k in ["pre_meta","pre_infer","pre_gated","pre_none","post_meta","post_infer","post_carry","post_gated","post_none","errors"]:
-                f.write(f"- {k}: {dbg_counts[k]}\n")
-            f.write("\n### Debug sample (first 10 tickers)\n")
-            for t, dbg, pm, ah in sample_dbg:
-                f.write(
-                    f"- {t}: AH {fmt(ah)} (post_source={dbg.get('post_source')}, post_start={dbg.get('post_start')}, post_end={dbg.get('post_end')}) | "
-                    f"PM {fmt(pm)} (pre_source={dbg.get('pre_source')}, pre_start={dbg.get('pre_start')}, pre_end={dbg.get('pre_end')})\n"
-                )
+    # Debug csak akkor, ha teljesen üres
+    if (not any_data) or args.debug:
+        f.write("\n## Debug (only if no data / --debug)\n")
+        f.write(f"- now_epoch: {now_epoch}\n")
+        for k in ["pre_meta","pre_infer","pre_gated","pre_none","post_meta","post_infer","post_carry","post_gated","post_none","errors"]:
+            f.write(f"- {k}: {dbg_counts[k]}\n")
+        f.write("\n### Debug sample (first 10 tickers)\n")
+        for t, dbg, pm, ah in sample_dbg:
+            f.write(
+                f"- {t}: AH {fmt(ah)} (post_source={dbg.get('post_source')}, post_start={dbg.get('post_start')}, post_end={dbg.get('post_end')}) | "
+                f"PM {fmt(pm)} (pre_source={dbg.get('pre_source')}, pre_start={dbg.get('pre_start')}, pre_end={dbg.get('pre_end')})\n"
+            )
 
     # stderr log "életjel"
     print(f"RUNNER_VERSION={VERSION}", file=sys.stderr, flush=True)
