@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# report_runner.py — v4.6.6-price-engine-yahoo401-softfail-2026-01-09
+# report_runner.py — v4.6.6-price-engine-earnings7d-bugfix-2026-01-09
 #
 # FIX / CÉL:
 # - Stabil #1 riport: AH elöl, PM utána, külön blokkban: Pozíciók (Darabszam>0), majd Watchlist.
@@ -95,7 +95,9 @@ def _budapest_windows(now_epoch: int, last_regular_market_time: int | None = Non
 
     return (pm_start, pm_end, ah_start, ah_end, now_local.isoformat(), close_day.isoformat())
 
-VERSION = "v4.6.6-price-engine-yahoo401-softfail-2026-01-09"
+VERSION = "v4.6.7-price-engine-earnings7d-softfail-2026-01-09"
+
+
 def pct(a, b):
     if a is None or b in (None, 0):
         return None
@@ -136,10 +138,6 @@ def yahoo_quote_batch(symbols: List[str], retries: int = 2) -> Dict[str, Dict[st
     """Batch quote lookup via Yahoo v7 quote endpoint.
 
     Returns: {SYMBOL: quote_dict}
-
-    Soft-fail policy:
-    - If Yahoo returns HTTP 401 (Unauthorized) or any network error occurs, return an empty dict.
-      The report must still be generated (prices become n/a).
     """
     syms = [s.strip().upper() for s in symbols if s and s.strip()]
     out: Dict[str, Dict[str, Any]] = {}
@@ -153,12 +151,7 @@ def yahoo_quote_batch(symbols: List[str], retries: int = 2) -> Dict[str, Dict[st
     for i in range(0, len(syms), CHUNK):
         chunk = syms[i:i+CHUNK]
         url = base + ",".join(chunk)
-        try:
-            data = http_json_retry(url, retries=retries)
-        except Exception as e:
-            # Most commonly: urllib.error.HTTPError: HTTP Error 401: Unauthorized
-            print(f"WARN: yahoo_quote_batch unavailable ({type(e).__name__}: {e})", file=sys.stderr, flush=True)
-            return {}
+        data = http_json_retry(url, retries=retries)
         res = (((data or {}).get("quoteResponse") or {}).get("result")) or []
         for q in res:
             sym = (q.get("symbol") or "").upper()
@@ -557,82 +550,105 @@ def main() -> int:
         f.write("## Pozíciók\n\n")
         for t, ah, pm in out_rows_pos:
             f.write(f"- {t} — AH {fmt(ah)} | PM {fmt(pm)}\n")
-
         # -------------------------------
-        # 7D EARNINGS AUDIT (Yahoo calendarEvents)
-    # --- Earnings (next 7 days) — batch-first, then estimates for hits ---
-    now_utc = datetime.datetime.utcnow()
-    horizon_utc = now_utc + datetime.timedelta(days=7)
+        # 7D EARNINGS AUDIT (Yahoo v7 quote timestamp + earningsTrend estimates)
+        # WEBBIBLIA: csak akkor listázunk, ha van konkrét timestamp és ≤ 7 nap.
+        #
+        # Univerzum: kizárólag a MASTER tickerei (pozíciók + watchlist).
+        tickers_all: List[str] = []
+        _seen = set()
+        for _r in (positions + watchlist):
+            _t = (_r.get("ticker") or "").strip().upper()
+            if not _t or _t in _seen:
+                continue
+            tickers_all.append(_t)
+            _seen.add(_t)
 
-    quote_map = yahoo_quote_batch(tickers_all, retries=2)
-    checked = 0
-    hits: List[Tuple[str, datetime.datetime, Optional[float], Optional[float]]] = []
-    missing: List[str] = []
+        now_utc = datetime.datetime.utcnow()
+        horizon_utc = now_utc + datetime.timedelta(days=7)
 
-    for t in tickers_all:
-        q = quote_map.get(t)
-        ts = earnings_ts_from_quote(q or {})
-        if ts is None:
-            missing.append(t)
-            continue
-        checked += 1
-        dt_utc = datetime.datetime.utcfromtimestamp(ts)
-        if now_utc <= dt_utc <= horizon_utc:
-            eps_est, rev_est, _ = yahoo_earnings_trend(t)
-            hits.append((t, dt_utc, eps_est, rev_est))
+        # NOTE: Yahoo endpoints can occasionally return 401 (consent / edge blocking) on GitHub runners.
+        # Earnings-audit must NEVER crash the whole report; treat it as best-effort.
+        checked = 0
+        hits: List[Tuple[str, datetime.datetime, Optional[float], Optional[float]]] = []
+        missing: List[str] = []
+        audit_error: Optional[str] = None
 
-    hits.sort(key=lambda x: x[1])
+        try:
+            quote_map = yahoo_quote_batch(tickers_all, retries=2)
+            for _t in tickers_all:
+                q = quote_map.get(_t)
+                ts = earnings_ts_from_quote(q or {})
+                if ts is None:
+                    missing.append(_t)
+                    continue
+                checked += 1
+                dt_utc = datetime.datetime.utcfromtimestamp(ts)
+                if now_utc <= dt_utc <= horizon_utc:
+                    eps_est, rev_est, _ = yahoo_earnings_trend(_t)
+                    hits.append((_t, dt_utc, eps_est, rev_est))
+        except Exception as e:
+            audit_error = f"{type(e).__name__}: {e}"
 
-    f.write("\n## Közelgő katalizátorok (ellenőrzött)\n\n")
-    f.write("7 napon belüli earnings / event:\n\n")
+        hits.sort(key=lambda x: x[1])
 
-    if hits:
-        for (t, dt_utc, eps_est, rev_est) in hits:
-            # Display in Europe/Budapest local date for consistency with report.
-            try:
-                from zoneinfo import ZoneInfo
-                dt_local = dt_utc.replace(tzinfo=datetime.timezone.utc).astimezone(ZoneInfo("Europe/Budapest"))
-                dstr = dt_local.strftime("%Y-%m-%d")
-            except Exception:
-                dstr = dt_utc.strftime("%Y-%m-%d")
+        f.write("\n## Közelgő katalizátorok (ellenőrzött)\n\n")
+        f.write("7 napon belüli earnings / event:\n\n")
 
-            parts = [f"**{t}** — earnings: {dstr}"]
-            if eps_est is not None:
-                parts.append(f"EPS est.: {eps_est:.2f}")
-            if rev_est is not None:
-                # revenue is usually in raw dollars; show in B/M where reasonable
-                rev = float(rev_est)
-                if rev >= 1e9:
-                    parts.append(f"Revenue est.: {rev/1e9:.2f}B")
-                elif rev >= 1e6:
-                    parts.append(f"Revenue est.: {rev/1e6:.0f}M")
-                else:
-                    parts.append(f"Revenue est.: {rev:.0f}")
-            f.write("- " + " | ".join(parts) + "\n")
-        f.write("\n")
-    else:
-        f.write(
-            "A listában nincs olyan ticker, ahol az earnings a következő 7 napon belül lenne "
-            "(Yahoo v7 quote timestamp alapján).\n\n"
-        )
-
-    f.write(f"Earnings-audit lefedettség: {checked}/{len(tickers_all)} (missing timestamp: {len(missing)})\n\n")
-    f.write("\n## Watchlist\n\n")
-    for t, ah, pm in out_rows_wl:
-        f.write(f"- {t} — AH {fmt(ah)} | PM {fmt(pm)}\n")
-
-    # Debug csak akkor, ha teljesen üres
-    if (not any_data) or args.debug:
-        f.write("\n## Debug (only if no data / --debug)\n")
-        f.write(f"- now_epoch: {now_epoch}\n")
-        for k in ["pre_meta","pre_infer","pre_gated","pre_none","post_meta","post_infer","post_carry","post_gated","post_none","errors"]:
-            f.write(f"- {k}: {dbg_counts[k]}\n")
-        f.write("\n### Debug sample (first 10 tickers)\n")
-        for t, dbg, pm, ah in sample_dbg:
+        if audit_error:
             f.write(
-                f"- {t}: AH {fmt(ah)} (post_source={dbg.get('post_source')}, post_start={dbg.get('post_start')}, post_end={dbg.get('post_end')}) | "
-                f"PM {fmt(pm)} (pre_source={dbg.get('pre_source')}, pre_start={dbg.get('pre_start')}, pre_end={dbg.get('pre_end')})\n"
+                "Earnings-audit: átmenetileg nem elérhető (Yahoo blokkolás/401). "
+                "A riport többi része ettől még érvényes.\n"
+                f"Részlet: {audit_error}\n\n"
             )
+
+        if hits:
+            for (_t, dt_utc, eps_est, rev_est) in hits:
+                # Display in Europe/Budapest local date for consistency with report.
+                try:
+                    from zoneinfo import ZoneInfo
+                    dt_local = dt_utc.replace(tzinfo=datetime.timezone.utc).astimezone(ZoneInfo("Europe/Budapest"))
+                    dstr = dt_local.strftime("%Y-%m-%d")
+                except Exception:
+                    dstr = dt_utc.strftime("%Y-%m-%d")
+
+                parts = [f"**{_t}** — earnings: {dstr}"]
+                if eps_est is not None:
+                    parts.append(f"EPS est.: {eps_est:.2f}")
+                if rev_est is not None:
+                    rev = float(rev_est)
+                    if rev >= 1e9:
+                        parts.append(f"Revenue est.: {rev/1e9:.2f}B")
+                    elif rev >= 1e6:
+                        parts.append(f"Revenue est.: {rev/1e6:.0f}M")
+                    else:
+                        parts.append(f"Revenue est.: {rev:.0f}")
+                f.write("- " + " | ".join(parts) + "\n")
+            f.write("\n")
+        else:
+            f.write(
+                "A listában nincs olyan ticker, ahol az earnings a következő 7 napon belül lenne "
+                "(Yahoo v7 quote timestamp alapján).\n\n"
+            )
+
+        f.write(f"Earnings-audit lefedettség: {checked}/{len(tickers_all)} (missing timestamp: {len(missing)})\n\n")
+
+        f.write("\n## Watchlist\n\n")
+        for t, ah, pm in out_rows_wl:
+            f.write(f"- {t} — AH {fmt(ah)} | PM {fmt(pm)}\n")
+
+        # Debug csak akkor, ha teljesen üres
+        if (not any_data) or args.debug:
+            f.write("\n## Debug (only if no data / --debug)\n")
+            f.write(f"- now_epoch: {now_epoch}\n")
+            for k in ["pre_meta","pre_infer","pre_gated","pre_none","post_meta","post_infer","post_carry","post_gated","post_none","errors"]:
+                f.write(f"- {k}: {dbg_counts[k]}\n")
+            f.write("\n### Debug sample (first 10 tickers)\n")
+            for t, dbg, pm, ah in sample_dbg:
+                f.write(
+                    f"- {t}: AH {fmt(ah)} (post_source={dbg.get('post_source')}, post_start={dbg.get('post_start')}, post_end={dbg.get('post_end')}) | "
+                    f"PM {fmt(pm)} (pre_source={dbg.get('pre_source')}, pre_start={dbg.get('pre_start')}, pre_end={dbg.get('pre_end')})\n"
+                )
 
     # stderr log "életjel"
     print(f"RUNNER_VERSION={VERSION}", file=sys.stderr, flush=True)
