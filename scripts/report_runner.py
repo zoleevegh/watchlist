@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# report_runner.py — v4.6.8-price-engine-earnings-v10-calendarEvents-2026-01-09
+# report_runner.py — v4.6.9-price-engine-earnings-audit-fastfix-2026-01-09
 #
 # FIX / CÉL:
 # - Stabil #1 riport: AH elöl, PM utána, külön blokkban: Pozíciók (Darabszam>0), majd Watchlist.
@@ -95,7 +95,7 @@ def _budapest_windows(now_epoch: int, last_regular_market_time: int | None = Non
 
     return (pm_start, pm_end, ah_start, ah_end, now_local.isoformat(), close_day.isoformat())
 
-VERSION = "v4.6.8-price-engine-earnings-v10-calendarEvents-2026-01-09"
+VERSION = "v4.6.9-price-engine-earnings-audit-fastfix-2026-01-09"
 
 
 def pct(a, b):
@@ -555,15 +555,35 @@ def main() -> int:
         # CÉL: ne használjuk a v7 /quote endpointot (gyakori 401 a GitHub runneren).
         # WEBBIBLIA: csak akkor listázunk, ha van konkrét timestamp és ≤ 7 nap.
         #
-        # Univerzum: kizárólag a MASTER tickerei (pozíciók + watchlist).
+        # Univerzum: gyors, runner-barát (pozíciók teljesen + watchlist limit)
+        POS_ONLY = False
+        WATCHLIST_LIMIT = 25
+
         tickers_all: List[str] = []
         _seen = set()
-        for _r in (positions + watchlist):
+
+        for _r in positions:
             _t = (_r.get("ticker") or "").strip().upper()
             if not _t or _t in _seen:
                 continue
             tickers_all.append(_t)
             _seen.add(_t)
+
+        if not POS_ONLY:
+            wl_added = 0
+            for _r in watchlist:
+                if wl_added >= WATCHLIST_LIMIT:
+                    break
+                _t = (_r.get("ticker") or "").strip().upper()
+                if not _t or _t in _seen:
+                    continue
+                tickers_all.append(_t)
+                _seen.add(_t)
+                wl_added += 1
+
+        import time
+        _t0 = time.monotonic()
+        TIME_BUDGET_SEC = 35
 
         now_utc = datetime.datetime.utcnow()
         horizon_utc = now_utc + datetime.timedelta(days=7)
@@ -571,8 +591,9 @@ def main() -> int:
         checked = 0
         hits: List[Tuple[str, datetime.datetime, Optional[float], Optional[float]]] = []
         missing: List[str] = []
-
         for _t in tickers_all:
+            if time.monotonic() - _t0 > TIME_BUDGET_SEC:
+                break
             try:
                 ts, _call = yahoo_earnings_next(_t)
             except Exception:
@@ -627,19 +648,18 @@ def main() -> int:
         f.write("\n## Watchlist\n\n")
         for t, ah, pm in out_rows_wl:
             f.write(f"- {t} — AH {fmt(ah)} | PM {fmt(pm)}\n")
-
-        # Debug csak akkor, ha teljesen üres
-    if (not any_data) or args.debug:
-        f.write("\n## Debug (only if no data / --debug)\n")
-        f.write(f"- now_epoch: {now_epoch}\n")
-        for k in ["pre_meta","pre_infer","pre_gated","pre_none","post_meta","post_infer","post_carry","post_gated","post_none","errors"]:
-            f.write(f"- {k}: {dbg_counts[k]}\n")
-        f.write("\n### Debug sample (first 10 tickers)\n")
-        for t, dbg, pm, ah in sample_dbg:
-            f.write(
-                f"- {t}: AH {fmt(ah)} (post_source={dbg.get('post_source')}, post_start={dbg.get('post_start')}, post_end={dbg.get('post_end')}) | "
-                f"PM {fmt(pm)} (pre_source={dbg.get('pre_source')}, pre_start={dbg.get('pre_start')}, pre_end={dbg.get('pre_end')})\n"
-            )
+        # Debug csak akkor, ha teljesen üres / --debug
+        if (not any_data) or args.debug:
+            f.write("\n## Debug (only if no data / --debug)\n")
+            f.write(f"- now_epoch: {now_epoch}\n")
+            for k in ["pre_meta","pre_infer","pre_gated","pre_none","post_meta","post_infer","post_carry","post_gated","post_none","errors"]:
+                f.write(f"- {k}: {dbg_counts[k]}\n")
+            f.write("\n### Debug sample (first 10 tickers)\n")
+            for t, dbg, pm, ah in sample_dbg:
+                f.write(
+                    f"- {t}: AH {fmt(ah)} (post_source={dbg.get('post_source')}, post_start={dbg.get('post_start')}, post_end={dbg.get('post_end')}) | "
+                    f"PM {fmt(pm)} (pre_source={dbg.get('pre_source')}, pre_start={dbg.get('pre_start')}, pre_end={dbg.get('pre_end')})\n"
+                )
 
     # stderr log "életjel"
     print(f"RUNNER_VERSION={VERSION}", file=sys.stderr, flush=True)
