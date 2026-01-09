@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# report_runner.py — v4.6.9-price-engine-earnings-audit-fastfix-2026-01-09
+# report_runner.py — v4.5.4-price-engine-header-interval-fix-2026-01-07
 #
 # FIX / CÉL:
 # - Stabil #1 riport: AH elöl, PM utána, külön blokkban: Pozíciók (Darabszam>0), majd Watchlist.
@@ -20,7 +20,7 @@ import sys
 import traceback
 import argparse
 import urllib.request
-import time
+import time as _time
 import datetime
 from typing import Any, Dict, Tuple, Optional, List
 
@@ -28,10 +28,10 @@ def write_header(f, interval_start: str, interval_end: str):
     try:
         from zoneinfo import ZoneInfo
         _tz = ZoneInfo("Europe/Budapest")
-        run_time = datetime.datetime.now(_tz).strftime("%H:%M")
+        run_time = date_time.date_time.now(_tz).strftime("%H:%M")
     except Exception:
         # Fallback: assume runner uses UTC; add 1h for CET (best effort)
-        run_time = (datetime.datetime.utcnow() + datetime.timedelta(hours=1)).strftime("%H:%M")
+        run_time = (date_time.date_time.utcnow() + date_time.timedelta(hours=1)).strftime("%H:%M")
     header = (
         "# #1 — Premarket check (PRICE ENGINE)\n\n"
         f"Verzió: {VERSION} | Futás ideje: {run_time}\n"
@@ -58,44 +58,44 @@ def _budapest_windows(now_epoch: int, last_regular_market_time: int | None = Non
         from zoneinfo import ZoneInfo  # py3.9+
         tz = ZoneInfo("Europe/Budapest")
     except Exception:
-        tz = datetime.timezone(datetime.timedelta(hours=1))  # fallback (winter CET)
+        tz = date_time.timezone(date_time.timedelta(hours=1))  # fallback (winter CET)
 
-    now_utc = datetime.datetime.fromtimestamp(now_epoch, tz=datetime.timezone.utc)
+    now_utc = date_time.date_time.fromtimestamp(now_epoch, tz=date_time.timezone.utc)
     now_local = now_utc.astimezone(tz)
 
     # Determine "close day" in local terms
     close_day = None
     if last_regular_market_time is not None:
         try:
-            close_local = datetime.datetime.fromtimestamp(int(last_regular_market_time), tz=datetime.timezone.utc).astimezone(tz)
+            close_local = date_time.date_time.fromtimestamp(int(last_regular_market_time), tz=date_time.timezone.utc).astimezone(tz)
             close_day = close_local.date()
         except Exception:
             close_day = None
     if close_day is None:
-        close_day = (now_local.date() - datetime.timedelta(days=1))  # fallback
+        close_day = (now_local.date() - date_time.timedelta(days=1))  # fallback
 
     today = now_local.date()
 
     def loc_dt(day, hh, mm):
-        return datetime.datetime(day.year, day.month, day.day, hh, mm, tzinfo=tz)
+        return date_time.datetime(day.year, day.month, day.day, hh, mm, tzinfo=tz)
 
     # AH: close_day 22:00 -> next day 02:00 (local)
     ah_start_local = loc_dt(close_day, 22, 0)
-    ah_end_local   = loc_dt(close_day + datetime.timedelta(days=1), 2, 0)
+    ah_end_local   = loc_dt(close_day + date_time.timedelta(days=1), 2, 0)
 
     # PM: today 10:00 -> 15:30 (local)
     pm_start_local = loc_dt(today, 10, 0)
     pm_end_local   = loc_dt(today, 15, 30)
 
     # Convert to UTC epoch seconds
-    ah_start = int(ah_start_local.astimezone(datetime.timezone.utc).timestamp())
-    ah_end   = int(ah_end_local.astimezone(datetime.timezone.utc).timestamp())
-    pm_start = int(pm_start_local.astimezone(datetime.timezone.utc).timestamp())
-    pm_end   = int(pm_end_local.astimezone(datetime.timezone.utc).timestamp())
+    ah_start = int(ah_start_local.astimezone(date_time.timezone.utc).timestamp())
+    ah_end   = int(ah_end_local.astimezone(date_time.timezone.utc).timestamp())
+    pm_start = int(pm_start_local.astimezone(date_time.timezone.utc).timestamp())
+    pm_end   = int(pm_end_local.astimezone(date_time.timezone.utc).timestamp())
 
     return (pm_start, pm_end, ah_start, ah_end, now_local.isoformat(), close_day.isoformat())
 
-VERSION = "v4.6.9-price-engine-earnings-audit-fastfix-2026-01-09"
+VERSION = "v4.6.6-price-engine-earnings7d-batch-2026-01-08"
 
 
 def pct(a, b):
@@ -127,7 +127,7 @@ def http_json_retry(url: str, retries: int = 3, base_sleep: float = 0.6) -> Dict
             return http_json(url)
         except Exception as e:
             last_err = e
-            time.sleep(base_sleep * (2 ** i))
+            _time.sleep(base_sleep * (2 ** i))
     if last_err:
         raise last_err
     raise RuntimeError("http_json_retry: unknown error")
@@ -222,7 +222,7 @@ def yahoo_earnings_next(ticker: str) -> Tuple[Optional[int], Optional[str]]:
     call_time = earnings.get("earningsCallTime")
     call_str: Optional[str] = None
     if isinstance(call_time, dict):
-        call_str = call_time.get("fmt") or call_time.get("raw")
+        call_str = call__time.get("fmt") or call__time.get("raw")
         if call_str is not None:
             call_str = str(call_str).upper()
 
@@ -235,8 +235,8 @@ def fmt_dt_budapest(epoch_utc: int) -> str:
         from zoneinfo import ZoneInfo
         tz = ZoneInfo("Europe/Budapest")
     except Exception:
-        tz = datetime.timezone(datetime.timedelta(hours=1))
-    dt = datetime.datetime.fromtimestamp(int(epoch_utc), tz=datetime.timezone.utc).astimezone(tz)
+        tz = date_time.timezone(date_time.timedelta(hours=1))
+    dt = date_time.date_time.fromtimestamp(int(epoch_utc), tz=date_time.timezone.utc).astimezone(tz)
     return dt.strftime("%Y-%m-%d %H:%M")
 
 
@@ -439,7 +439,7 @@ def main() -> int:
     ap.add_argument("--debug", action="store_true")
     args = ap.parse_args()
 
-    now_epoch = int(time.time())
+    now_epoch = int(_time.time())
 
     master_rows = load_master_rows(args.master)
     positions = [r for r in master_rows if (r.get("qty") is not None and r["qty"] > 0)]
@@ -539,10 +539,10 @@ def main() -> int:
             from zoneinfo import ZoneInfo
             tz = ZoneInfo("Europe/Budapest")
         except Exception:
-            tz = datetime.timezone(datetime.timedelta(hours=1))
-        _now_local = datetime.datetime.fromtimestamp(now_epoch, tz=datetime.timezone.utc).astimezone(tz)
+            tz = date_time.timezone(date_time.timedelta(hours=1))
+        _now_local = date_time.date_time.fromtimestamp(now_epoch, tz=date_time.timezone.utc).astimezone(tz)
         interval_end = _now_local.strftime("%Y-%m-%d %H:%M")
-        interval_start = (_now_local.date() - datetime.timedelta(days=1)).strftime("%Y-%m-%d") + " 22:00"
+        interval_start = (_now_local.date() - date_time.timedelta(days=1)).strftime("%Y-%m-%d") + " 22:00"
 
     with open(args.out, "w", encoding="utf-8", newline="\n") as f:
         write_header(f, interval_start, interval_end)
@@ -550,116 +550,82 @@ def main() -> int:
         f.write("## Pozíciók\n\n")
         for t, ah, pm in out_rows_pos:
             f.write(f"- {t} — AH {fmt(ah)} | PM {fmt(pm)}\n")
+
         # -------------------------------
-        # 7D EARNINGS AUDIT (Yahoo v10 quoteSummary/calendarEvents + earningsTrend estimates)
-        # CÉL: ne használjuk a v7 /quote endpointot (gyakori 401 a GitHub runneren).
-        # WEBBIBLIA: csak akkor listázunk, ha van konkrét timestamp és ≤ 7 nap.
-        #
-        # Univerzum: gyors, runner-barát (pozíciók teljesen + watchlist limit)
-        POS_ONLY = False
-        WATCHLIST_LIMIT = 25
+        # 7D EARNINGS AUDIT (Yahoo calendarEvents)
+    # --- Earnings (next 7 days) — batch-first, then estimates for hits ---
+    now_utc = date_time.date_time.utcnow()
+    horizon_utc = now_utc + date_time.timedelta(days=7)
 
-        tickers_all: List[str] = []
-        _seen = set()
+    quote_map = yahoo_quote_batch(tickers_all, retries=2)
+    checked = 0
+    hits: List[Tuple[str, date_time.datetime, Optional[float], Optional[float]]] = []
+    missing: List[str] = []
 
-        for _r in positions:
-            _t = (_r.get("ticker") or "").strip().upper()
-            if not _t or _t in _seen:
-                continue
-            tickers_all.append(_t)
-            _seen.add(_t)
+    for t in tickers_all:
+        q = quote_map.get(t)
+        ts = earnings_ts_from_quote(q or {})
+        if ts is None:
+            missing.append(t)
+            continue
+        checked += 1
+        dt_utc = date_time.date_time.utcfromtimestamp(ts)
+        if now_utc <= dt_utc <= horizon_utc:
+            eps_est, rev_est, _ = yahoo_earnings_trend(t)
+            hits.append((t, dt_utc, eps_est, rev_est))
 
-        if not POS_ONLY:
-            wl_added = 0
-            for _r in watchlist:
-                if wl_added >= WATCHLIST_LIMIT:
-                    break
-                _t = (_r.get("ticker") or "").strip().upper()
-                if not _t or _t in _seen:
-                    continue
-                tickers_all.append(_t)
-                _seen.add(_t)
-                wl_added += 1
+    hits.sort(key=lambda x: x[1])
 
-        import time
-        _t0 = time.monotonic()
-        TIME_BUDGET_SEC = 35
+    f.write("\n## Közelgő katalizátorok (ellenőrzött)\n\n")
+    f.write("7 napon belüli earnings / event:\n\n")
 
-        now_utc = datetime.datetime.utcnow()
-        horizon_utc = now_utc + datetime.timedelta(days=7)
-
-        checked = 0
-        hits: List[Tuple[str, datetime.datetime, Optional[float], Optional[float]]] = []
-        missing: List[str] = []
-        for _t in tickers_all:
-            if time.monotonic() - _t0 > TIME_BUDGET_SEC:
-                break
+    if hits:
+        for (t, dt_utc, eps_est, rev_est) in hits:
+            # Display in Europe/Budapest local date for consistency with report.
             try:
-                ts, _call = yahoo_earnings_next(_t)
+                from zoneinfo import ZoneInfo
+                dt_local = dt_utc.replace(tzinfo=date_time.timezone.utc).astimezone(ZoneInfo("Europe/Budapest"))
+                dstr = dt_local.strftime("%Y-%m-%d")
             except Exception:
-                ts = None
+                dstr = dt_utc.strftime("%Y-%m-%d")
 
-            if ts is None:
-                missing.append(_t)
-                continue
+            parts = [f"**{t}** — earnings: {dstr}"]
+            if eps_est is not None:
+                parts.append(f"EPS est.: {eps_est:.2f}")
+            if rev_est is not None:
+                # revenue is usually in raw dollars; show in B/M where reasonable
+                rev = float(rev_est)
+                if rev >= 1e9:
+                    parts.append(f"Revenue est.: {rev/1e9:.2f}B")
+                elif rev >= 1e6:
+                    parts.append(f"Revenue est.: {rev/1e6:.0f}M")
+                else:
+                    parts.append(f"Revenue est.: {rev:.0f}")
+            f.write("- " + " | ".join(parts) + "\n")
+        f.write("\n")
+    else:
+        f.write(
+            "A listában nincs olyan ticker, ahol az earnings a következő 7 napon belül lenne "
+            "(Yahoo v7 quote timestamp alapján).\n\n"
+        )
 
-            checked += 1
-            dt_utc = datetime.datetime.utcfromtimestamp(int(ts))
-            if now_utc <= dt_utc <= horizon_utc:
-                eps_est, rev_est, _ = yahoo_earnings_trend(_t)
-                hits.append((_t, dt_utc, eps_est, rev_est))
+    f.write(f"Earnings-audit lefedettség: {checked}/{len(tickers_all)} (missing timestamp: {len(missing)})\n\n")
+    f.write("\n## Watchlist\n\n")
+    for t, ah, pm in out_rows_wl:
+        f.write(f"- {t} — AH {fmt(ah)} | PM {fmt(pm)}\n")
 
-        hits.sort(key=lambda x: x[1])
-
-        f.write("\n## Közelgő katalizátorok (ellenőrzött)\n\n")
-        f.write("7 napon belüli earnings / event:\n\n")
-
-        if hits:
-            for (_t, dt_utc, eps_est, rev_est) in hits:
-                # Display in Europe/Budapest local date for consistency with report.
-                try:
-                    from zoneinfo import ZoneInfo
-                    dt_local = dt_utc.replace(tzinfo=datetime.timezone.utc).astimezone(ZoneInfo("Europe/Budapest"))
-                    dstr = dt_local.strftime("%Y-%m-%d")
-                except Exception:
-                    dstr = dt_utc.strftime("%Y-%m-%d")
-
-                parts = [f"**{_t}** — earnings: {dstr}"]
-                if eps_est is not None:
-                    parts.append(f"EPS est.: {eps_est:.2f}")
-                if rev_est is not None:
-                    rev = float(rev_est)
-                    if rev >= 1e9:
-                        parts.append(f"Revenue est.: {rev/1e9:.2f}B")
-                    elif rev >= 1e6:
-                        parts.append(f"Revenue est.: {rev/1e6:.0f}M")
-                    else:
-                        parts.append(f"Revenue est.: {rev:.0f}")
-                f.write("- " + " | ".join(parts) + "\n")
-            f.write("\n")
-        else:
+    # Debug csak akkor, ha teljesen üres
+    if (not any_data) or args.debug:
+        f.write("\n## Debug (only if no data / --debug)\n")
+        f.write(f"- now_epoch: {now_epoch}\n")
+        for k in ["pre_meta","pre_infer","pre_gated","pre_none","post_meta","post_infer","post_carry","post_gated","post_none","errors"]:
+            f.write(f"- {k}: {dbg_counts[k]}\n")
+        f.write("\n### Debug sample (first 10 tickers)\n")
+        for t, dbg, pm, ah in sample_dbg:
             f.write(
-                "A listában nincs olyan ticker, ahol az earnings a következő 7 napon belül lenne "
-                "(Yahoo calendarEvents alapján).\n\n"
+                f"- {t}: AH {fmt(ah)} (post_source={dbg.get('post_source')}, post_start={dbg.get('post_start')}, post_end={dbg.get('post_end')}) | "
+                f"PM {fmt(pm)} (pre_source={dbg.get('pre_source')}, pre_start={dbg.get('pre_start')}, pre_end={dbg.get('pre_end')})\n"
             )
-
-        f.write(f"Earnings-audit lefedettség: {checked}/{len(tickers_all)} (missing timestamp: {len(missing)})\n\n")
-
-        f.write("\n## Watchlist\n\n")
-        for t, ah, pm in out_rows_wl:
-            f.write(f"- {t} — AH {fmt(ah)} | PM {fmt(pm)}\n")
-        # Debug csak akkor, ha teljesen üres / --debug
-        if (not any_data) or args.debug:
-            f.write("\n## Debug (only if no data / --debug)\n")
-            f.write(f"- now_epoch: {now_epoch}\n")
-            for k in ["pre_meta","pre_infer","pre_gated","pre_none","post_meta","post_infer","post_carry","post_gated","post_none","errors"]:
-                f.write(f"- {k}: {dbg_counts[k]}\n")
-            f.write("\n### Debug sample (first 10 tickers)\n")
-            for t, dbg, pm, ah in sample_dbg:
-                f.write(
-                    f"- {t}: AH {fmt(ah)} (post_source={dbg.get('post_source')}, post_start={dbg.get('post_start')}, post_end={dbg.get('post_end')}) | "
-                    f"PM {fmt(pm)} (pre_source={dbg.get('pre_source')}, pre_start={dbg.get('pre_start')}, pre_end={dbg.get('pre_end')})\n"
-                )
 
     # stderr log "életjel"
     print(f"RUNNER_VERSION={VERSION}", file=sys.stderr, flush=True)
