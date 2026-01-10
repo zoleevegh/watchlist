@@ -10,7 +10,7 @@ import requests
 from pathlib import Path
 from bs4 import BeautifulSoup
 
-MASTER_CSV = "reports/master.csv"
+MASTER_CSV: "https://docs.google.com/spreadsheets/d/e/2PACX-1vQkgyw0ONwSfc2KnrmWGqf8fWVQxS-R08RySndB69KDJ8L1Cz-H2F1AZtyDfhBGedC0qdC1SFo_aDye/pub?output=csv"
 OUT_JSON = "reports/earnings_audit.json"
 
 HEADERS = {
