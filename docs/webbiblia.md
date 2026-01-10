@@ -1,4 +1,4 @@
-# WEBBIBLIA – v1.7.0 (KANONIKUS)
+# WEBBIBLIA – v1.7.1 (KANONIKUS)
 KANONIKUS RAW LINK (mindig ez az irányadó):
 https://raw.githubusercontent.com/zoleevegh/watchlist/main/docs/webbiblia.md
 
@@ -7,32 +7,35 @@ VERZIÓZÁS – KŐSZABÁLY:
 - Új verzió = előző FULL tartalom + hozzáadások (törlés csak indokoltan, külön jelölve).
 - A fájlban szereplő verziószámnak EGYEZNIE kell a fájlnév verziójával.
 
-Változások v1.6.4 → v1.7.0 (összefoglaló):
-- Yahoo Finance LIVE (Market Today) kötelező makró/nyitáskép kontextusforrás lett.
-- ALL-IN kapu/checklist kiegészült: „Yahoo LIVE átnézve” és „nincs szellem hír” tiltás erősítve.
-- Earnings-dátum: továbbra is Yahoo „Earnings Date” a kanonikus mező, de eltérés esetén kötelező megjegyzés és ellenőrző link.
-- Cél: 0 kihagyás a 7 napon belüli earnings auditban, determinisztikus runbook szerint.
+Változások v1.7.0 → v1.7.1 (összefoglaló):
+- Yahoo Finance LIVE (Market Today) kötelező makró/nyitáskép kontextusforrás marad.
+- ALL-IN kapu/checklist pontosítva: „Yahoo LIVE átnézve” csak **makró kontextus**, nem trigger; „szellem hír” tiltás változatlan.
+- Earnings-dátum forrásváltás: **Yahoo helyett** stabil, API key nélküli lánc: **Nasdaq Earnings Calendar (primary)** → **Investing.com (secondary)** → „adat nem elérhető” (explicit).
+- Earnings audit mostantól külön modul (earnings.py), és a #1 reportban a kimenet a **## Pozíciók elé** kerül (MASTER-szűréssel, 7 napos ablakkal).
+- Cél: 0 félreértés a 7 napon belüli earnings auditban; a riportban kötelező a lefedettségi összegzés és a forrás-jelzés.
 
 ---
 
 ## 🔒 Earnings-dátum – KANONIKUS SZABÁLY (#1 ALL-IN)
 
-**Earnings dátum forrása kizárólag: Yahoo Finance – “Earnings Date” mező.**
+**Earnings / event dátumok kanonikus forráslánca (API key nélkül):**
+1) **Nasdaq – Earnings Calendar** (primary)
+2) **Investing.com – Earnings Calendar** (secondary)
+3) Ha egyik sem ad dátumot: **„Earnings: n/a (forrás nem adott dátumot)”** (explicit jelzés)
 
-Tilos használni:
-- becsült earnings window-kat,
-- EarningsWhispers / MarketBeat / historical timing dátumokat,
-- elemzői „várható” időablakokat.
+Engedélyezett mezők (ha a forrás adja):
+- **Date** (dátum)
+- **Time** (pl. pre-market / after-hours / not supplied)
+- **EPS forecast** és **Revenue forecast** (ha a naptár megadja – ezek „estimate”-ek, nem mi becsüljük)
 
-Logika:
-- csak akkor kerül be a jelentésbe,
-  - ha a ticker **a Gist / MASTER listában szerepel**, ÉS
-  - a Yahoo Finance **konkrét dátumot** mutat, ÉS
-  - az **≤ 7 napon belül** van a futás idejétől.
+Tilos:
+- saját „becslés” vagy következtetés (historical timing, EarningsWhispers, MarketBeat, stb.),
+- ticker-szintű, kulcsos API-k (TradingEconomics API key nélkül, stb.),
+- Yahoo „Earnings Date” (NEM használt) mezőre támaszkodni (jelenleg instabil / blokkolt).
 
-Ha a Yahoo mező üres / tartományos → **nem jelentjük**.
+Ha nincs adat: **nem találunk ki semmit**, hanem jelezzük, hogy nincs dátum (és a lefedettséget a blokk végén kötelezően kiírjuk).
 
-
+---
 # WEBBIBLIA – KANONIKUS FORRÁS
 **Mindig ezt a linket tekintsd irányadónak:**
 https://raw.githubusercontent.com/zoleevegh/watchlist/main/docs/webbiblia.md
@@ -42,41 +45,33 @@ https://raw.githubusercontent.com/zoleevegh/watchlist/main/docs/webbiblia.md
 **Cél:** 0 db kihagyás. Nincs „fejből”, nincs becslés, nincs naptár-átvétel. Csak determinisztikus ellenőrzés.
 
 ### Lépések (EARNINGS AUDIT RUNBOOK)
-1) **Univerzum rögzítése**
-   - A vizsgálat alapja **kizárólag a Gist / MASTER tickerei**.
-   - Először kiírjuk: „Tickerek száma: N = …” (pozíciók + watchlist).
 
-2) **Ticker → Yahoo „Earnings Date” mező (KANONIKUS)**
-   - Minden tickerre külön, **egyenként** megnézzük a Yahoo Finance oldalon az **„Earnings Date”** mezőt.
-   - Ha a mező **konkrét dátumot** ad: rögzítjük.
-   - Ha a mező üres / tartományos / „—”: **NEM kerül be**.
+**Cél:** 7 napon belüli közelgő earnings / event lista a MASTER tickerekre – determinisztikusan, automatával, API key nélkül.
 
-3) **7 napos szűrő**
-   - Csak az kerül a „Közelgő katalizátorok” blokkba, ahol:
-     - ticker ∈ Gist/Master, **ÉS**
-     - Yahoo „Earnings Date” **konkrét**, **ÉS**
-     - dátum **≤ futás ideje + 7 nap**.
+1) **Univerzum rögzítése (MASTER)**
+   - A vizsgálat alapja **kizárólag a MASTER** (Google Sheets → CSV).
+   - A script kiírja: „Találat: K / N ticker”.
 
-4) **Bizonyíték-követelmény (auditálhatóság)**
-   - A riportban az earnings-listához **kötelező**:
-     - a ticker,
-     - a dátum,
-     - és legalább **egy forráslink**, ami a Yahoo quote oldalra mutat:  
-       `https://finance.yahoo.com/quote/<TICKER>/`
-   - (Nem kell mindenre külön hosszan idézni, de a link ott legyen, hogy visszanézhető legyen.)
+2) **Forrás1 – Nasdaq Earnings Calendar (primary)**
+   - A script a következő 7 nap **napi** naptár-oldalait kéri le.
+   - Kinyeri a listát: (ticker, date, time, EPS estimate, revenue estimate – ha van).
+   - **MASTER-szűrés**: csak a MASTER-ben szereplő tickerek maradnak.
 
-5) **Lefedettségi zárás**
-   - A blokk végén kötelező sor:
-     - „Earnings audit lefedettség: N/N ticker ellenőrizve; 7 napon belüli találat: K db.”
+3) **Forrás2 – Investing.com Earnings (secondary)**
+   - Csak akkor fut, ha a Nasdaq naptár adott nap(okon) blokkolt / nem ad adatot.
+   - Ugyanaz a kimenet: (ticker, date, time/period – ha van).
+   - **MASTER-szűrés** itt is kötelező.
 
-### Tiltások (hogy ne legyen több Netflix‑01.14 típusú félrecsúszás)
-- TILOS: EarningsWhispers / MarketBeat / „estimated window” / historikus mintázat alapján dátumot mondani.
-- TILOS: listán kívüli ticker bevonása („calendar dobta ki”) – csak Gist/Master univerzum.
+4) **Riport-követelmény**
+   - A #1 reportban a blokk neve: **„## Közelgő katalizátorok (ellenőrzött)”**.
+   - A blokk a **## Pozíciók elé** kerül.
+   - A végén kötelező a lefedettségi sor(ok): sikeres napok, blokkolt napok, és „dátum nem elérhető” összesítés.
 
-# 📘 WEBBIBLIA v1.7.0
-Web‑alapú #1 / #ALL‑IN jelentések kanonikus szabálykönyve
+5) **Tiltások (hogy ne csússzunk el)**
+   - Nincs „UTC-trükközés” a dátumokra: **lokális naptári nap** a mérvadó (Europe/Budapest szerint kiírva).
+   - Nincs saját becslés: csak amit a naptár forrás közöl.
+   - Ha nincs adat: **explicit n/a** (nem „üresen hagyjuk”, nem „nincs a következő 7 napban”, ha valójában csak nincs lefedettség).
 
----
 
 ## 0️⃣ Hogyan használd ezt a dokumentumot
 
@@ -290,4 +285,4 @@ hanem hogy semmi lényeges ne maradjon ki – és semmi zaj ne keveredjen be.**
 
 ---
 
-Verzió: **v1.7.0 – KANONIKUS**
+Verzió: **v1.7.1 – KANONIKUS**
