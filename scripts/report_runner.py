@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# report_runner.py — v4.5.5-price-engine-yahoo401-softfail-tickersall-fix-2026-01-09
+# report_runner.py — v4.6.8-price-engine-sort-pm-ah-2026-01-10
 #
 # FIX / CÉL:
 # - Stabil #1 riport: AH elöl, PM utána, külön blokkban: Pozíciók (Darabszam>0), majd Watchlist.
@@ -95,7 +95,7 @@ def _budapest_windows(now_epoch: int, last_regular_market_time: int | None = Non
 
     return (pm_start, pm_end, ah_start, ah_end, now_local.isoformat(), close_day.isoformat())
 
-VERSION = "v4.5.5-price-engine-yahoo401-softfail-tickersall-fix-2026-01-09"
+VERSION = "v4.6.8-price-engine-sort-pm-ah-2026-01-10"
 
 
 def pct(a, b):
@@ -507,10 +507,18 @@ def main() -> int:
             dbg_counts["errors"] += 1
             out_rows_wl.append((t, None, None))
 
-    # sorting: abs(AH) desc, then abs(PM)
+    # sorting (WEBBIBLIA request): value-desc, using PM if available, else AH.
+    # - Primary: PM when not n/a, otherwise AH
+    # - Secondary (tie-break): the other field (AH/PM)
+    # - n/a rows go to the bottom
+
     def _k(row):
         _, ah, pm = row
-        return (abs(ah) if ah is not None else -1.0, abs(pm) if pm is not None else -1.0)
+        primary = pm if pm is not None else ah
+        secondary = ah if pm is not None else pm
+        if primary is None:
+            return (0, -1e9, -1e9)
+        return (1, float(primary), float(secondary) if secondary is not None else -1e9)
 
     out_rows_pos.sort(key=_k, reverse=True)
     out_rows_wl.sort(key=_k, reverse=True)
