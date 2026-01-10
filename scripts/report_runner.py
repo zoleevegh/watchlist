@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# report_runner.py — v4.6.8-price-engine-sort-pm-ah-2026-01-10
+# report_runner.py — v4.6.9-price-engine-remove-yahoo-earnings-2026-01-10
 #
 # FIX / CÉL:
 # - Stabil #1 riport: AH elöl, PM utána, külön blokkban: Pozíciók (Darabszam>0), majd Watchlist.
@@ -95,7 +95,7 @@ def _budapest_windows(now_epoch: int, last_regular_market_time: int | None = Non
 
     return (pm_start, pm_end, ah_start, ah_end, now_local.isoformat(), close_day.isoformat())
 
-VERSION = "v4.6.8-price-engine-sort-pm-ah-2026-01-10"
+VERSION="v4.6.9-price-engine-remove-yahoo-earnings-2026-01-10"
 
 
 def pct(a, b):
@@ -158,75 +158,6 @@ def yahoo_quote_batch(symbols: List[str], retries: int = 2) -> Dict[str, Dict[st
             if sym:
                 out[sym] = q
     return out
-
-
-def earnings_ts_from_quote(q: Dict[str, Any]) -> Optional[int]:
-    """Pick the best-available earnings timestamp (epoch seconds) from a v7 quote result."""
-    # Prefer START if present (more deterministic), then main, then END.
-    for k in ("earningsTimestampStart", "earningsTimestamp", "earningsTimestampEnd"):
-        v = q.get(k)
-        if isinstance(v, (int, float)) and v > 0:
-            return int(v)
-    return None
-
-
-def yahoo_earnings_trend(ticker: str) -> Tuple[Optional[float], Optional[float], Optional[str]]:
-    """Fetch EPS + revenue estimate (avg) for the next reported period (best-effort)."""
-    t = ticker.strip().upper()
-    if not t:
-        return None, None, None
-    url = (
-        f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{t}"
-        "?modules=earningsTrend"
-    )
-    data = http_json_retry(url, retries=2)
-    try:
-        qs = (((data or {}).get("quoteSummary") or {}).get("result") or [None])[0] or {}
-        et = qs.get("earningsTrend") or {}
-        trend = (et.get("trend") or [])
-        if not trend:
-            return None, None, None
-        # Usually the first entry is current quarter.
-        cur = trend[0] or {}
-        eps = (((cur.get("earningsEstimate") or {}).get("avg") or {}).get("raw"))
-        rev = (((cur.get("revenueEstimate") or {}).get("avg") or {}).get("raw"))
-        curcy = (((cur.get("revenueEstimate") or {}).get("avg") or {}).get("fmt"))  # not currency, but formatted
-        # Currency isn't directly in earningsTrend; we'll leave None.
-        eps_v = float(eps) if isinstance(eps, (int, float)) else None
-        rev_v = float(rev) if isinstance(rev, (int, float)) else None
-        return eps_v, rev_v, None
-    except Exception:
-        return None, None, None
-
-def yahoo_earnings_next(ticker: str) -> Tuple[Optional[int], Optional[str]]:
-    """Return next earnings datetime (UTC epoch) from Yahoo quoteSummary calendarEvents."""
-    t = ticker.strip().upper()
-    url = f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{t}?modules=calendarEvents"
-    j = http_json_retry(url, retries=3, base_sleep=0.6)
-    qs = (j.get("quoteSummary") or {}).get("result") or []
-    if not qs:
-        return None, None
-    cal = (qs[0].get("calendarEvents") or {})
-    earnings = (cal.get("earnings") or {})
-    ed = earnings.get("earningsDate")
-
-    epoch: Optional[int] = None
-    if isinstance(ed, list) and ed:
-        raw = ed[0].get("raw") if isinstance(ed[0], dict) else None
-        if raw is not None:
-            try:
-                epoch = int(raw)
-            except Exception:
-                epoch = None
-
-    call_time = earnings.get("earningsCallTime")
-    call_str: Optional[str] = None
-    if isinstance(call_time, dict):
-        call_str = call_time.get("fmt") or call_time.get("raw")
-        if call_str is not None:
-            call_str = str(call_str).upper()
-
-    return epoch, call_str
 
 
 def fmt_dt_budapest(epoch_utc: int) -> str:
@@ -559,77 +490,6 @@ def main() -> int:
         for t, ah, pm in out_rows_pos:
             f.write(f"- {t} — AH {fmt(ah)} | PM {fmt(pm)}\n")
 
-        # -------------------------------
-        # 7D EARNINGS AUDIT (Yahoo calendarEvents)
-        # --- Earnings (next 7 days) — batch-first, then estimates for hits ---
-        now_utc = datetime.datetime.utcnow()
-        horizon_utc = now_utc + datetime.timedelta(days=7)
-    
-        # Build earnings-audit universe from MASTER output (positions + watchlist), deduped
-        _seen = set()
-        tickers_all = []
-        for _t, _ah, _pm in (out_rows_pos + out_rows_wl):
-            if _t not in _seen:
-                _seen.add(_t)
-                tickers_all.append(_t)
-        # Yahoo batch quote is best-effort (401/timeout must NOT crash report)
-        try:
-            quote_map = yahoo_quote_batch(tickers_all, retries=2)
-        except Exception as _e:
-            quote_map = {}
-            f.write(f"\n> Earnings-audit: Yahoo quote batch nem elérhető ({type(_e).__name__}: {_e})\n\n")
-        checked = 0
-        hits: List[Tuple[str, datetime.datetime, Optional[float], Optional[float]]] = []
-        missing: List[str] = []
-    
-        for t in tickers_all:
-            q = quote_map.get(t)
-            ts = earnings_ts_from_quote(q or {})
-            if ts is None:
-                missing.append(t)
-                continue
-            checked += 1
-            dt_utc = datetime.datetime.utcfromtimestamp(ts)
-            if now_utc <= dt_utc <= horizon_utc:
-                eps_est, rev_est, _ = yahoo_earnings_trend(t)
-                hits.append((t, dt_utc, eps_est, rev_est))
-    
-        hits.sort(key=lambda x: x[1])
-    
-        f.write("\n## Közelgő katalizátorok (ellenőrzött)\n\n")
-        f.write("7 napon belüli earnings / event:\n\n")
-    
-        if hits:
-            for (t, dt_utc, eps_est, rev_est) in hits:
-                # Display in Europe/Budapest local date for consistency with report.
-                try:
-                    from zoneinfo import ZoneInfo
-                    dt_local = dt_utc.replace(tzinfo=datetime.timezone.utc).astimezone(ZoneInfo("Europe/Budapest"))
-                    dstr = dt_local.strftime("%Y-%m-%d")
-                except Exception:
-                    dstr = dt_utc.strftime("%Y-%m-%d")
-    
-                parts = [f"**{t}** — earnings: {dstr}"]
-                if eps_est is not None:
-                    parts.append(f"EPS est.: {eps_est:.2f}")
-                if rev_est is not None:
-                    # revenue is usually in raw dollars; show in B/M where reasonable
-                    rev = float(rev_est)
-                    if rev >= 1e9:
-                        parts.append(f"Revenue est.: {rev/1e9:.2f}B")
-                    elif rev >= 1e6:
-                        parts.append(f"Revenue est.: {rev/1e6:.0f}M")
-                    else:
-                        parts.append(f"Revenue est.: {rev:.0f}")
-                f.write("- " + " | ".join(parts) + "\n")
-            f.write("\n")
-        else:
-            f.write(
-                "A listában nincs olyan ticker, ahol az earnings a következő 7 napon belül lenne "
-                "(Yahoo v7 quote timestamp alapján).\n\n"
-            )
-    
-        f.write(f"Earnings-audit lefedettség: {checked}/{len(tickers_all)} (missing timestamp: {len(missing)})\n\n")
         f.write("\n## Watchlist\n\n")
         for t, ah, pm in out_rows_wl:
             f.write(f"- {t} — AH {fmt(ah)} | PM {fmt(pm)}\n")
