@@ -62,6 +62,36 @@ jobs:
             exit 1
           fi
 
+          # Pick earnings script path (optional)
+          if [ -f "scripts/earnings.py" ]; then
+            EARNINGS="scripts/earnings.py"
+          elif [ -f "earnings.py" ]; then
+            EARNINGS="earnings.py"
+          else
+            EARNINGS=""
+          fi
+
+          # Run earnings next-7d audit (soft) -> reports/earnings_next7d.md
+          RC_E=0
+          set +e
+          if [ -n "${EARNINGS}" ]; then
+            if [ -f "reports/master.csv" ]; then
+              python "${EARNINGS}" --master "reports/master.csv" --out "reports/earnings_next7d.md"
+              RC_E=$?
+            else
+              python "${EARNINGS}" --master "${MASTER_URL}" --out "reports/earnings_next7d.md"
+              RC_E=$?
+            fi
+          else
+            RC_E=2
+          fi
+          set -e
+
+          if [ "${RC_E}" -ne 0 ] || [ ! -f "reports/earnings_next7d.md" ]; then
+            python -c "from pathlib import Path; Path('reports').mkdir(parents=True, exist_ok=True); Path('reports/earnings_next7d.md').write_text('# Earnings – következő 7 nap (MASTER szűrés)\n\nN/A: earnings.py nem található vagy nem futott le.\n', encoding='utf-8')"
+            echo "EARNINGS_EXIT=${RC_E}" | tee -a reports/runner.log
+          fi
+
           # Run runner (never hard-fail the job; we still want the stable raw link + gist update)
           RC=0
           set +e
@@ -78,6 +108,33 @@ jobs:
             python -c "from pathlib import Path; Path('reports').mkdir(parents=True, exist_ok=True); Path('reports/summary_report_1.md').write_text('# #1 – Premarket check (PRICE ENGINE)\n\nNO_DATA: a report nem készült el (runner crash / hiányzó fájl / forráshiba).\n', encoding='utf-8')"
             echo "RUNNER_EXIT=${RC}" | tee -a reports/runner.log
           fi
+
+          # Inject earnings block BEFORE '## Pozíciók' in summary_report_1.md
+          python - <<'PY'
+          from pathlib import Path
+
+          rep = Path('reports/summary_report_1.md')
+          earn = Path('reports/earnings_next7d.md')
+          if not rep.exists() or not earn.exists():
+            raise SystemExit(0)
+
+          rep_txt = rep.read_text(encoding='utf-8', errors='replace')
+          earn_txt = earn.read_text(encoding='utf-8', errors='replace').strip() + "\n\n"
+
+          # Avoid double-insert
+          if 'Earnings – következő 7 nap' in rep_txt:
+            raise SystemExit(0)
+
+          marker = '## Pozíciók'
+          if marker in rep_txt:
+            before, after = rep_txt.split(marker, 1)
+            rep_txt = before.rstrip() + "\n\n" + earn_txt + marker + after
+          else:
+            # Fallback: append near top
+            rep_txt = rep_txt.rstrip() + "\n\n" + earn_txt
+
+          rep.write_text(rep_txt, encoding='utf-8')
+          PY
 
           # Build one single clickable nocache URL (run id + attempt + sha)
           NOCACHE="${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}"
