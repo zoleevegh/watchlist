@@ -1,0 +1,39 @@
+name: Earnings audit ONLY (isolated)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  earnings:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests beautifulsoup4
+
+      - name: Download MASTER
+        run: |
+          mkdir -p reports
+          curl -L "${MASTER_URL}" -o reports/master.csv
+        env:
+          MASTER_URL: https://docs.google.com/spreadsheets/d/e/2PACX-1vQkgyw0ONwSfc2KnrmWGqf8fWVQxS-R08RySndB69KDJ8L1Cz-H2F1AZtyDfhBGedC0qdC1SFo_aDye/pub?output=csv
+
+      - name: Run earnings audit
+        run: |
+          python earnings.py
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: earnings_audit
+          path: reports/earnings_audit.json
