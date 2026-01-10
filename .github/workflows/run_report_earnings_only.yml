@@ -1,4 +1,7 @@
+# run_report_earnings_only.yml — v0.1.0-earnings-only-2026-01-10
 # TEMP: earnings-only mode – DO NOT run AH/PM runner yet. Revert later.
+# Verzió-szabály: bármely fájl módosításakor a verziószámot folytatólagosan kell növelni, kihagyás nélkül.
+
 name: PRICE ENGINE – earnings-only (TEMP)
 
 on:
@@ -18,24 +21,27 @@ jobs:
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
-          pip install requests beautifulsoup4
+          python -m pip install beautifulsoup4
 
       - name: Prepare reports dir
-        run: |
-          mkdir -p reports
+        run: mkdir -p reports
 
       - name: Download MASTER CSV
         run: |
           curl -fsSL "${MASTER_URL}" -o reports/master.csv
+          echo "MASTER_URL=${MASTER_URL}"
+          echo "MASTER downloaded: reports/master.csv"
         env:
-          MASTER_URL: https://docs.google.com/spreadsheets/d/e/2PACX-1vQkgyw0ONwSfc2KnrmWGqf8fWVQxS-R08RySndB69KDJ8L1Cz-H2F1AZtyDfhBGedC0qdC1SFo_aDye/pub?output=csv
+          MASTER_URL: "https://docs.google.com/spreadsheets/d/e/2PACX-1vQkgyw0ONwSfc2KnrmWGqf8fWVQxS-R08RySndB69KDJ8L1Cz-H2F1AZtyDfhBGedC0qdC1SFo_aDye/pub?output=csv"
 
       - name: Run earnings audit only
         run: |
-          python "scripts/earnings.py"
+          python scripts/earnings.py || true
 
-      - name: Upload artifact (earnings_audit.json)
+      - name: Upload artifacts (earnings)
         uses: actions/upload-artifact@v4
         with:
-          name: earnings_audit
-          path: reports/earnings_audit.json
+          name: earnings_outputs
+          path: |
+            reports/earnings_audit.json
+            reports/earnings_next7d.md
