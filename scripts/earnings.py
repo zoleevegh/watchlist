@@ -1,362 +1,221 @@
 #!/usr/bin/env python3
-# earnings.py — v0.2.0-earnings-next7d-investing-nasdaq-fallback-2026-01-10
+# earnings.py – v0.2.5-earnings-next7d-nasdaq-calendar-master-2026-01-10
 #
-# CÉL:
-# - API key nélkül, stabilan listázni a MASTER tickerek közül azokat,
-#   amelyeknek a következő 7 napon belül várható earnings dátuma van.
-# - Elsődleges próbálkozás: Nasdaq public calendar endpoint (ha elérhető).
-# - Másodlagos: Investing.com Earnings Calendar (HTML parse).
-# - Ha egyik sem ad adatot: explicit "unavailable".
+# Cél:
+# - Következő 7 nap (lokális naptári nap, Europe/Budapest)
+# - Nasdaq earnings CALENDAR (date-based) -> kevés kérés, stabilabb mint ticker-szintű
+# - MASTER (CSV) tickerek szűrése
+# - Kimenet: reports/earnings_next7d.md (csak ez)
 #
-# Verzió-szabály: bármely fájl módosításakor a verziószámot folytatólagosan kell növelni, kihagyás nélkül.
+# NEM:
+# - ticker-szintű API
+# - Yahoo / Investing
+# - HTML scrape
+# - UTC-trükközés (csak a napi dátumokhoz ISO YYYY-MM-DD)
 
 from __future__ import annotations
 
 import csv
 import json
-import os
-import re
 import sys
 import time
-import datetime as dt
-from dataclasses import dataclass, asdict
-from typing import Dict, List, Optional, Tuple
-
-import urllib.request
 import urllib.error
+import urllib.request
+from dataclasses import dataclass
+from datetime import datetime, timedelta, date
+from pathlib import Path
 
-from bs4 import BeautifulSoup
-
-
-OUT_DIR = "reports"
-MASTER_LOCAL = os.path.join(OUT_DIR, "master.csv")
-OUT_JSON = os.path.join(OUT_DIR, "earnings_audit.json")
-OUT_MD = os.path.join(OUT_DIR, "earnings_next7d.md")
-
-USER_AGENT = (
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/121.0 Safari/537.36"
-)
-
-DAY_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+try:
+    from zoneinfo import ZoneInfo  # py3.9+
+except Exception:  # pragma: no cover
+    ZoneInfo = None  # type: ignore
 
 
-@dataclass
-class EarningsItem:
+TZ_NAME = "Europe/Budapest"
+OUT_MD = Path("reports/earnings_next7d.md")
+DEFAULT_MASTER_LOCAL = Path("reports/master.csv")
+
+
+@dataclass(frozen=True)
+class Row:
+    d: str
+    t: str
     ticker: str
-    earnings_date: Optional[str] = None  # YYYY-MM-DD
-    earnings_time: Optional[str] = None  # Before Open / After Close / Time Not Supplied
-    eps_forecast: Optional[str] = None
-    revenue_forecast: Optional[str] = None
-    source: str = "unavailable"
+    eps: str
+    rev: str
+    source: str
 
 
-def ensure_out_dir() -> None:
-    os.makedirs(OUT_DIR, exist_ok=True)
+def _now_local() -> datetime:
+    if ZoneInfo is None:
+        return datetime.now()
+    return datetime.now(ZoneInfo(TZ_NAME))
 
 
-def http_get(url: str, timeout: int = 30) -> str:
-    req = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": USER_AGENT,
-            "Accept": "text/html,application/json;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Connection": "close",
-        },
-        method="GET",
-    )
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        charset = r.headers.get_content_charset() or "utf-8"
-        return r.read().decode(charset, errors="replace")
+def _read_master_tickers(master_path: Path) -> set[str]:
+    if not master_path.exists():
+        raise FileNotFoundError(f"MASTER CSV not found: {master_path}")
 
+    tickers: set[str] = set()
+    with master_path.open("r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        header = [h.strip() for h in (reader.fieldnames or [])]
+        ticker_col = None
+        for cand in ("Ticker", "ticker", "TICKER", "Symbol", "symbol"):
+            if cand in header:
+                ticker_col = cand
+                break
+        if ticker_col is None:
+            ticker_col = header[0] if header else None
+        if ticker_col is None:
+            return tickers
 
-def load_master_tickers() -> List[str]:
-    """
-    MASTER CSV expected to be already downloaded into reports/master.csv by workflow.
-    We read the first column containing tickers; tolerate headers.
-    """
-    if not os.path.isfile(MASTER_LOCAL):
-        raise FileNotFoundError(f"MASTER not found at {MASTER_LOCAL}")
-
-    tickers: List[str] = []
-    with open(MASTER_LOCAL, "r", encoding="utf-8", newline="") as f:
-        reader = csv.reader(f)
         for row in reader:
-            if not row:
+            v = (row.get(ticker_col) or "").strip()
+            if not v:
                 continue
-            cell = (row[0] or "").strip()
-            if not cell:
-                continue
-            # skip common headers
-            if cell.lower() in {"ticker", "symbol"}:
-                continue
-            # normalize
-            t = cell.upper()
-            # allow dots/dashes (e.g. BRK.B, PKN.WA)
-            if re.fullmatch(r"[A-Z0-9][A-Z0-9\.\-]{0,15}", t):
-                tickers.append(t)
-    # de-dup preserve order
-    seen = set()
-    out = []
-    for t in tickers:
-        if t not in seen:
-            seen.add(t)
-            out.append(t)
-    return out
+            tickers.add(v.upper())
+    return tickers
 
 
-def next_7d_window_utc(today_utc: dt.date | None = None) -> Tuple[dt.date, dt.date]:
-    if today_utc is None:
-        today_utc = dt.datetime.utcnow().date()
-    return today_utc, today_utc + dt.timedelta(days=7)
+def _http_get_json(url: str, timeout: int = 25) -> dict:
+    headers = {
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.nasdaq.com/",
+        "Connection": "close",
+    }
+    req = urllib.request.Request(url, headers=headers, method="GET")
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        raw = resp.read()
+    return json.loads(raw.decode("utf-8", errors="replace"))
 
 
-# --- Nasdaq (best-effort) -----------------------------------------------------
+def _map_time(v: str) -> str:
+    s = (v or "").strip().lower()
+    if not s:
+        return "time-not-supplied"
+    if "before" in s and "open" in s:
+        return "time-pre-market"
+    if "after" in s and ("close" in s or "market" in s):
+        return "time-after-hours"
+    if "not" in s and "supplied" in s:
+        return "time-not-supplied"
+    return s.replace(" ", "-")
 
-def nasdaq_calendar_by_date(date_yyyy_mm_dd: str) -> List[Dict]:
-    """
-    Best-effort Nasdaq public endpoint.
-    NOTE: Nasdaq may throttle/403; we treat any failure as "no data".
-    """
-    url = f"https://api.nasdaq.com/api/calendar/earnings?date={date_yyyy_mm_dd}"
+
+def _fmt_money(x) -> str:
+    if x is None:
+        return ""
+    if isinstance(x, (int, float)):
+        return f"${x:.2f}"
+    s = str(x).strip()
+    if not s:
+        return ""
+    if s.startswith("$"):
+        return s
     try:
-        raw = http_get(url, timeout=25)
-        j = json.loads(raw)
-        rows = (j.get("data") or {}).get("rows") or []
-        return rows
+        fv = float(s.replace(",", ""))
+        return f"${fv:.2f}"
     except Exception:
-        return []
+        return s
 
 
-def build_from_nasdaq(tickers_set: set[str], start: dt.date, end: dt.date) -> Dict[str, EarningsItem]:
-    out: Dict[str, EarningsItem] = {}
-    cur = start
-    while cur <= end:
-        rows = nasdaq_calendar_by_date(cur.isoformat())
+def _extract_rows_for_date(day: date) -> list[dict]:
+    url = f"https://api.nasdaq.com/api/calendar/earnings?date={day.isoformat()}"
+    j = _http_get_json(url)
+    data = (j.get("data") or {})
+    rows = data.get("rows") or []
+    return [r for r in rows if isinstance(r, dict)]
+
+
+def _build_report(master_tickers: set[str], start_day: date, days: int = 7) -> tuple[list[Row], dict]:
+    found: list[Row] = []
+    stats = {
+        "days_queried": 0,
+        "nasdaq_calendar_ok_days": 0,
+        "nasdaq_calendar_block_days": 0,
+        "nasdaq_calendar_other_fail_days": 0,
+    }
+
+    for i in range(days):
+        d = start_day + timedelta(days=i)
+        stats["days_queried"] += 1
+        try:
+            rows = _extract_rows_for_date(d)
+            stats["nasdaq_calendar_ok_days"] += 1
+        except urllib.error.HTTPError as e:
+            code = int(getattr(e, "code", 0) or 0)
+            if code in (401, 403, 429):
+                stats["nasdaq_calendar_block_days"] += 1
+            else:
+                stats["nasdaq_calendar_other_fail_days"] += 1
+            continue
+        except Exception:
+            stats["nasdaq_calendar_other_fail_days"] += 1
+            continue
+
         for r in rows:
             sym = (r.get("symbol") or "").strip().upper()
-            if not sym or sym not in tickers_set:
+            if not sym or sym not in master_tickers:
                 continue
-            item = out.get(sym) or EarningsItem(ticker=sym)
-            item.earnings_date = cur.isoformat()
-            # Nasdaq fields vary
-            item.earnings_time = (r.get("time") or r.get("timeOfDay") or item.earnings_time)
-            item.eps_forecast = (r.get("epsForecast") or r.get("eps") or item.eps_forecast)
-            item.revenue_forecast = (r.get("revenueForecast") or r.get("revenue") or item.revenue_forecast)
-            item.source = "nasdaq"
-            out[sym] = item
-        cur += dt.timedelta(days=1)
-        # be polite
-        time.sleep(0.25)
-    return out
+            t = _map_time(r.get("time") or "")
+            eps = _fmt_money(r.get("epsForecast"))
+            rev = _fmt_money(r.get("revenueForecast"))
+            found.append(Row(d=d.isoformat(), t=t, ticker=sym, eps=eps, rev=rev, source="nasdaq"))
+
+        time.sleep(0.2)
+
+    found.sort(key=lambda x: (x.d, x.t, x.ticker))
+    return found, stats
 
 
-# --- Investing.com (stable fallback) ------------------------------------------
-
-DATE_LINE_RE = re.compile(
-    r"^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),\s+([A-Za-z]+)\s+(\d{1,2}),\s+(\d{4})$"
-)
-TICKER_RE = re.compile(r"\(([A-Z0-9\.\-]{1,16})\)")
-
-def parse_investing_calendar(html: str) -> List[EarningsItem]:
-    """
-    Parse Investing.com earnings calendar HTML into items.
-    This is a resilient parser that works even if the table layout changes,
-    because it primarily uses the rendered text.
-    """
-    soup = BeautifulSoup(html, "html.parser")
-    text = soup.get_text("\n", strip=True)
-    lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
-
-    items: List[EarningsItem] = []
-    cur_date: Optional[dt.date] = None
-
-    i = 0
-    while i < len(lines):
-        ln = lines[i]
-        m = DATE_LINE_RE.match(ln)
-        if m:
-            # "Monday, January 12, 2026"
-            month_name = m.group(2)
-            day = int(m.group(3))
-            year = int(m.group(4))
-            try:
-                month = dt.datetime.strptime(month_name, "%B").month
-                cur_date = dt.date(year, month, day)
-            except Exception:
-                cur_date = None
-            i += 1
-            continue
-
-        # rows usually include "... Company Name (TICKER) ..." and nearby "Before Open/After Close"
-        tm = TICKER_RE.search(ln)
-        if tm and cur_date:
-            ticker = tm.group(1).upper()
-
-            # Heuristics: look ahead a few lines for time + EPS/Rev forecasts
-            look = " | ".join(lines[i:i+8])
-            time_of_day = None
-            if "Before Open" in look:
-                time_of_day = "Before Open"
-            elif "After Close" in look:
-                time_of_day = "After Close"
-            elif "Time Not Supplied" in look:
-                time_of_day = "Time Not Supplied"
-
-            # EPS / Revenue forecasts: try common patterns (numbers near 'EPS'/'Revenue')
-            eps = None
-            rev = None
-            # Example snippets on Investing: "EPS Forecast 1.23" "Revenue Forecast 12.3B"
-            eps_m = re.search(r"EPS Forecast\s*([-+]?\d+(\.\d+)?)", look)
-            if eps_m:
-                eps = eps_m.group(1)
-            rev_m = re.search(r"Revenue Forecast\s*([-\d\.\,]+[MBT]?)", look)
-            if rev_m:
-                rev = rev_m.group(1).replace(",", "")
-
-            items.append(EarningsItem(
-                ticker=ticker,
-                earnings_date=cur_date.isoformat(),
-                earnings_time=time_of_day,
-                eps_forecast=eps,
-                revenue_forecast=rev,
-                source="investing",
-            ))
-        i += 1
-
-    # De-dup per ticker (keep earliest)
-    best: Dict[str, EarningsItem] = {}
-    for it in items:
-        if not it.ticker or not it.earnings_date:
-            continue
-        prev = best.get(it.ticker)
-        if prev is None or it.earnings_date < prev.earnings_date:
-            best[it.ticker] = it
-    return list(best.values())
-
-
-def build_from_investing(tickers_set: set[str]) -> Dict[str, EarningsItem]:
-    """
-    Fetch Investing earnings calendar and return only tickers found on the page.
-    We will later filter to next 7 days.
-    """
-    url = "https://www.investing.com/earnings-calendar/"
-    try:
-        html = http_get(url, timeout=35)
-        items = parse_investing_calendar(html)
-        out: Dict[str, EarningsItem] = {}
-        for it in items:
-            if it.ticker in tickers_set:
-                out[it.ticker] = it
-        return out
-    except Exception:
-        return {}
-
-
-# --- Output -------------------------------------------------------------------
-
-def write_outputs(
-    tickers: List[str],
-    items_map: Dict[str, EarningsItem],
-    start: dt.date,
-    end: dt.date,
-    meta: Dict,
-) -> None:
-    # JSON (full mapping for traceability)
-    results: Dict[str, Dict] = {}
-    found = 0
-    for t in tickers:
-        it = items_map.get(t)
-        if it and it.earnings_date:
-            results[t] = asdict(it)
-            found += 1
-        else:
-            results[t] = asdict(EarningsItem(ticker=t))
-
-    payload = {
-        "meta": meta,
-        "window": {"from": start.isoformat(), "to": end.isoformat()},
-        "found": found,
-        "results": results,
-    }
-    with open(OUT_JSON, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
-
-    # Markdown (only tickers with earnings in the window)
-    # Sort: earliest date, then time
-    def sort_key(it: EarningsItem):
-        return (it.earnings_date or "9999-12-31", it.earnings_time or "", it.ticker)
-
-    in_window: List[EarningsItem] = []
-    for it in items_map.values():
-        if not it.earnings_date:
-            continue
-        try:
-            d = dt.date.fromisoformat(it.earnings_date)
-        except Exception:
-            continue
-        if start <= d <= end:
-            in_window.append(it)
-
-    in_window.sort(key=sort_key)
-
-    lines: List[str] = []
-    lines.append(f"# Earnings – következő 7 nap (MASTER szűrés)")
+def _write_md(rows: list[Row], master_count: int, start_day: date, end_day: date, run_local: datetime, stats: dict) -> None:
+    OUT_MD.parent.mkdir(parents=True, exist_ok=True)
+    lines: list[str] = []
+    lines.append("# Earnings – következő 7 nap (MASTER szűrés)")
     lines.append("")
-    lines.append(f"Verzió: {meta.get('version')} | Futás: {meta.get('generated_hu')} (CET/CEST)")
-    lines.append(f"Időablak: {start.isoformat()} → {end.isoformat()} (UTC dátumablak)")
-    lines.append(f"Találat: {len(in_window)} / {len(tickers)} ticker")
+    lines.append(f"Verzió: v0.2.5-earnings-next7d-nasdaq-calendar-master-2026-01-10 | Futás: {run_local:%Y-%m-%d %H:%M} ({TZ_NAME})")
+    lines.append(f"Időablak: {start_day.isoformat()} → {end_day.isoformat()} (lokális naptári nap)")
+    lines.append(f"Találat: {len(rows)} / {master_count} ticker")
     lines.append("")
-    if not in_window:
-        lines.append("Nincs találat a következő 7 napban a MASTER tickerek között (vagy a forrás nem adott adatot).")
-    else:
+    lines.append("## Lefedettség (Nasdaq calendar)")
+    lines.append(f"- Napok lekérdezve: {stats.get('days_queried', 0)}")
+    lines.append(f"- Sikeres napok: {stats.get('nasdaq_calendar_ok_days', 0)}")
+    lines.append(f"- Blokkolt/limit napok (401/403/429): {stats.get('nasdaq_calendar_block_days', 0)}")
+    lines.append(f"- Egyéb hiba napok: {stats.get('nasdaq_calendar_other_fail_days', 0)}")
+    lines.append("")
+
+    if rows:
         lines.append("| Dátum | Idő | Ticker | EPS forecast | Revenue forecast | Forrás |")
-        lines.append("|---|---|---|---:|---:|---|")
-        for it in in_window:
-            lines.append(
-                f"| {it.earnings_date} | {it.earnings_time or ''} | {it.ticker} | {it.eps_forecast or ''} | {it.revenue_forecast or ''} | {it.source} |"
-            )
-    with open(OUT_MD, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines).strip() + "\n")
+        lines.append("|---|---|---:|---:|---:|---|")
+        for r in rows:
+            lines.append(f"| {r.d} | {r.t} | {r.ticker} | {r.eps or ''} | {r.rev or ''} | {r.source} |")
+    else:
+        lines.append("Nincs találat a következő 7 napban a MASTER tickerek között **vagy** a Nasdaq calendar forrás blokkolt/hibás.")
+
+    OUT_MD.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def main() -> int:
-    ensure_out_dir()
+def main(argv: list[str]) -> int:
+    master_path = DEFAULT_MASTER_LOCAL
+    if "--master" in argv:
+        idx = argv.index("--master")
+        if idx + 1 < len(argv):
+            master_path = Path(argv[idx + 1])
 
-    tickers = load_master_tickers()
-    tickers_set = set(tickers)
+    run_local = _now_local()
+    start_day = run_local.date()
+    end_day = start_day + timedelta(days=7)
 
-    start, end = next_7d_window_utc()
+    master_tickers = _read_master_tickers(master_path)
+    rows, stats = _build_report(master_tickers, start_day, days=7)
+    _write_md(rows, master_count=len(master_tickers), start_day=start_day, end_day=end_day, run_local=run_local, stats=stats)
 
-    generated_epoch = int(time.time())
-    generated_hu = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
-
-    meta = {
-        "version": "v0.2.0-earnings-next7d-investing-nasdaq-fallback-2026-01-10",
-        "generated_epoch": generated_epoch,
-        "generated_hu": generated_hu,
-        "tickers_total": len(tickers),
-        "sources": ["nasdaq", "investing", "unavailable"],
-        "notes": "Nasdaq endpoint best-effort; Investing HTML fallback; window is based on UTC dates.",
-    }
-
-    # 1) Nasdaq best-effort for next 7 days
-    items = build_from_nasdaq(tickers_set, start, end)
-
-    # 2) Investing fallback: fill missing
-    missing = {t for t in tickers if t not in items}
-    if missing:
-        inv = build_from_investing(missing)
-        items.update(inv)
-
-    write_outputs(tickers, items, start, end, meta)
-
-    # non-zero if EVERYTHING missing (helps workflow visibility but not hard-fail)
-    if all(v.get("earnings_date") is None for v in json.load(open(OUT_JSON, "r", encoding="utf-8"))["results"].values()):
-        return 2
+    print(f"OK: wrote {OUT_MD} (rows={len(rows)} master={len(master_tickers)})")
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main(sys.argv[1:]))
