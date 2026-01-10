@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# earnings.py — v0.2.0-earnings-next7d-investing-nasdaq-fallback-2026-01-10
+# earnings.py — v0.2.1-earnings-next7d-only-2026-01-10
 #
 # CÉL:
 # - API key nélkül, stabilan listázni a MASTER tickerek közül azokat,
@@ -13,7 +13,6 @@
 from __future__ import annotations
 
 import csv
-import json
 import os
 import re
 import sys
@@ -30,7 +29,6 @@ from bs4 import BeautifulSoup
 
 OUT_DIR = "reports"
 MASTER_LOCAL = os.path.join(OUT_DIR, "master.csv")
-OUT_JSON = os.path.join(OUT_DIR, "earnings_audit.json")
 OUT_MD = os.path.join(OUT_DIR, "earnings_next7d.md")
 
 USER_AGENT = (
@@ -274,15 +272,6 @@ def write_outputs(
         else:
             results[t] = asdict(EarningsItem(ticker=t))
 
-    payload = {
-        "meta": meta,
-        "window": {"from": start.isoformat(), "to": end.isoformat()},
-        "found": found,
-        "results": results,
-    }
-    with open(OUT_JSON, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
-
     # Markdown (only tickers with earnings in the window)
     # Sort: earliest date, then time
     def sort_key(it: EarningsItem):
@@ -351,11 +340,19 @@ def main() -> int:
         items.update(inv)
 
     write_outputs(tickers, items, start, end, meta)
-
-    # non-zero if EVERYTHING missing (helps workflow visibility but not hard-fail)
-    if all(v.get("earnings_date") is None for v in json.load(open(OUT_JSON, "r", encoding="utf-8"))["results"].values()):
-        return 2
-    return 0
+    # non-zero if there are ZERO earnings found in the next-7d window (visibility for workflow)
+    any_found = False
+    for t in tickers:
+        it = items.get(t)
+        if it and it.earnings_date:
+            try:
+                d = dt.date.fromisoformat(it.earnings_date)
+                if start <= d <= end:
+                    any_found = True
+                    break
+            except Exception:
+                pass
+    return 0 if any_found else 2
 
 
 if __name__ == "__main__":
