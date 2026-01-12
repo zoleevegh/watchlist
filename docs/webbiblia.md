@@ -1,3 +1,23 @@
+# WEBBIBLIA – v1.7.3 (KANONIKUS)
+
+## 🔴 PRE-FLIGHT CHECKLIST – ALL-IN INDÍTÁS ELŐTT (KÖTELEZŐ)
+> Ha bármelyik ❌ → **STOP, NINCS ALL-IN**
+
+1. ☐ Jelentéstípus egyértelmű: **#1 / #2 / #3** (nem keverhető)
+2. ☐ **Utolsó tényleges zárás** azonosítva (hétfő / ünnep logika OK)
+3. ☐ **ÁRABLAKOK rögzítve**
+   - #1 esetén: **AH (22:00–02:00 CET) + PM (10:00–15:30 CET)**
+4. ☐ **HÍRABLAK rögzítve**
+   - **előző tényleges zárástól → lekérdezés pillanatáig**
+5. ☐ Ármozgás ≠ hír ≠ trigger **szétválasztva**
+6. ☐ **±3.00% szabály él** (watchlist csak trigger / anyagi hír)
+7. ☐ **Darabszámos tickerek elöl**
+8. ☐ **Lefedettség blokk kötelező** (TELJES / HIÁNYOS + ok)
+9. ☐ **Yahoo Finance LIVE makró összefoglalva** (#1-ben kötelező)
+10. ☐ Tudunk válaszolni: **„miért maradt ki?”**
+
+---
+
 # WEBBIBLIA – v1.7.2 (KANONIKUS)
 KANONIKUS RAW LINK (mindig ez az irányadó):
 https://raw.githubusercontent.com/zoleevegh/watchlist/main/docs/webbiblia.md
