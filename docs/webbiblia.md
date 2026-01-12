@@ -1,4 +1,4 @@
-# WEBBIBLIA – v1.7.1 (KANONIKUS)
+# WEBBIBLIA – v1.7.2 (KANONIKUS)
 KANONIKUS RAW LINK (mindig ez az irányadó):
 https://raw.githubusercontent.com/zoleevegh/watchlist/main/docs/webbiblia.md
 
@@ -161,26 +161,26 @@ Mit NEM kapsz:
 ---
 
 
-### 3.5 Yahoo Finance – Live Market Coverage (MAKRÓ KIVÉTEL)
 
-A Yahoo Finance **Live / Market Today** jellegű cikkei **makró / piaci hangulat kontextusban
-JELENTHETŐK**, ha az alábbi feltételek TELJESÜLNEK:
+### 3.5 Yahoo Finance – Live Market Coverage (KÖTELEZŐ – NINCS KIVÉTEL)
 
-- az időablakon belül frissültek (óra/perc jelölés)
-- összpiaci fókuszúak (indexek, futures, hozamok, makró adat, geopolitika)
-- NEM ticker-specifikus pletykák
-- NEM elemzői ajánlások helyettesítői
+**ÚJ KANONIKUS SZABÁLY (v1.7.2):**
 
-Felhasználás:
-- kizárólag a **Makró / FED / politika** blokkban
-- **kontextusra**, nem triggerként
-- segíti a *várható mai nyitás* megfogalmazását
+A **Yahoo Finance LIVE / Market Today** feed **MINDEN #1 – Premarket check** jelentésben
+**KÖTELEZŐEN összefoglalásra kerül**, **függetlenül attól**, hogy:
+- első ránézésre piacmozgatónak tűnik‑e,
+- van‑e azonnali árreakció,
+- vagy csak narratív / hangulatjellegű.
 
-Tipikus témák:
-- jobs data
-- CPI / PPI
-- geopolitika (olaj, szankciók)
-- index futures irány
+👉 **Nincs relevancia‑szűrés. Nincs kivétel.**
+
+**Felhasználás:**
+- kizárólag a **Makró / FED / Politika** blokkban,
+- **mindig szöveges összefoglalóval**,
+- triggernek nem minősül, de **nem hagyható ki**.
+
+**Ha a Yahoo LIVE feed eseménytelen az időablakban, kötelező mondat:**
+> „A Yahoo Finance LIVE feed az adott időablakban nem közölt új, összpiaci narratívát.”
 
 
 ## 4️⃣ Hírkeresési és szűrési logika (WEB)
@@ -285,4 +285,4 @@ hanem hogy semmi lényeges ne maradjon ki – és semmi zaj ne keveredjen be.**
 
 ---
 
-Verzió: **v1.7.1 – KANONIKUS**
+Verzió: **v1.7.2 – KANONIKUS**
