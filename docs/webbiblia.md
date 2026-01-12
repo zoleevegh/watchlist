@@ -1,4 +1,4 @@
-# WEBBIBLIA – v1.7.3 (KANONIKUS)
+# WEBBIBLIA – v1.7.4 (KANONIKUS)
 
 ## 🔴 PRE-FLIGHT CHECKLIST – ALL-IN INDÍTÁS ELŐTT (KÖTELEZŐ)
 > Ha bármelyik ❌ → **STOP, NINCS ALL-IN**
@@ -18,6 +18,29 @@
 
 ---
 
+
+## 🔒 DARABSZÁMOS „LOCK” SZABÁLY (ÚJ – NINCS KIVÉTEL)
+
+**Cél:** 0 db kihagyás a **Pozíciók (darabszámos)** blokkban, még akkor is, ha közben frissül a portfólió.
+
+**Kötelező eljárás minden #1/#2/#3 ALL‑IN jelentésnél:**
+
+1) **Pozíciók forrása:** a **MASTER / portfólió állapot** (darabszám > 0) az egyetlen igazságforrás.  
+2) **LOCK a jelentés elején:** a jelentés indításakor a darabszámos tickerek listáját **egyszer beolvassuk és rögzítjük** („LOCK”), és **ez lesz** a jelentés teljes futása alatt a Pozíciók blokk univerzuma.  
+3) **Kötelező teljesség:** a Pozíciók blokkban **minden LOCK‑olt darabszámos tickernek szerepelnie kell**, akkor is, ha:
+   - nincs hír,
+   - nincs ≥±3.00% mozgás,
+   - „eseménytelen” a sáv.  
+4) **Watchlist kapu:** ami **nem** darabszámos, az mehet watchlistre, de ott **csak** (≥±3.00% AH/PM) **vagy** anyagi hír esetén jelenhet meg.  
+5) **Változás a jelentés közben:** ha a felhasználó jelzi, hogy **új vétel történt** (új darabszámos ticker), akkor:
+   - **a következő jelentéstől** kötelezően átkerül a Pozíciók blokkba,  
+   - és a Lefedettség blokkban opcionálisan megjegyezhető: „Pozíciók LOCK frissült új vétel miatt (következő futás)”.  
+   *(Nem keverjük bele ugyanabba a futásba utólag, mert a LOCK célja a determinisztikus, visszanézhető konzisztencia.)*
+
+**Stop‑feltétel (hibának minősül):**  
+Ha bármely darabszámos ticker **hiányzik** a Pozíciók blokkból, az **WEBBIBLIA‑sértés**, és a jelentést **hibásnak** kell tekinteni.
+
+---
 # WEBBIBLIA – v1.7.2 (KANONIKUS)
 KANONIKUS RAW LINK (mindig ez az irányadó):
 https://raw.githubusercontent.com/zoleevegh/watchlist/main/docs/webbiblia.md
@@ -305,4 +328,4 @@ hanem hogy semmi lényeges ne maradjon ki – és semmi zaj ne keveredjen be.**
 
 ---
 
-Verzió: **v1.7.2 – KANONIKUS**
+Verzió: **v1.7.4 – KANONIKUS**
