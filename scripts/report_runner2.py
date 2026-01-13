@@ -1,19 +1,21 @@
 #!/usr/bin/env python3
 """
-report_runner2.py — v1.0.1-biblia-positions-lock-urllib-2026-01-13
-#2 jelentés: előző kereskedési nap OPEN → CLOSE (tickerenként), WEBBIBLIA-kompatibilis sorrenddel:
-- Pozíciók (darabszámos tickerek): MIND bent (nincs 3% küszöb)
-- Watchlist: csak abs(% Open→Close) >= 3.00 (alap) vagy ha külön engedélyezve
+report_runner2.py — v1.0.2-biblia-splitfix-watchlist-all-2026-01-13
+
+#2 jelentés: előző kereskedési nap OPEN → CLOSE (tickerenként)
+
+FONTOS: mindig KÉT blokkot ír ki:
+- Pozíciók (darabszámos): MINDEN ticker, ahol a darabszám > 0
+- Watchlist: MINDEN ticker, ahol a darabszám üres/0/nem szám
+
+Alapértelmezésben a watchlistet is TELJESEN kilistázza (nem csak ≥3%).
+Ha mégis trigger-mód kell:
+  WATCHLIST_MODE=trigger  (ekkor abs(Open→Close) >= WATCHLIST_THRESHOLD, alap 3.0)
+
 Megjegyzés: PKN.WA alapból kihagyva (csak INCLUDE_PKN_WA=1).
 
 Használat:
   python scripts/report_runner2.py --master <csv_path_or_url> --out reports/summary_report_2.md
-
-ENV (opcionális):
-  INCLUDE_PKN_WA=1            -> PKN.WA is bekerül
-  WATCHLIST_THRESHOLD=3.0     -> watchlist küszöb (alap 3.0)
-  INCLUDE_WATCHLIST_ALL=1     -> watchlistből mindet kilistázza (debug)
-  HTTP_TIMEOUT=20             -> request timeout (sec)
 """
 from __future__ import annotations
 
@@ -26,6 +28,7 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
+from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 try:
@@ -35,11 +38,12 @@ except Exception:  # pragma: no cover
 
 
 YAHOO_CHART_V8 = "https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
+UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123 Safari/537.36"
+
 DEFAULT_TIMEOUT = float(os.getenv("HTTP_TIMEOUT", "20"))
 WATCHLIST_THRESHOLD = float(os.getenv("WATCHLIST_THRESHOLD", "3.0"))
-INCLUDE_WATCHLIST_ALL = os.getenv("INCLUDE_WATCHLIST_ALL", "0") == "1"
+WATCHLIST_MODE = os.getenv("WATCHLIST_MODE", "all").strip().lower()  # all | trigger
 INCLUDE_PKN_WA = os.getenv("INCLUDE_PKN_WA", "0") == "1"
-UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123 Safari/537.36"
 
 
 @dataclass(frozen=True)
@@ -81,15 +85,13 @@ def now_budapest_str() -> str:
 def read_master_csv(master: str) -> List[TickerRow]:
     """
     MASTER can be local file path or http(s) URL.
-    Accepts flexible headers:
+    Flexible headers:
       ticker: Ticker / ticker / Symbol / symbol
       shares: Darabszam / Darabszám / Shares / shares / Quantity / qty
-    If shares missing/empty -> 0.
+    If shares missing/empty/non-numeric -> 0 (watchlist).
     """
-    if master.startswith("http://") or master.startswith("https://"):
-        raw = http_get_text(master)
-    else:
-        raw = open(master, "r", encoding="utf-8", errors="replace").read()
+    raw = http_get_text(master) if master.startswith(("http://", "https://")) else \
+          open(master, "r", encoding="utf-8", errors="replace").read()
 
     sample = raw[:2048]
     dialect = csv.Sniffer().sniff(sample, delimiters=[",", ";", "\t"])
@@ -102,18 +104,13 @@ def read_master_csv(master: str) -> List[TickerRow]:
     for r in reader:
         keys = {norm(k): k for k in r.keys() if k is not None}
 
-        ticker_key = None
-        for cand in ["ticker", "symbol"]:
-            if cand in keys:
-                ticker_key = keys[cand]
-                break
-        if ticker_key is None:
-            ticker_key = list(r.keys())[0]
+        ticker_key = next((keys[k] for k in ["ticker", "symbol"] if k in keys), None) or list(r.keys())[0]
 
         shares_key = None
         for cand in ["darabszam", "darabszám", "shares", "quantity", "qty", "darab"]:
-            if norm(cand) in keys:
-                shares_key = keys[norm(cand)]
+            nc = norm(cand)
+            if nc in keys:
+                shares_key = keys[nc]
                 break
 
         ticker = (r.get(ticker_key) or "").strip().upper()
@@ -131,6 +128,10 @@ def read_master_csv(master: str) -> List[TickerRow]:
                 except ValueError:
                     shares_val = 0.0
 
+        # Treat tiny/negative as watchlist
+        if not (shares_val and shares_val > 0):
+            shares_val = 0.0
+
         rows.append(TickerRow(ticker=ticker, shares=shares_val))
 
     # De-dup by ticker (keep max shares)
@@ -141,11 +142,12 @@ def read_master_csv(master: str) -> List[TickerRow]:
 
 
 def fetch_prev_day_ohlc(ticker: str) -> Optional[OhlcDay]:
-    """
-    Fetch last completed daily candle (open/close) from Yahoo chart v8.
-    Uses range=10d to survive holidays/weekends.
-    """
-    url = YAHOO_CHART_V8.format(ticker=ticker) + "?range=10d&interval=1d&includePrePost=false&events=div,splits"
+    url = YAHOO_CHART_V8.format(ticker=ticker) + "?" + urlencode({
+        "range": "10d",
+        "interval": "1d",
+        "includePrePost": "false",
+        "events": "div,splits",
+    })
     data = http_get_json(url)
     if not data:
         return None
@@ -170,14 +172,11 @@ def fetch_prev_day_ohlc(ticker: str) -> Optional[OhlcDay]:
         return None
 
     tsec, o, c = candles[-1]
-    dt = datetime.fromtimestamp(tsec, tz=timezone.utc)
-    return OhlcDay(date_utc=dt, open_=o, close=c)
+    return OhlcDay(date_utc=datetime.fromtimestamp(tsec, tz=timezone.utc), open_=o, close=c)
 
 
 def pct_change(open_: float, close: float) -> float:
-    if open_ == 0:
-        return float("nan")
-    return (close / open_ - 1.0) * 100.0
+    return float("nan") if open_ == 0 else (close / open_ - 1.0) * 100.0
 
 
 def fmt_price(x: float) -> str:
@@ -185,18 +184,15 @@ def fmt_price(x: float) -> str:
 
 
 def fmt_pct(x: float) -> str:
-    if not math.isfinite(x):
-        return "n/a"
-    return f"{x:+.2f}%"
+    return "n/a" if not math.isfinite(x) else f"{x:+.2f}%"
 
 
-def build_report(rows: List[TickerRow]) -> Tuple[str, List[str]]:
-    positions = [r for r in rows if r.shares and r.shares > 0]
-    watchlist = [r for r in rows if not (r.shares and r.shares > 0)]
+def build_report(rows: List[TickerRow]) -> str:
+    positions = [r for r in rows if r.shares > 0]
+    watchlist = [r for r in rows if r.shares == 0]
 
     missing: List[str] = []
     rec: Dict[str, OhlcDay] = {}
-
     for r in rows:
         ohlc = fetch_prev_day_ohlc(r.ticker)
         if ohlc is None:
@@ -218,12 +214,10 @@ def build_report(rows: List[TickerRow]) -> Tuple[str, List[str]]:
     lines.append(f"**Referencia nap (US market):** {day_str}")
     lines.append("")
     lines.append("## Lefedettség-ellenőrzés")
-    if missing:
-        lines.append(f"- **Lefedettség: HIÁNYOS** — nem elérhető ticker(ek): {', '.join(missing)}")
-    else:
-        lines.append("- **Lefedettség: TELJES**")
-
+    lines.append("- **Lefedettség: TELJES**" if not missing else f"- **Lefedettség: HIÁNYOS** — nem elérhető: {', '.join(missing)}")
     lines.append("")
+
+    # Positions
     lines.append("## Pozíciók (darabszámos tickerek)")
     if not positions:
         lines.append("- (nincs darabszámos ticker)")
@@ -237,20 +231,22 @@ def build_report(rows: List[TickerRow]) -> Tuple[str, List[str]]:
                 continue
             p = pct_change(ohlc.open_, ohlc.close)
             lines.append(f"| {r.ticker} | {fmt_price(ohlc.open_)} | {fmt_price(ohlc.close)} | {fmt_pct(p)} |")
-
     lines.append("")
-    lines.append(f"## Watchlist (csak trigger / ≥ |{WATCHLIST_THRESHOLD:.2f}%|)")
+
+    # Watchlist
+    mode_txt = "MINDEN" if WATCHLIST_MODE == "all" else f"csak ≥ |{WATCHLIST_THRESHOLD:.2f}%|"
+    lines.append(f"## Watchlist ({mode_txt})")
     wl_rows = []
     for r in sorted(watchlist, key=lambda x: x.ticker):
         ohlc = rec.get(r.ticker)
         if not ohlc:
             continue
         p = pct_change(ohlc.open_, ohlc.close)
-        if INCLUDE_WATCHLIST_ALL or (math.isfinite(p) and abs(p) >= WATCHLIST_THRESHOLD):
+        if WATCHLIST_MODE == "all" or (math.isfinite(p) and abs(p) >= WATCHLIST_THRESHOLD):
             wl_rows.append((r.ticker, ohlc, p))
 
     if not wl_rows:
-        lines.append(f"- Nincs ≥ |{WATCHLIST_THRESHOLD:.2f}%| Open→Close mozgó watchlist ticker.")
+        lines.append("- (nincs listázandó watchlist ticker a jelen beállítással)")
     else:
         lines.append("| Ticker | Prev Open | Prev Close | Open→Close |")
         lines.append("|---|---:|---:|---:|")
@@ -260,7 +256,7 @@ def build_report(rows: List[TickerRow]) -> Tuple[str, List[str]]:
     lines.append("")
     lines.append("---")
     lines.append("Megjegyzés: #2 jelentés csak az előző napi OPEN és CLOSE értékeket adja vissza.")
-    return "\n".join(lines) + "\n", missing
+    return "\n".join(lines) + "\n"
 
 
 def main() -> int:
@@ -270,11 +266,10 @@ def main() -> int:
     args = ap.parse_args()
 
     rows = read_master_csv(args.master)
-    report_md, _missing = build_report(rows)
+    report_md = build_report(rows)
 
-    out_path = args.out
-    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
-    with open(out_path, "w", encoding="utf-8") as f:
+    os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
+    with open(args.out, "w", encoding="utf-8") as f:
         f.write(report_md)
     return 0
 
