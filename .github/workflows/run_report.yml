@@ -164,29 +164,21 @@ jobs:
           # Inject earnings block BEFORE '## Pozíciók' (csak #1)
           if [ "${REPORT}" = "1" ]; then
             python - <<'PY'
-          from pathlib import Path
+            import json, os
+            from pathlib import Path
 
-          rep = Path(out_md)
-          earn = Path('reports/earnings_next7d.md')
-          if not rep.exists() or not earn.exists():
-            raise SystemExit(0)
+            out_md = Path(os.environ["OUT_MD"])
+            fn = f"summary_report_{os.environ.get('REPORT', '1')}.md"
+            content = out_md.read_text(encoding="utf-8", errors="replace")
 
-          rep_txt = rep.read_text(encoding='utf-8', errors='replace')
-          earn_txt = earn.read_text(encoding='utf-8', errors='replace').strip() + "\n\n"
-
-          # Avoid double-insert
-          if 'Earnings – következő 7 nap' in rep_txt:
-            raise SystemExit(0)
-
-          marker = '## Pozíciók'
-          if marker in rep_txt:
-            before, after = rep_txt.split(marker, 1)
-            rep_txt = before.rstrip() + "\n\n" + earn_txt + marker + after
-          else:
-            # Fallback: append near top
-            rep_txt = rep_txt.rstrip() + "\n\n" + earn_txt
-
-          rep.write_text(rep_txt, encoding='utf-8')
+            payload = {
+              "files": {
+                fn: {
+                  "content": content
+                }
+              }
+            }
+            Path("reports/gist_payload.json").write_text(json.dumps(payload), encoding="utf-8")
           PY
           fi
 
@@ -236,23 +228,18 @@ jobs:
             exit 0
           fi
 
-          python - <<'PY'
-import base64, json
-from pathlib import Path
+                    python - <<'PY'
+          import json, os
+          from pathlib import Path
 
-out_md = Path("${OUT_MD}")
-fn = f"summary_report_{os.environ.get('REPORT', '1')}.md"
-content = out_md.read_text(encoding="utf-8", errors="replace")
+          out_md = Path(os.environ["OUT_MD"])
+          fn = f"summary_report_{os.environ.get('REPORT','1')}.md"
+          content = out_md.read_text(encoding="utf-8", errors="replace")
 
-payload = {
-  "files": {
-    fn: {
-      "content": content
-    }
-  }
-}
-Path("reports/gist_payload.json").write_text(json.dumps(payload), encoding="utf-8")
-PY
+          payload = {"files": {fn: {"content": content}}}
+          Path("reports/gist_payload.json").write_text(json.dumps(payload), encoding="utf-8")
+          PY
+
 
           curl -sS -X PATCH "https://api.github.com/gists/${GIST_ID}"             -H "Authorization: token ${GIST_TOKEN}"             -H "Accept: application/vnd.github+json"             --data-binary "@reports/gist_payload.json" > /dev/null
 
