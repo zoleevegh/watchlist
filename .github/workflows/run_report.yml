@@ -192,12 +192,8 @@ jobs:
             echo "No validate_run.py found - skip."
           fi
 
-      - name: Update Gist (summary_report_{1,2,3}.md)
-        if: always()
+      - name: Update Gist (write correct file, prune others)
         shell: bash
-        env:
-          GIST_ID: "${GIST_ID}"
-          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
         run: |
           set -euo pipefail
           if [ -z "${GIST_TOKEN:-}" ]; then
@@ -208,22 +204,51 @@ jobs:
             echo "${OUT_MD} not found - skip Gist update."
             exit 0
           fi
-
           python - <<'PY'
-          import json, os
+          import json, os, sys
           from pathlib import Path
+          import urllib.request
 
+          gist_id = os.environ["GIST_ID"]
+          token = os.environ["GIST_TOKEN"]
           out_md = Path(os.environ["OUT_MD"])
-          fn = f"summary_report_{os.environ.get('REPORT','1')}.md"
+          target_fn = out_md.name
           content = out_md.read_text(encoding="utf-8", errors="replace")
-          payload = {"files": {fn: {"content": content}}}
-          Path("reports/gist_payload.json").write_text(json.dumps(payload), encoding="utf-8")
+
+          api_url = f"https://api.github.com/gists/{gist_id}"
+
+          def gh_get(url):
+              req = urllib.request.Request(url, headers={
+                  "Authorization": f"token {token}",
+                  "Accept": "application/vnd.github+json",
+                  "User-Agent": "watchlist-price-engine"
+              })
+              with urllib.request.urlopen(req) as r:
+                  return json.load(r)
+
+          def gh_patch(url, payload):
+              data = json.dumps(payload).encode("utf-8")
+              req = urllib.request.Request(url, data=data, method="PATCH", headers={
+                  "Authorization": f"token {token}",
+                  "Accept": "application/vnd.github+json",
+                  "User-Agent": "watchlist-price-engine"
+              })
+              with urllib.request.urlopen(req) as r:
+                  return json.load(r)
+
+          gist = gh_get(api_url)
+          files = gist.get("files", {})
+
+          # Delete wrong summary_report_*.md files (keep only the target)
+          deletions = {}
+          for fn in files.keys():
+              if fn.startswith("summary_report_") and fn.endswith(".md") and fn != target_fn:
+                  deletions[fn] = None
+
+          payload = {"files": {**deletions, target_fn: {"content": content}}}
+          gh_patch(api_url, payload)
+          print("Gist updated.")
           PY
-
-          curl -sS -X PATCH "https://api.github.com/gists/${GIST_ID}"             -H "Authorization: token ${GIST_TOKEN}"             -H "Accept: application/vnd.github+json"             --data-binary "@reports/gist_payload.json" > /dev/null
-
-          echo "Gist updated."
-
       - name: Write run summary (hash raw_url via Gist API)
         shell: bash
         run: |
