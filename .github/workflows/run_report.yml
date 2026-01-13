@@ -175,25 +175,10 @@ jobs:
             echo "RUNNER_EXIT=${RC}" | tee -a reports/runner.log
           fi
 
-          # Inject earnings block BEFORE '## Pozíciók' (csak #1)
-          if [ "${REPORT}" = "1" ]; then
-            python - <<'PY'
-            import json, os
-            from pathlib import Path
-            
-            out_md = Path(os.environ["OUT_MD"])
-            fn = f"summary_report_{os.environ.get('REPORT', '1')}.md"
-            content = out_md.read_text(encoding="utf-8", errors="replace")
-            
-            payload = {
-            "files": {
-            fn: {
-            "content": content
-            }
-            }
-            }
-            Path("reports/gist_payload.json").write_text(json.dumps(payload), encoding="utf-8")
-            PY
+          # Inject earnings block BEFORE '## Pozíciók' (csak #1, ha van earnings file)
+          if [ "${REPORT}" = "1" ] && [ -f "reports/earnings_next7d.md" ] && [ -f "${OUT_MD}" ]; then
+            awk 'FNR==NR{e=e $0 ORS; next} /## Pozíciók/ && !done{printf "%s\\n", e; done=1} {print}' reports/earnings_next7d.md "${OUT_MD}" > reports/_tmp_with_earnings.md
+            mv reports/_tmp_with_earnings.md "${OUT_MD}"
           fi
 
 
