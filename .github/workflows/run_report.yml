@@ -23,7 +23,21 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
+      - name: Set report variables (1/2/3)
+        shell: bash
+        run: |
+          set -euo pipefail
+          REPORT="${{ github.event.inputs.report_number }}"
+          if [ -z "${REPORT}" ]; then REPORT="1"; fi
+          case "${REPORT}" in
+            1) OUT_MD="reports/summary_report_1.md"; GIST_ID="5df443b8a46ef863cdc97aad62756510" ;;
+            2) OUT_MD="reports/summary_report_2.md"; GIST_ID="31b8daf60f983fbdfe37e3d0f2251fc7" ;;
+            3) OUT_MD="reports/summary_report_3.md"; GIST_ID="8f77c3b0ec040030d492859095686030" ;;
+            *) echo "Invalid report_number: ${REPORT}"; exit 1 ;;
+          esac
+          echo "REPORT=${REPORT}" >> $GITHUB_ENV
+          echo "OUT_MD=${OUT_MD}" >> $GITHUB_ENV
+          echo "GIST_ID=${GIST_ID}" >> $GITHUB_ENV
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -32,7 +46,7 @@ jobs:
       - name: Install deps
         shell: bash
         run: |
-          export REPORT="${{ inputs.report_number }}"
+          export REPORT="${REPORT}"
           set -euo pipefail
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then
@@ -166,20 +180,20 @@ jobs:
             python - <<'PY'
             import json, os
             from pathlib import Path
-
+            
             out_md = Path(os.environ["OUT_MD"])
             fn = f"summary_report_{os.environ.get('REPORT', '1')}.md"
             content = out_md.read_text(encoding="utf-8", errors="replace")
-
+            
             payload = {
-              "files": {
-                fn: {
-                  "content": content
-                }
-              }
+            "files": {
+            fn: {
+            "content": content
+            }
+            }
             }
             Path("reports/gist_payload.json").write_text(json.dumps(payload), encoding="utf-8")
-          PY
+            PY
           fi
 
 
@@ -228,18 +242,16 @@ jobs:
             exit 0
           fi
 
-                    python - <<'PY'
+          python - <<'PY'
           import json, os
           from pathlib import Path
 
           out_md = Path(os.environ["OUT_MD"])
           fn = f"summary_report_{os.environ.get('REPORT','1')}.md"
           content = out_md.read_text(encoding="utf-8", errors="replace")
-
           payload = {"files": {fn: {"content": content}}}
           Path("reports/gist_payload.json").write_text(json.dumps(payload), encoding="utf-8")
           PY
-
 
           curl -sS -X PATCH "https://api.github.com/gists/${GIST_ID}"             -H "Authorization: token ${GIST_TOKEN}"             -H "Accept: application/vnd.github+json"             --data-binary "@reports/gist_payload.json" > /dev/null
 
