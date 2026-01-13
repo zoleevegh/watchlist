@@ -222,7 +222,7 @@ jobs:
 
           echo "Gist updated."
 
-      - name: Write run summary (raw_url from Gist API)
+      - name: Write run summary (raw_url from Gist API, deterministic)
         shell: bash
         run: |
           set -euo pipefail
@@ -230,19 +230,34 @@ jobs:
             echo "No GIST_TOKEN secret - skip run summary raw_url fetch." >> $GITHUB_STEP_SUMMARY
             exit 0
           fi
+
           TARGET_FILE="$(basename "${OUT_MD}")"
           API_URL="https://api.github.com/gists/${GIST_ID}"
-          JSON="$(curl -sS -H "Authorization: token ${GIST_TOKEN}" -H "Accept: application/vnd.github+json" "${API_URL}")"
-          RAW_URL="$(echo "${JSON}" | TARGET_FILE="${TARGET_FILE}" python -c "import json,os,sys; d=json.load(sys.stdin); f=os.environ[\"TARGET_FILE\"]; print(d.get(\"files\",{}).get(f,{}).get(\"raw_url\",\"\"))")"
+
+          RAW_URL="$(curl -sS \
+            -H "Authorization: token ${GIST_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "${API_URL}" \
+            | TARGET_FILE="${TARGET_FILE}" python -c 'import json,os,sys; d=json.load(sys.stdin); f=os.environ["TARGET_FILE"]; print(d.get("files",{}).get(f,{}).get("raw_url",""))')"
+
           if [ -z "${RAW_URL}" ]; then
             echo "WARNING: raw_url not found for ${TARGET_FILE} in gist ${GIST_ID}." >> $GITHUB_STEP_SUMMARY
+            echo "DEBUG: Available files:" >> $GITHUB_STEP_SUMMARY
+            curl -sS -H "Authorization: token ${GIST_TOKEN}" -H "Accept: application/vnd.github+json" "${API_URL}" \
+              | python -c 'import json,sys; d=json.load(sys.stdin); print(", ".join(sorted(d.get("files",{}).keys())) )' >> $GITHUB_STEP_SUMMARY || true
             exit 0
           fi
+
           URL="${RAW_URL}?nocache=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_SHA}"
+
+          # Print to logs too, so you can copy it without any UI weirdness
+          echo "RUN_SUMMARY_URL=${URL}"
+
           echo "Job summary generated at run-time (${GITHUB_RUN_ID})" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "Raw URL for this run:" >> $GITHUB_STEP_SUMMARY
           echo "${URL}" >> $GITHUB_STEP_SUMMARY
+
           mkdir -p reports
           echo "${URL}" > "reports/raw_url_${REPORT}.txt"
 
