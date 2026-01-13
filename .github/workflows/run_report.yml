@@ -27,10 +27,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          REPORT="${{ github.event.inputs.report_number }}"
+          REPORT="${{ inputs.report_number }}"
           if [ -z "${REPORT}" ]; then REPORT="1"; fi
           case "${REPORT}" in
-            1) OUT_MD="reports/summary_report_1.md"; GIST_ID="5df443b8a46ef863cdc97aad62756510" ;;
+            1) OUT_MD="reports/$(basename "${OUT_MD}")"; GIST_ID="5df443b8a46ef863cdc97aad62756510" ;;
             2) OUT_MD="reports/summary_report_2.md"; GIST_ID="31b8daf60f983fbdfe37e3d0f2251fc7" ;;
             3) OUT_MD="reports/summary_report_3.md"; GIST_ID="8f77c3b0ec040030d492859095686030" ;;
             *) echo "Invalid report_number: ${REPORT}"; exit 1 ;;
@@ -38,6 +38,7 @@ jobs:
           echo "REPORT=${REPORT}" >> $GITHUB_ENV
           echo "OUT_MD=${OUT_MD}" >> $GITHUB_ENV
           echo "GIST_ID=${GIST_ID}" >> $GITHUB_ENV
+          echo "DEBUG: REPORT=${REPORT} OUT_MD=${OUT_MD} GIST_ID=${GIST_ID}"
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -184,7 +185,7 @@ jobs:
 
           # Build one single clickable nocache URL (run id + attempt + sha)
           NOCACHE="${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}"
-          RAW_URL="https://gist.githubusercontent.com/zoleevegh/5df443b8a46ef863cdc97aad62756510/raw/summary_report_1.md?nocache=${NOCACHE}"
+          RAW_URL="https://gist.githubusercontent.com/zoleevegh/5df443b8a46ef863cdc97aad62756510/raw/$(basename "${OUT_MD}")?nocache=${NOCACHE}"
 
           # Save raw url to artifact-friendly file too
           echo "${RAW_URL}" > reports/raw_url_1.txt
