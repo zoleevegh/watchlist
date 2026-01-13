@@ -232,3 +232,5 @@ PY
         with:
           name: report-bundle
           path: reports/
+
+# Ensure the script uses the GIST_OWNER variable with a default value if not set
