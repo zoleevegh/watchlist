@@ -20,6 +20,8 @@ on:
 jobs:
   run:
     runs-on: ubuntu-latest
+    env:
+      GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -27,8 +29,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Ensure run summary is not duplicated by previous steps
-          : > "$GITHUB_STEP_SUMMARY"
           REPORT="${{ inputs.report_number }}"
           if [ -z "${REPORT}" ]; then REPORT="1"; fi
           case "${REPORT}" in
@@ -224,19 +224,46 @@ jobs:
 
           echo "Gist updated."
 
-      - name: Write run summary (stable raw link, no token)
+      - name: Write run summary (hash raw_url via Gist API)
         shell: bash
         run: |
           set -euo pipefail
+          : > "$GITHUB_STEP_SUMMARY"
+
           TARGET_FILE="$(basename "${OUT_MD}")"
-          URL="https://gist.githubusercontent.com/${GITHUB_REPOSITORY_OWNER}/${GIST_ID}/raw/${TARGET_FILE}?nocache=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_SHA}"
+          API_URL="https://api.github.com/gists/${GIST_ID}"
+
+          if [ -z "${GIST_TOKEN:-}" ]; then
+            echo "ERROR: GIST_TOKEN secret missing - cannot fetch hash raw_url." >> "$GITHUB_STEP_SUMMARY"
+            echo "ERROR: GIST_TOKEN secret missing - cannot fetch hash raw_url."
+            exit 0
+          fi
+
+          RAW_URL="$(curl -sS \
+            -H "Authorization: token ${GIST_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "${API_URL}" \
+            | TARGET_FILE="${TARGET_FILE}" python -c "import json,os,sys; d=json.load(sys.stdin); f=os.environ['TARGET_FILE']; print(d.get('files',{}).get(f,{}).get('raw_url',''))")"
+
+          if [ -z "${RAW_URL}" ]; then
+            echo "ERROR: raw_url not found for ${TARGET_FILE} in gist ${GIST_ID}" >> "$GITHUB_STEP_SUMMARY"
+            echo "ERROR: raw_url not found for ${TARGET_FILE} in gist ${GIST_ID}"
+            echo "Available files:" >> "$GITHUB_STEP_SUMMARY"
+            curl -sS -H "Authorization: token ${GIST_TOKEN}" -H "Accept: application/vnd.github+json" "${API_URL}" \
+              | python -c "import json,sys; d=json.load(sys.stdin); print('\n'.join(sorted(d.get('files',{}).keys())))" >> "$GITHUB_STEP_SUMMARY" || true
+            exit 0
+          fi
+
+          URL="${RAW_URL}?nocache=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_SHA}"
+
           echo "RUN_SUMMARY_URL=${URL}"
           {
             echo "Job summary generated at run-time (${GITHUB_RUN_ID})"
             echo ""
             echo "Raw URL for this run:"
             echo "${URL}"
-          } >> $GITHUB_STEP_SUMMARY
+          } >> "$GITHUB_STEP_SUMMARY"
+
           mkdir -p reports
           echo "${URL}" > "reports/raw_url_${REPORT}.txt"
 
