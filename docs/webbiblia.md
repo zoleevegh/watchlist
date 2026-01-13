@@ -1,4 +1,4 @@
-# WEBBIBLIA – v1.7.4 (KANONIKUS)
+# WEBBIBLIA – v1.7.5 (KANONIKUS)
 
 ## 🔴 PRE-FLIGHT CHECKLIST – ALL-IN INDÍTÁS ELŐTT (KÖTELEZŐ)
 > Ha bármelyik ❌ → **STOP, NINCS ALL-IN**
@@ -49,6 +49,11 @@ VERZIÓZÁS – KŐSZABÁLY:
 - Minden módosításnál a verziószámot FOLYTATÓLAGOSAN növeljük.
 - Új verzió = előző FULL tartalom + hozzáadások (törlés csak indokoltan, külön jelölve).
 - A fájlban szereplő verziószámnak EGYEZNIE kell a fájlnév verziójával.
+
+
+Változások v1.7.4 → v1.7.5 (összefoglaló):
+- ÚJ kötelező szabály: ha bármely ticker AH vagy PM mozgása abs ≥5.00%, akkor kötelező okkeresés (legalább 2 független forrásból) és 1 mondatos ok a mozgás mellé.
+- Yahoo LIVE „kötelező” szabály kiegészítve: technikai blokkolás (pl. 429) esetén kötelező státuszsor + fallback (Reuters/AP/official), nem lehet „némán kihagyni”.
 
 Változások v1.7.0 → v1.7.1 (összefoglaló):
 - Yahoo Finance LIVE (Market Today) kötelező makró/nyitáskép kontextusforrás marad.
@@ -222,6 +227,10 @@ A **Yahoo Finance LIVE / Market Today** feed **MINDEN #1 – Premarket check** j
 - **mindig szöveges összefoglalóval**,
 - triggernek nem minősül, de **nem hagyható ki**.
 
+
+**Ha a Yahoo LIVE technikai okból nem olvasható (pl. HTTP 429/403, timeout, bot-tiltás), akkor sem hagyható ki a blokk. Kötelező státuszsor:**
+> „Yahoo Finance LIVE: nem elérhető (oka: [HTTP-kód/hiba]) – a makró összefoglaló Reuters/AP/hivatalos forrásokból lett pótolva.”
+
 **Ha a Yahoo LIVE feed eseménytelen az időablakban, kötelező mondat:**
 > „A Yahoo Finance LIVE feed az adott időablakban nem közölt új, összpiaci narratívát.”
 
@@ -247,6 +256,21 @@ A **Yahoo Finance LIVE / Market Today** feed **MINDEN #1 – Premarket check** j
 - nincs piaci hatás
 
 → **nem jelentjük**
+
+### 4.4 Kötelező „1 headline = 1 ok” szabály nagy mozgásnál (ÚJ – NINCS KIVÉTEL)
+
+**Trigger:** ha bármely ticker AH vagy PM sávban **abs(%) ≥ 5.00%**.
+
+**Kötelező teendő:**
+1) **Okkeresés** legalább **2 független forrásból**, prioritás szerint:
+   - Hivatalos (IR/SEC/PR) → **Reuters** → AP → Bloomberg/Dow Jones/The Fly → MarketBeat/StreetInsider/TipRanks (ellenőrzés).
+2) A riportban **1 mondatos ok** kötelező a ticker mellett (nem több).
+3) **Duplikáció:** ugyanazt az eseményt csak a legautentikusabb forrás alapján jelentjük (IR/SEC > Reuters/AP > egyéb).
+4) **Ha nincs találat:** nem találunk ki okot. Kötelező jelzés:
+   > „Ok: nem találtam anyagi, új headline‑ot (ellenőrizve: 2+ független forrás)”.
+
+**Megjegyzés (fontos):** ez a szabály **nem írja felül** a ±3.00% watchlist‑kaput; csak azt garantálja, hogy a nagy mozgású tickereknél **ne maradjon ok nélkül** a riport.
+
 
 ---
 
@@ -328,4 +352,4 @@ hanem hogy semmi lényeges ne maradjon ki – és semmi zaj ne keveredjen be.**
 
 ---
 
-Verzió: **v1.7.4 – KANONIKUS**
+Verzió: **v1.7.5 – KANONIKUS**
