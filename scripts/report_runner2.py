@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
 """
-report_runner2.py — v1.0.2-biblia-splitfix-watchlist-all-2026-01-13
+report_runner2.py — v1.0.3-biblia-sort-pct-desc-2026-01-13
 
 #2 jelentés: előző kereskedési nap OPEN → CLOSE (tickerenként)
 
-FONTOS: mindig KÉT blokkot ír ki:
-- Pozíciók (darabszámos): MINDEN ticker, ahol a darabszám > 0
-- Watchlist: MINDEN ticker, ahol a darabszám üres/0/nem szám
+KÉT blokk:
+- Pozíciók (darabszámos): MINDEN ticker, ahol darabszám > 0
+- Watchlist: MINDEN ticker, ahol darabszám üres/0/nem szám
 
-Alapértelmezésben a watchlistet is TELJESEN kilistázza (nem csak ≥3%).
-Ha mégis trigger-mód kell:
-  WATCHLIST_MODE=trigger  (ekkor abs(Open→Close) >= WATCHLIST_THRESHOLD, alap 3.0)
+Rendezés: mindkét blokkban Open→Close % szerint CSÖKKENŐ (pozitív felül, negatív alul).
+(n/a a lista végére kerül.)
 
-Megjegyzés: PKN.WA alapból kihagyva (csak INCLUDE_PKN_WA=1).
+Watchlist szűrés:
+- alap: WATCHLIST_MODE=all  -> mindent listáz
+- opcionális: WATCHLIST_MODE=trigger -> csak abs(Open→Close) >= WATCHLIST_THRESHOLD (alap 3.0)
+
+PKN.WA alapból kihagyva (csak INCLUDE_PKN_WA=1).
 
 Használat:
   python scripts/report_runner2.py --master <csv_path_or_url> --out reports/summary_report_2.md
@@ -83,13 +86,6 @@ def now_budapest_str() -> str:
 
 
 def read_master_csv(master: str) -> List[TickerRow]:
-    """
-    MASTER can be local file path or http(s) URL.
-    Flexible headers:
-      ticker: Ticker / ticker / Symbol / symbol
-      shares: Darabszam / Darabszám / Shares / shares / Quantity / qty
-    If shares missing/empty/non-numeric -> 0 (watchlist).
-    """
     raw = http_get_text(master) if master.startswith(("http://", "https://")) else \
           open(master, "r", encoding="utf-8", errors="replace").read()
 
@@ -128,7 +124,6 @@ def read_master_csv(master: str) -> List[TickerRow]:
                 except ValueError:
                     shares_val = 0.0
 
-        # Treat tiny/negative as watchlist
         if not (shares_val and shares_val > 0):
             shares_val = 0.0
 
@@ -187,6 +182,11 @@ def fmt_pct(x: float) -> str:
     return "n/a" if not math.isfinite(x) else f"{x:+.2f}%"
 
 
+def sort_key_pct_desc(p: float) -> Tuple[int, float]:
+    # finite first (0), nan last (1); then percent descending
+    return (0, -p) if math.isfinite(p) else (1, 0.0)
+
+
 def build_report(rows: List[TickerRow]) -> str:
     positions = [r for r in rows if r.shares > 0]
     watchlist = [r for r in rows if r.shares == 0]
@@ -219,31 +219,42 @@ def build_report(rows: List[TickerRow]) -> str:
 
     # Positions
     lines.append("## Pozíciók (darabszámos tickerek)")
-    if not positions:
+    pos_rows: List[Tuple[str, Optional[OhlcDay], float]] = []
+    for r in positions:
+        ohlc = rec.get(r.ticker)
+        if not ohlc:
+            pos_rows.append((r.ticker, None, float("nan")))
+        else:
+            pos_rows.append((r.ticker, ohlc, pct_change(ohlc.open_, ohlc.close)))
+    pos_rows.sort(key=lambda x: sort_key_pct_desc(x[2]))
+
+    if not pos_rows:
         lines.append("- (nincs darabszámos ticker)")
     else:
         lines.append("| Ticker | Prev Open | Prev Close | Open→Close |")
         lines.append("|---|---:|---:|---:|")
-        for r in sorted(positions, key=lambda x: x.ticker):
-            ohlc = rec.get(r.ticker)
+        for t, ohlc, p in pos_rows:
             if not ohlc:
-                lines.append(f"| {r.ticker} | n/a | n/a | n/a |")
-                continue
-            p = pct_change(ohlc.open_, ohlc.close)
-            lines.append(f"| {r.ticker} | {fmt_price(ohlc.open_)} | {fmt_price(ohlc.close)} | {fmt_pct(p)} |")
+                lines.append(f"| {t} | n/a | n/a | n/a |")
+            else:
+                lines.append(f"| {t} | {fmt_price(ohlc.open_)} | {fmt_price(ohlc.close)} | {fmt_pct(p)} |")
     lines.append("")
 
     # Watchlist
     mode_txt = "MINDEN" if WATCHLIST_MODE == "all" else f"csak ≥ |{WATCHLIST_THRESHOLD:.2f}%|"
     lines.append(f"## Watchlist ({mode_txt})")
-    wl_rows = []
-    for r in sorted(watchlist, key=lambda x: x.ticker):
+
+    wl_rows: List[Tuple[str, Optional[OhlcDay], float]] = []
+    for r in watchlist:
         ohlc = rec.get(r.ticker)
         if not ohlc:
+            # keep missing watchlist out (they are already in coverage list)
             continue
         p = pct_change(ohlc.open_, ohlc.close)
         if WATCHLIST_MODE == "all" or (math.isfinite(p) and abs(p) >= WATCHLIST_THRESHOLD):
             wl_rows.append((r.ticker, ohlc, p))
+
+    wl_rows.sort(key=lambda x: sort_key_pct_desc(x[2]))
 
     if not wl_rows:
         lines.append("- (nincs listázandó watchlist ticker a jelen beállítással)")
