@@ -164,7 +164,28 @@ jobs:
 
           # Build one single clickable nocache URL (run id + attempt + sha)
           NOCACHE="${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}"
-          RAW_URL="https://gist.githubusercontent.com/${GITHUB_REPOSITORY_OWNER}/${GIST_ID}/raw/$(basename "${OUT_MD}")?nocache=${NOCACHE}"
+          # Build RAW_URL from GitHub API (authoritative; avoids 404 when filename/hash differs)
+          RAW_URL=$(python - <<'PY'
+          import json, os, sys
+          import urllib.request
+          gist_id=os.environ["GIST_ID"]
+          fn=os.path.basename(os.environ["OUT_MD"])
+          tok=os.environ.get("GIST_TOKEN","")
+          req=urllib.request.Request(f"https://api.github.com/gists/{gist_id}")
+          req.add_header("Accept","application/vnd.github+json")
+          req.add_header("User-Agent","price-engine")
+          if tok: req.add_header("Authorization", f"token {tok}")
+          with urllib.request.urlopen(req, timeout=20) as r: data=json.load(r)
+          files=data.get("files",{})
+          if fn not in files:
+              # fall back: first file
+              if files:
+                  fn=list(files.keys())[0]
+              else:
+                  print("", end=""); sys.exit(0)
+          print(files[fn].get("raw_url",""), end="")
+          PY
+          )
 
           # Save raw url to artifact-friendly file too
           echo "${RAW_URL}" > "reports/raw_url_${REPORT}.txt"
