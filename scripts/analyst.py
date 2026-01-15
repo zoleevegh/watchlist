@@ -24,7 +24,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-VERSION = "v0.2.0-finnhub-ubdown-debug-2026-01-15"
+VERSION = "v0.2.1-finnhub-ubdown-2026-01-15"
 
 
 def _utc_now() -> dt.datetime:
@@ -235,33 +235,45 @@ def _render_md(events: List[Dict[str, Any]], days: int, generated_utc: dt.dateti
 
 
 def _parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Analyst feed (Finnhub) — last N calendar days")
-    p.add_argument("--master", default="reports/master.csv", help="MASTER CSV (default: reports/master.csv)")
-    p.add_argument("--out", default="reports/analyst_last2d.md", help="Kimeneti markdown fájl (default: reports/analyst_last2d.md)")
+    p = argparse.ArgumentParser(description="Analyst feed (upgrade/downgrade + target price) – last N calendar days")
+    p.add_argument("--master", required=True, help="MASTER CSV (ticker column)")
     p.add_argument("--days", type=int, default=2, help="Hány naptári napot nézzünk vissza (default: 2)")
-    p.add_argument("--timeout", type=int, default=20, help="HTTP timeout (sec)")
-    p.add_argument("--debug", action="store_true", help="Részletes debug log + nyers válasz mentés")
-    p.add_argument("--debug-dir", default="reports/debug_analyst", help="Debug fájlok könyvtára")
-    p.add_argument("--selftest", default="", help="Ha megadod: egyetlen tickerre lefuttatja a lekérést és kilép (pl. CRML)")
+
+    # Outputok:
+    # - --out-md: markdown riport (fő output)
+    # - --out-json: nyers események JSON-ban (opcionális)
+    # - --out: legacy alias az --out-md-re (ne töröld, workflow-k miatt)
+    p.add_argument("--out-md", dest="out_md", default=None, help="Markdown output (pl. reports/analyst_last2d.md)")
+    p.add_argument("--out-json", dest="out_json", default=None, help="JSON output (pl. reports/analyst_last2d.json)")
+    p.add_argument("--out", default=None, help="LEGACY alias: ugyanaz, mint --out-md")
+
+    p.add_argument("--timeout", type=float, default=12.0, help="HTTP timeout (sec)")
+    p.add_argument("--debug", action="store_true", help="Debug log runner.log-ba")
+    p.add_argument("--debug-dir", default=None, help="Debug dump mappa (requests/resp)")
+    p.add_argument("--selftest", action="store_true", help="Selftest – hívás + parsing sanity (nem kötelező)")
     return p.parse_args()
 
 
 def main() -> int:
     args = _parse_args()
 
+    # Output path resolution (backward compatible)
+    out_md = args.out_md or args.out or f"reports/analyst_last{args.days}d.md"
+    out_json = args.out_json or None
+
     api_key = os.getenv("FINNHUB_API_KEY", "").strip()
     log_path = "reports/analyst_debug.log" if args.debug else None
 
     if not api_key:
         _log("ERROR: FINNHUB_API_KEY nincs beállítva.", log_path)
-        Path(args.out).write_text(
+        Path(out_md).write_text(
             f"# Analyst feed (upgrade/downgrade + PT) — last {args.days} calendar days\n\nVerzió: {VERSION}\n\n_Nincs adat: FINNHUB_API_KEY hiányzik._\n",
             encoding="utf-8",
         )
         return 2
 
     now_utc = _utc_now()
-    _log(f"START {VERSION} days={args.days} master={args.master} out={args.out} debug={args.debug}", log_path)
+    _log(f"START {VERSION} days={args.days} master={args.master} out={out_md} debug={args.debug}", log_path)
     _log(f"API key present: yes (len={len(api_key)})", log_path)
 
     tickers: List[str]
@@ -276,7 +288,7 @@ def main() -> int:
 
     if not tickers:
         _log("WARNING: nincs ticker a MASTER-ben.", log_path)
-        Path(args.out).write_text(_render_md([], args.days, now_utc), encoding="utf-8")
+        Path(out_md).write_text(_render_md([], args.days, now_utc), encoding="utf-8")
         return 0
 
     events_out: List[Dict[str, Any]] = []
@@ -307,11 +319,21 @@ def main() -> int:
         time.sleep(0.12)
 
     md = _render_md(events_out, args.days, now_utc)
-    Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-    Path(args.out).write_text(md, encoding="utf-8")
+    Path(out_md).parent.mkdir(parents=True, exist_ok=True)
+    Path(out_md).write_text(md, encoding="utf-8")
+
+    if out_json:
+        payload = {
+            "version": VERSION,
+            "generated_utc": now_utc.strftime("%Y-%m-%d %H:%M:%S"),
+            "days": args.days,
+            "events": events_out,
+        }
+        Path(out_json).parent.mkdir(parents=True, exist_ok=True)
+        Path(out_json).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     if args.selftest:
-        _log(f"SELFTEST done: events_in_window={len(events_out)} (lásd: {args.out})", log_path)
+        _log(f"SELFTEST done: events_in_window={len(events_out)} (lásd: {out_md})", log_path)
 
     _log(f"DONE events={len(events_out)} tickers={len(tickers)}", log_path)
     return 0
