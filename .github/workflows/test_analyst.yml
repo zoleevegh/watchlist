@@ -1,0 +1,56 @@
+# test_analyst.yml — v0.1.0-analyst-only-2026-01-15
+# TEMP: Analyst (upgrade/downgrade + PT) teszt workflow — nem nyúl a fő run_report.yml-hoz.
+# Verzió-szabály: bármely fájl módosításakor a verziószámot folytatólagosan kell növelni, kihagyás nélkül.
+
+name: TEST — Analyst feed (upgrade/downgrade + PT)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  analyst_only:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps (if requirements.txt exists)
+        shell: bash
+        run: |
+          if [ -f requirements.txt ]; then
+            python -m pip install --upgrade pip
+            pip install -r requirements.txt
+          else
+            echo "No requirements.txt, skipping pip install."
+          fi
+
+      - name: Fetch MASTER CSV
+        shell: bash
+        env:
+          MASTER_CSV_URL: "https://docs.google.com/spreadsheets/d/e/2PACX-1vQkgyw0ONwSfc2KnrmWGqf8fWVQxS-R08RySndB69KDJ8L1Cz-H2F1AZtyDfhBGedC0qdC1SFo_aDye/pub?output=csv"
+        run: |
+          mkdir -p reports
+          echo "Downloading MASTER CSV..."
+          curl -L --retry 4 --retry-delay 1 --fail "$MASTER_CSV_URL" -o reports/master.csv
+          echo "MASTER CSV saved: reports/master.csv"
+          head -n 3 reports/master.csv || true
+
+      - name: Run analyst feed (last 2 calendar days)
+        shell: bash
+        env:
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+        run: |
+          python scripts/analyst.py --master reports/master.csv --days 2 --out-md reports/analyst_last2d.md --out-json reports/analyst_last2d.json
+
+      - name: Upload artifacts (analyst)
+        uses: actions/upload-artifact@v4
+        with:
+          name: analyst_outputs
+          path: |
+            reports/master.csv
+            reports/analyst_last2d.md
+            reports/analyst_last2d.json
