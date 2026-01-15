@@ -1,0 +1,66 @@
+# Version: v0.3.0-marketbeat-2026-01-15
+# Analyst-only test workflow (MarketBeat FREE).
+# Verzió-szabály: bármely fájl módosításakor a verziószámot folytatólagosan kell növelni, kihagyás nélkül.
+
+name: Analyst only — MarketBeat (FREE)
+
+on:
+  workflow_dispatch:
+    inputs:
+      MASTER_CSV_URL:
+        description: "MASTER CSV URL (publish-to-web CSV). If empty, repo var MASTER_CSV_URL is used."
+        required: false
+        default: ""
+      DAYS:
+        description: "Last N calendar days"
+        required: false
+        default: "2"
+      DEBUG:
+        description: "1 = debug html dumps"
+        required: false
+        default: "0"
+
+jobs:
+  analyst_only:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Fetch MASTER CSV
+        shell: pwsh
+        env:
+          DEFAULT_CSV_URL: ${{ vars.MASTER_CSV_URL }}
+        run: |
+          New-Item -ItemType Directory -Force -Path reports | Out-Null
+          $u = "${{ inputs.MASTER_CSV_URL }}"
+          if ([string]::IsNullOrWhiteSpace($u)) { $u = $env:DEFAULT_CSV_URL }
+          if ([string]::IsNullOrWhiteSpace($u)) { throw "MASTER_CSV_URL missing (input and repo var)" }
+          Write-Host "MASTER CSV URL: $u"
+          curl -L "$u" -o reports\master.csv
+
+      - name: Run analyst feed (MarketBeat)
+        shell: pwsh
+        run: |
+          $debug = "${{ inputs.DEBUG }}"
+          $days  = "${{ inputs.DAYS }}"
+          if ([string]::IsNullOrWhiteSpace($days)) { $days = "2" }
+          if ($debug -eq "1") {
+            python scripts\analyst_marketbeat.py --master reports\master.csv --days $days --out-md reports\analyst_last${days}d.md --out-json reports\analyst_last${days}d.json --debug
+          } else {
+            python scripts\analyst_marketbeat.py --master reports\master.csv --days $days --out-md reports\analyst_last${days}d.md --out-json reports\analyst_last${days}d.json
+          }
+
+      - name: Upload artifacts (analyst)
+        uses: actions/upload-artifact@v4
+        with:
+          name: analyst-marketbeat-bundle
+          path: |
+            reports/analyst_last*.md
+            reports/analyst_last*.json
+            reports/debug_marketbeat/**
