@@ -146,22 +146,77 @@ Egy hír megerősítettnek tekinthető, ha:
 - amelyek közül legalább egy Tier A vagy Tier B.
 Hivatalos IR / EDGAR közlés önmagában is elegendő.
 
----
-
-## 10. High-conviction jelöltek
-
-- Csak listán kívüli tickerek
-- Időtáv: 1–3 hónap vagy 3–6 hónap
-- Legalább két feltétel teljesül:
-  - Több elemzői felminősítés / céláremelés
-  - Pozitív guidance
-  - Konszenzus EPS / árbevétel emelés
-  - Konkrét katalizátor
-  - Relatív erő / 52w csúcsközeli ár
 
 ---
 
-## 11. Zárás
+## 10. Közeli katalizátorok (KANONIKUS)
+
+### 10.1 Definíció
+Közeli katalizátor = konkrét dátumhoz/időponthoz köthető esemény, amely rövid távon (napok–hetek) érdemi árfolyamhatást válthat ki.
+
+**Beletartozik:**
+- Earnings (jelentési dátum)
+- Hatósági döntés (pl. FDA), bírósági ítélet
+- Investor Day / Capital Markets Day
+- Lock-up expiry
+- Makró esemény (CPI, FOMC) – ha a ticker historikusan érzékeny rá
+
+**Nem tartozik bele:**
+- bizonytalan időzítés („valamikor idén”)
+- puszta narratíva katalizátor nélkül
+- pletyka hivatalos megerősítés nélkül
+
+### 10.2 Earnings – kötelező, kanonikus input (Gist)
+A jelentés előtt átadott kanonikus Gist (`summary_report_1.md`) tartalmazza a következő **7 nap** earnings dátumait.  
+Ezeket a riport **MINDIG** beépíti a „Közeli katalizátorok” blokkba.
+
+**Megjelenítés:**
+- Darabszámos tickereknél: minden earnings esemény kötelezően megjelenik, ha **≤ 7 napon belül** esedékes.
+- Watchlist tickereknél: minden earnings esemény kötelezően megjelenik, ha **≤ 7 napon belül** esedékes.
+
+**Autoritív forrás:** az earnings dátumok forrása kizárólag a kanonikus Gist; külső earnings naptár nem használható felülírásra.
+
+### 10.3 Nem-earnings katalizátorok – szűrés
+- Darabszámos tickereknél: minden nem-earnings esemény megjelenik, ha **≤ 7 napon belül** van.
+- Watchlist tickereknél: csak akkor jelenik meg, ha **≤ 7 napon belül** van **ÉS** anyagilag lényeges (lásd 7. pont) vagy historikusan árérzékeny a ticker.
+
+### 10.4 Források (publikus, webesen ellenőrizhető)
+- Earnings dátum: kanonikus Gist
+- Események: vállalati IR/Newsroom, SEC EDGAR, Reuters/AP, Business Wire/PR Newswire
+- Makró események: FederalReserve.gov, BLS/BEA, U.S. Treasury, Reuters/AP
+
+
+---
+
+## 11. Listán kívüli high-conviction jelöltek
+
+**Cél:** kizárólag olyan, a saját portfólió- és watchlistán kívüli tickerek felsorolása, amelyeknél ismétlődő, több forrásból alátámasztott, rövid–középtávú (1–6 hó) pozitív jelzés látszik.
+
+### 11.1 Alapszabályok
+- **Tiltás:** a blokkba **soha** nem kerülhet olyan ticker, amely a portfólióban vagy watchlisten szerepel.
+- A blokk **csak akkor jelenik meg**, ha van valóban erős, ismétlődő jelzés (különben teljesen kimarad).
+
+### 11.2 Időtáv-sávok
+- **1–3 hónap**
+- **3–6 hónap**
+
+### 11.3 Bekerülési feltételek
+Egy ticker akkor kerülhet be, ha **legalább 2** teljesül az alábbiak közül:
+- **2–3+ friss** felminősítés/céláremelés nagy házaktól
+- pozitív guidance / iránymutatás-emelés
+- konszenzus EPS/árbevétel **felfelé** módosulása (estimate‑felhúzás)
+- közelgő, konkrét katalizátor (1–6 hónap)
+- relatív erő / 52w csúcs-közeli teljesítmény
+
+### 11.4 Forrásminimum (publikus, webesen ellenőrizhető)
+- Elsődleges: **Yahoo Finance** és **MarketBeat**
+- Minimum: legalább **1** MarketBeat‑alapú elemzői jelzés **ÉS** legalább **1** további megerősítés (Yahoo Finance / Reuters / IR/EDGAR / PR wire).
+- Pletyka önmagában nem elegendő.
+
+
+---
+
+## 12. Zárás
 
 Ez a webbiblia lezárt, kanonikus állapot.
 Módosítás kizárólag verzióváltással történhet.
