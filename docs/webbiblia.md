@@ -214,6 +214,22 @@ Egy ticker akkor kerülhet be, ha **legalább 2** teljesül az alábbiak közül
 - Pletyka önmagában nem elegendő.
 
 
+
+---
+
+## Forráselérhetőség jelzése (KANONIKUS SZABÁLY)
+
+Amennyiben egy jelentési blokkhoz szükséges forrás
+nem érhető el, nem lekérdezhető, vagy hiányos,
+ezt a jelentésben **explicit módon jelezni kell**.
+
+Ilyen esetben **TILOS** a „nincs hír” vagy „nincs jelzés”
+megfogalmazás használata.
+
+Kötelező megkülönböztetés:
+- **Forrás elérve, de küszöb nem teljesült** → blokk üres, indoklással
+- **Forrás nem elérhető / hiányos** → blokk nem értékelhető, jelzéssel
+
 ---
 
 ## 12. Zárás
