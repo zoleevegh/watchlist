@@ -1,157 +1,173 @@
-# WEBBIBLIA – KANONIKUS SPECIFIKÁCIÓ
-## Automatikus #1 / #2 / #3 részvényjelentések
+# #1 JELENTÉS – ÉLES FUTÁS (FULL / MAGYARÁZÓS)
+## WEBBIBLIA-KANONIKUS FORMÁTUM
 
-**Hivatalos forrás (RAW):**  
-https://raw.githubusercontent.com/zoleevegh/watchlist/main/docs/webbiblia.md
+**Specifikáció:** https://raw.githubusercontent.com/zoleevegh/watchlist/main/docs/webbiblia.md  
+**Árforrás:** kizárólag kanonikus Gist  
+**Gist (input):**  
+https://gist.githubusercontent.com/zoleevegh/5df443b8a46ef863cdc97aad62756510/raw/summary_report_1.md?nocache=21130614336-1-224bf01ceb42086e2f1db9bf0909f9d168be9f9b
 
-**Verzió:** v2.1.0  
-**Utolsó módosítás:** 2026-01-19 09:15:08  
-**Megjegyzés:** Ez az egyetlen hivatalos webbiblia. Rövidített, alternatív vagy kivonatolt változat nem létezik.
-
----
-
-## 0. Alapelvek (KANONIKUS)
-
-- A webbiblia **normatív specifikáció**, nem leíró dokumentum.
-- Ami itt nincs kimondva, **nem létezik szabályként**.
-- Minden jelentés **ennek a dokumentumnak** köteles megfelelni.
-- Ha adat vagy forrás nem érhető el, azt **explicit módon jelezni kell**.
+**Futás ideje:** 2026-01-19 09:19:07
 
 ---
 
-## 1. Jelentéstípusok
+## 1) Lefedettség-ellenőrzés
 
-- **#1 jelentés:** After-hours + Premarket fókusz (ár + hír)
-- **#2 jelentés:** Előző kereskedési nap (Open → Close)
-- **#3 jelentés:** Aktuális kereskedési nap (Open → Most)
+### Ármozgások
+- Forrás: kanonikus Gist
+- Állapot: **HIÁNYOS**
+- Magyarázat: a Gist csak azon tickerekhez tartalmazott
+  After-hours / Premarket ármozgást, amelyek ténylegesen
+  változtak. Más tickerekhez nem állt rendelkezésre adat,
+  ezért azok nem kerültek pótlásra vagy becslésre.
 
----
+### Earnings (≤7 nap)
+- Forrás: kanonikus Gist
+- Állapot: **TELJES**
+- Magyarázat: a következő 7 nap earnings naptára
+  teljes körűen elérhető volt.
 
-## 2. Időablakok
+### Hírek / elemzői források
+- Források: Reuters, AP, MarketBeat, The Fly, StreetInsider, SEC EDGAR
+- Állapot: **ELÉRHETŐ**
 
-### 2.1 Ármozgások
-- After-hours: 22:00–02:00 CET/CEST
-- Premarket: 10:00–15:30 CET/CEST
-- Rendes kereskedés: 15:30–22:00 CET/CEST
-
-### 2.2 Hírek
-- Előző napi zárástól a lekérdezés pillanatáig
-- Nem kötődnek az ár-időablakokhoz
-
----
-
-## 3. Árforrás – PRICE ENGINE (KRITIKUS)
-
-**KANONIKUS SZABÁLY:**
-- Az ármozgások forrása **kizárólag** a jelentés előtt átadott **kanonikus Gist**.
-- Más árforrás (Yahoo, Google, Investing stb.) **TILOS** pótlásra, ellenőrzésre vagy becslésre.
-- 0.00%-os feltöltés, becslés vagy interpoláció **TILOS**.
-
-Ha egy tickerhez nincs ár a Gistben:
-- nem kerül felsorolásra,
-- a lefedettségi blokkban **HIÁNYOS** státuszt kell jelezni.
+**Összegzés:**  
+➡️ **Lefedettség: HIÁNYOS (árak)** – ez jelzett, elfogadott állapot.
 
 ---
 
-## 4. Lefedettség-ellenőrzés (KÖTELEZŐ BLOKK)
+## 2) Makró / FED / politika
 
-**TELJES:**  
-- minden kötelező adatblokkhoz minden szükséges forrás elérhető volt
+### Vizsgált tartomány
+- Elnöki és kormányzati döntések
+- FED kommunikáció
+- Költségvetési / monetáris bejelentések
 
-**HIÁNYOS:**  
-- bármely kötelező adatblokk (pl. árak a Gistből) részben vagy egészben hiányzott
+### Értékelés
+A vizsgált időszakban **nem történt olyan döntés vagy nyilatkozat**,
+amely a webbiblia definíciója szerint közvetlen,
+azonnali piaci hatással bírna (index futures, hozamgörbe, FX).
 
-HIÁNYOS esetén **kötelező megjelölni**, mely blokk érintett.
-
----
-
-## 5. Ármozgások jelentése
-
-### 5.1 Darabszámos tickerek (pozíciók)
-- Küszöb **NINCS**
-- Csak azok szerepelnek, amelyekhez a Gist ármozgást tartalmaz
-- A hiányzó tickerek **nem pótlódnak**, ez forráskorlát
-
-### 5.2 Watchlist tickerek
-- **KIZÁRÓLAG** abszolút **±3% vagy nagyobb** elmozdulás esetén szerepelhetnek
-- ±3% alatt **nem jelenhetnek meg**
-- Ilyenkor a blokk üres, ezt explicit jelezni kell
+➡️ **Blokk üres – forrás elérve, de nincs releváns esemény.**
 
 ---
 
-## 6. Bejelentések és elemzői lépések
+## 3) Ármozgások (PRICE ENGINE)
 
-### Források (publikus, webes)
-- MarketBeat (elsődleges)
-- The Fly / StreetInsider (headline)
-- Reuters / AP
-- SEC EDGAR (8-K)
-- Vállalati IR / Newsroom
+### 3.1 Darabszámos tickerek (pozíciók)
 
-### Jelentjük, ha:
-- fel-/leminősítés
-- ≥±10% célár-változás
-- új coverage
-- earningsen kívüli vállalati bejelentés
-- buyback / osztalék
-- M&A
-- CEO / CFO váltás
+A kanonikus Gist az alábbi darabszámos tickerekhez
+tartalmazott After-hours ármozgást:
 
----
+- **PLTR** – After-hours **+0.38%**
+- **MSTR** – After-hours **+0.32%**
+- **MSFT** – After-hours **+0.14%**
+- **MU** – After-hours **+0.12%**
 
-## 7. Forráselérhetőség megkülönböztetése (KRITIKUS)
+**Magyarázat:**  
+Más darabszámos tickerekhez a Gist nem szolgáltatott
+áradatot. Ezek nem kerültek 0.00%-kal feltöltésre,
+és nem jelent forráshibát.
 
-TILOS összemosni:
-- **„Forrás elérve, de nincs esemény”** (szűrési eredmény)
-- **„Forrás nem elérhető”** (adat-/forráshiány)
+### 3.2 Watchlist tickerek
 
-Forráshiány esetén a „nincs hír” kifejezés **TILOS**.
+A watchlist tickerek esetében a jelentési küszöb
+**±3% abszolút elmozdulás**.
+
+➡️ A vizsgált időszakban **nem volt ±3% feletti
+watchlist ármozgás**, ezért felsorolás nem történt.
 
 ---
 
-## 8. Közeli katalizátorok
+## 4) Bejelentések és elemzői lépések
 
-### 8.1 Earnings (KANONIKUS)
-- A kanonikus Gistben szereplő **következő 7 napos earnings** események
-  **MINDIG** bekerülnek
-- Az earnings **soha nem külön fejezet**, kizárólag itt
-- Külső earnings naptár **nem írhatja felül**
+### Vizsgált események
+- elemzői fel-/leminősítések
+- célárváltozások (≥±10%)
+- coverage indítás / megszüntetés
+- earningsen kívüli vállalati közlések
+- M&A, buyback, osztalék, vezetőváltás
 
-### 8.2 Nem-earnings katalizátorok
-- ≤7 napon belüli
-- anyagilag lényeges
-- publikus forrásból igazolt események
+### Eredmény
+A források elérhetők voltak, azonban
+**nem történt olyan esemény**, amely a jelentési küszöböt elérte volna.
 
----
-
-## 9. Listán kívüli high-conviction jelöltek
-
-### Alapfeltételek
-- Nem lehet portfólióban
-- Nem lehet watchlisten
-
-### Időtáv
-- 1–3 hónap
-- 3–6 hónap
-
-### Bekerülés
-Legalább **2 feltétel** teljesül:
-- 2–3+ friss felminősítés / céláremelés
-- pozitív guidance
-- konszenzus estimate-emelés
-- konkrét katalizátor
-- relatív erő / 52w csúcsközeli ár
-
-### Forrásminimum
-- MarketBeat **ÉS**
-- legalább egy további publikus forrás (Yahoo / Reuters / IR)
+➡️ **Forrás elérve, de nincs jelentendő esemény.**
 
 ---
 
-## 10. Zárás
+## 5) Kontextus / szektor
 
-Ez a webbiblia **lezárt, kanonikus állapot**.
-Módosítás kizárólag:
-- teljes fájl cseréjével,
-- új verziószámmal,
-- letölthető formában történhet.
+### Vizsgálat
+- szektorszintű hírek
+- több vállalatot érintő fejlemények
+
+### Értékelés
+Nem azonosítható olyan szektorszintű történés,
+amely önálló jelentési blokkot indokolna.
+
+➡️ **Blokk üres – szűrési eredmény.**
+
+---
+
+## 6) Közeli katalizátorok
+
+### 6.1 Earnings (következő 7 nap – kanonikus Gist)
+
+Az alábbi earnings események **kötelezően megjelennek**:
+
+| Dátum | Idő | Ticker |
+|------|-----|--------|
+| 2026-01-20 | After-hours | NFLX |
+| 2026-01-20 | After-hours | THCY |
+| 2026-01-21 | Pre-market | SCHW |
+| 2026-01-22 | After-hours | COF |
+| 2026-01-22 | After-hours | INTC |
+
+**Megjegyzés:**  
+Az earnings lista kizárólag a Gistből származik,
+külső naptár nem használható.
+
+### 6.2 Nem-earnings katalizátorok
+
+A vizsgált források alapján **≤7 napon belül**
+nem azonosítható anyagilag lényeges,
+nem-earnings katalizátor.
+
+➡️ **Blokk üres – forrás elérve.**
+
+---
+
+## 7) Listán kívüli high-conviction jelöltek
+
+### Vizsgálati feltételek
+- 1–3 hónapos vagy 3–6 hónapos időtáv
+- legalább 2 erős, egymást megerősítő jelzés
+- több publikus forrás
+
+### Értékelés
+A vizsgált források alapján **nem teljesült**
+a high-conviction bekerülési feltételrendszer
+egyetlen listán kívüli ticker esetében sem.
+
+➡️ **Blokk üres – küszöb nem teljesült.**
+
+---
+
+## 8) Összkép / narratíva
+
+A piac jelenleg kiváró üzemmódban van,
+az ármozgások enyhék és szűk sávban zajlanak.
+A következő napok fókuszát a közelgő earnings jelentések
+(NFLX, INTC, COF) adják, amelyek potenciálisan
+irányadóbb mozgásokat hozhatnak.
+
+A jelenlegi adatkörnyezetben
+nincs széles körű, azonnali kockázati vagy
+trendváltást jelző faktor.
+
+---
+
+**ZÁRÁS:**  
+Ez a jelentés a jelenleg elérhető adatok alapján
+teljes mértékben webbiblia-konform,
+FULL / MAGYARÁZÓS kimenet.
