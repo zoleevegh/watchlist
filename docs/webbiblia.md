@@ -73,6 +73,29 @@ Csak publikus, webesen ellenőrizhető forrás használható.
 
 ---
 
+
+### Forráslefedés – ellenőrzött (KANONIKUS KOMMENT)
+
+Az alábbi eseménytípusok mindegyike biztosan elérhető legalább egy,
+a webbibliában megadott publikus webes forrásból:
+
+- Elemzői fel-/leminősítések, célár-változások:
+  MarketBeat (elsődleges), The Fly / StreetInsider (headline)
+- Coverage indítás / megszüntetés:
+  The Fly / StreetInsider (headline), MarketBeat (késleltetve)
+- Earnings release és guidance:
+  SEC EDGAR (8-K), vállalati IR / Newsroom
+- M&A, stratégiai lépések:
+  SEC 8-K, IR / Press Release, Reuters / AP
+- Buyback / osztalék:
+  IR / EDGAR, Business Wire / PR Newswire
+- CEO / CFO váltás:
+  SEC 8-K (kötelező), IR / Reuters
+
+A fenti események egyike sem igényel előfizetéses terminált;
+mind publikus, webesen ellenőrizhető forrásból származik.
+
+
 ## 5. Deduplikáció és fallback
 
 - Egy esemény egyszer szerepelhet.
