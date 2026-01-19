@@ -1,238 +1,157 @@
-# WEBBIBLIA
-Automatizált #1 / #2 / #3 részvényjelentések – KANONIKUS SPECIFIKÁCIÓ
+# WEBBIBLIA – KANONIKUS SPECIFIKÁCIÓ
+## Automatikus #1 / #2 / #3 részvényjelentések
 
-KANONIKUS ELÉRÉS (RAW):
+**Hivatalos forrás (RAW):**  
 https://raw.githubusercontent.com/zoleevegh/watchlist/main/docs/webbiblia.md
+
+**Verzió:** v2.1.0  
+**Utolsó módosítás:** 2026-01-19 09:15:08  
+**Megjegyzés:** Ez az egyetlen hivatalos webbiblia. Rövidített, alternatív vagy kivonatolt változat nem létezik.
 
 ---
 
-## 0. Alapelv (normatív)
-Ez a dokumentum normatív specifikáció.
-Értelmezésre nyitott, „puha” megfogalmazás nem szerepelhet benne.
-Ami itt nincs definiálva, az nem létezik szabályként.
+## 0. Alapelvek (KANONIKUS)
+
+- A webbiblia **normatív specifikáció**, nem leíró dokumentum.
+- Ami itt nincs kimondva, **nem létezik szabályként**.
+- Minden jelentés **ennek a dokumentumnak** köteles megfelelni.
+- Ha adat vagy forrás nem érhető el, azt **explicit módon jelezni kell**.
 
 ---
 
 ## 1. Jelentéstípusok
 
-#1 jelentés – After-hours + Premarket fókusz  
-#2 jelentés – Előző kereskedési nap (Open → Close)  
-#3 jelentés – Aktuális kereskedési nap (Open → Most)
+- **#1 jelentés:** After-hours + Premarket fókusz (ár + hír)
+- **#2 jelentés:** Előző kereskedési nap (Open → Close)
+- **#3 jelentés:** Aktuális kereskedési nap (Open → Most)
 
 ---
 
-## 2. Időablakok (KANONIKUS)
+## 2. Időablakok
 
-### Ármozgásokra vonatkozó időablakok
-- After-hours: előző kereskedési nap 22:00 – 02:00 CET/CEST
-- Premarket: aktuális nap 10:00 – 15:30 CET/CEST
-- Rendes kereskedés: 15:30 – 22:00 CET/CEST
+### 2.1 Ármozgások
+- After-hours: 22:00–02:00 CET/CEST
+- Premarket: 10:00–15:30 CET/CEST
+- Rendes kereskedés: 15:30–22:00 CET/CEST
 
-### Hírek / események
-- Időtartam: előző napi zárástól a lekérdezés pillanatáig
-- Nem kötöttek az ármozgási időablakokhoz
-
----
-
-## 3. Jelentési sorrend (KANONIKUS)
-
-1. Lefedettség-ellenőrzés
-2. Makró / FED / kormányzati események (csak piaci relevancia esetén)
-3. Darabszámos tickerek (pozíciók)
-4. Watchlist tickerek (csak releváns hír vagy ≥±3% ármozgás esetén)
-5. Bejelentések és fel-/lemínősítések
-6. Közeli katalizátorok
-7. Listán kívüli high-conviction jelöltek (1–3 hónap, 3–6 hónap)
+### 2.2 Hírek
+- Előző napi zárástól a lekérdezés pillanatáig
+- Nem kötődnek az ár-időablakokhoz
 
 ---
 
-## 4. Forráskezelés (KANONIKUS)
+## 3. Árforrás – PRICE ENGINE (KRITIKUS)
 
-### Tier A – Elsődleges
-- Reuters (Top / Markets / Breakingviews)
-- AP
-- Bloomberg (ha publikus tartalom elérhető)
+**KANONIKUS SZABÁLY:**
+- Az ármozgások forrása **kizárólag** a jelentés előtt átadott **kanonikus Gist**.
+- Más árforrás (Yahoo, Google, Investing stb.) **TILOS** pótlásra, ellenőrzésre vagy becslésre.
+- 0.00%-os feltöltés, becslés vagy interpoláció **TILOS**.
 
-### Tier B – Hivatalos vállalati csatornák
-- SEC EDGAR (8-K, 6-K, 10-Q, 10-K)
-- Vállalati IR / Newsroom
-- Business Wire / PR Newswire / GlobeNewswire
+Ha egy tickerhez nincs ár a Gistben:
+- nem kerül felsorolásra,
+- a lefedettségi blokkban **HIÁNYOS** státuszt kell jelezni.
 
-### Tier C – Elemzői források
+---
+
+## 4. Lefedettség-ellenőrzés (KÖTELEZŐ BLOKK)
+
+**TELJES:**  
+- minden kötelező adatblokkhoz minden szükséges forrás elérhető volt
+
+**HIÁNYOS:**  
+- bármely kötelező adatblokk (pl. árak a Gistből) részben vagy egészben hiányzott
+
+HIÁNYOS esetén **kötelező megjelölni**, mely blokk érintett.
+
+---
+
+## 5. Ármozgások jelentése
+
+### 5.1 Darabszámos tickerek (pozíciók)
+- Küszöb **NINCS**
+- Csak azok szerepelnek, amelyekhez a Gist ármozgást tartalmaz
+- A hiányzó tickerek **nem pótlódnak**, ez forráskorlát
+
+### 5.2 Watchlist tickerek
+- **KIZÁRÓLAG** abszolút **±3% vagy nagyobb** elmozdulás esetén szerepelhetnek
+- ±3% alatt **nem jelenhetnek meg**
+- Ilyenkor a blokk üres, ezt explicit jelezni kell
+
+---
+
+## 6. Bejelentések és elemzői lépések
+
+### Források (publikus, webes)
 - MarketBeat (elsődleges)
-- The Fly (headline szint)
-- StreetInsider (headline szint)
-- TipRanks (kiegészítő)
+- The Fly / StreetInsider (headline)
+- Reuters / AP
+- SEC EDGAR (8-K)
+- Vállalati IR / Newsroom
 
-### Tier D – Makró
-- FederalReserve.gov
-- BLS / BEA / U.S. Treasury
-- Reuters / AP politikai hírek
-
-Csak publikus, webesen ellenőrizhető forrás használható.
-
----
-
-
-### Forráslefedés – ellenőrzött (KANONIKUS KOMMENT)
-
-Az alábbi eseménytípusok mindegyike biztosan elérhető legalább egy,
-a webbibliában megadott publikus webes forrásból:
-
-- Elemzői fel-/leminősítések, célár-változások:
-  MarketBeat (elsődleges), The Fly / StreetInsider (headline)
-- Coverage indítás / megszüntetés:
-  The Fly / StreetInsider (headline), MarketBeat (késleltetve)
-- Earnings release és guidance:
-  SEC EDGAR (8-K), vállalati IR / Newsroom
-- M&A, stratégiai lépések:
-  SEC 8-K, IR / Press Release, Reuters / AP
-- Buyback / osztalék:
-  IR / EDGAR, Business Wire / PR Newswire
-- CEO / CFO váltás:
-  SEC 8-K (kötelező), IR / Reuters
-
-A fenti események egyike sem igényel előfizetéses terminált;
-mind publikus, webesen ellenőrizhető forrásból származik.
-
-
-## 5. Deduplikáció és fallback
-
-- Egy esemény egyszer szerepelhet.
-- Prioritás: Tier B > Tier A > Tier C.
-- Árfolyam fallback: Yahoo Finance → Google Finance → Investing.com.
-- Hír akkor is jelenthető, ha árfolyamadat nem elérhető.
+### Jelentjük, ha:
+- fel-/leminősítés
+- ≥±10% célár-változás
+- új coverage
+- earningsen kívüli vállalati bejelentés
+- buyback / osztalék
+- M&A
+- CEO / CFO váltás
 
 ---
 
-## 6. Piaci relevancia (KANONIKUS)
+## 7. Forráselérhetőség megkülönböztetése (KRITIKUS)
 
-Makró / kormányzati esemény piaci releváns, ha legalább egy teljesül:
-- US index futures ≥ ±0,5%
-- US10Y hozam ≥ ±5 bp
-- DXY ≥ ±0,4%
-- FED-kamat / likviditás döntés
-- Konkrét, végrehajtható elnöki / kormányzati intézkedés
+TILOS összemosni:
+- **„Forrás elérve, de nincs esemény”** (szűrési eredmény)
+- **„Forrás nem elérhető”** (adat-/forráshiány)
 
-Nyilatkozat vagy kampányretorika önmagában nem releváns.
+Forráshiány esetén a „nincs hír” kifejezés **TILOS**.
 
 ---
 
-## 7. Anyagi lényegesség
+## 8. Közeli katalizátorok
 
-Egy vállalati hír anyagilag lényeges, ha legalább egy teljesül:
-1. EPS vagy bevétel guidance ≥ ±5%
-2. Célárváltozás ≥ ±10%
-3. Core üzletágat érintő M&A
-4. Új vagy jelentősen bővített buyback / osztalék
-5. CEO / CFO váltás
-6. Core üzletágat érintő jogi / szabályozási döntés
+### 8.1 Earnings (KANONIKUS)
+- A kanonikus Gistben szereplő **következő 7 napos earnings** események
+  **MINDIG** bekerülnek
+- Az earnings **soha nem külön fejezet**, kizárólag itt
+- Külső earnings naptár **nem írhatja felül**
 
----
-
-## 8. Várható hatás nyitáskor
-
-A blokk csak akkor jelenik meg, ha:
-- After-hours vagy Premarket ármozgás ≥ ±3%
-ÉS
-- Konkrét, azonosítható hír oka van (Tier A–C)
+### 8.2 Nem-earnings katalizátorok
+- ≤7 napon belüli
+- anyagilag lényeges
+- publikus forrásból igazolt események
 
 ---
 
-## 9. Forrás-megerősítés
+## 9. Listán kívüli high-conviction jelöltek
 
-Egy hír megerősítettnek tekinthető, ha:
-- legalább két független forrásból származik,
-- amelyek közül legalább egy Tier A vagy Tier B.
-Hivatalos IR / EDGAR közlés önmagában is elegendő.
+### Alapfeltételek
+- Nem lehet portfólióban
+- Nem lehet watchlisten
 
+### Időtáv
+- 1–3 hónap
+- 3–6 hónap
 
----
+### Bekerülés
+Legalább **2 feltétel** teljesül:
+- 2–3+ friss felminősítés / céláremelés
+- pozitív guidance
+- konszenzus estimate-emelés
+- konkrét katalizátor
+- relatív erő / 52w csúcsközeli ár
 
-## 10. Közeli katalizátorok (KANONIKUS)
-
-### 10.1 Definíció
-Közeli katalizátor = konkrét dátumhoz/időponthoz köthető esemény, amely rövid távon (napok–hetek) érdemi árfolyamhatást válthat ki.
-
-**Beletartozik:**
-- Earnings (jelentési dátum)
-- Hatósági döntés (pl. FDA), bírósági ítélet
-- Investor Day / Capital Markets Day
-- Lock-up expiry
-- Makró esemény (CPI, FOMC) – ha a ticker historikusan érzékeny rá
-
-**Nem tartozik bele:**
-- bizonytalan időzítés („valamikor idén”)
-- puszta narratíva katalizátor nélkül
-- pletyka hivatalos megerősítés nélkül
-
-### 10.2 Earnings – kötelező, kanonikus input (Gist)
-A jelentés előtt átadott kanonikus Gist (`summary_report_1.md`) tartalmazza a következő **7 nap** earnings dátumait.  
-Ezeket a riport **MINDIG** beépíti a „Közeli katalizátorok” blokkba.
-
-**Megjelenítés:**
-- Darabszámos tickereknél: minden earnings esemény kötelezően megjelenik, ha **≤ 7 napon belül** esedékes.
-- Watchlist tickereknél: minden earnings esemény kötelezően megjelenik, ha **≤ 7 napon belül** esedékes.
-
-**Autoritív forrás:** az earnings dátumok forrása kizárólag a kanonikus Gist; külső earnings naptár nem használható felülírásra.
-
-### 10.3 Nem-earnings katalizátorok – szűrés
-- Darabszámos tickereknél: minden nem-earnings esemény megjelenik, ha **≤ 7 napon belül** van.
-- Watchlist tickereknél: csak akkor jelenik meg, ha **≤ 7 napon belül** van **ÉS** anyagilag lényeges (lásd 7. pont) vagy historikusan árérzékeny a ticker.
-
-### 10.4 Források (publikus, webesen ellenőrizhető)
-- Earnings dátum: kanonikus Gist
-- Események: vállalati IR/Newsroom, SEC EDGAR, Reuters/AP, Business Wire/PR Newswire
-- Makró események: FederalReserve.gov, BLS/BEA, U.S. Treasury, Reuters/AP
-
+### Forrásminimum
+- MarketBeat **ÉS**
+- legalább egy további publikus forrás (Yahoo / Reuters / IR)
 
 ---
 
-## 11. Listán kívüli high-conviction jelöltek
+## 10. Zárás
 
-**Cél:** kizárólag olyan, a saját portfólió- és watchlistán kívüli tickerek felsorolása, amelyeknél ismétlődő, több forrásból alátámasztott, rövid–középtávú (1–6 hó) pozitív jelzés látszik.
-
-### 11.1 Alapszabályok
-- **Tiltás:** a blokkba **soha** nem kerülhet olyan ticker, amely a portfólióban vagy watchlisten szerepel.
-- A blokk **csak akkor jelenik meg**, ha van valóban erős, ismétlődő jelzés (különben teljesen kimarad).
-
-### 11.2 Időtáv-sávok
-- **1–3 hónap**
-- **3–6 hónap**
-
-### 11.3 Bekerülési feltételek
-Egy ticker akkor kerülhet be, ha **legalább 2** teljesül az alábbiak közül:
-- **2–3+ friss** felminősítés/céláremelés nagy házaktól
-- pozitív guidance / iránymutatás-emelés
-- konszenzus EPS/árbevétel **felfelé** módosulása (estimate‑felhúzás)
-- közelgő, konkrét katalizátor (1–6 hónap)
-- relatív erő / 52w csúcs-közeli teljesítmény
-
-### 11.4 Forrásminimum (publikus, webesen ellenőrizhető)
-- Elsődleges: **Yahoo Finance** és **MarketBeat**
-- Minimum: legalább **1** MarketBeat‑alapú elemzői jelzés **ÉS** legalább **1** további megerősítés (Yahoo Finance / Reuters / IR/EDGAR / PR wire).
-- Pletyka önmagában nem elegendő.
-
-
-
----
-
-## Forráselérhetőség jelzése (KANONIKUS SZABÁLY)
-
-Amennyiben egy jelentési blokkhoz szükséges forrás
-nem érhető el, nem lekérdezhető, vagy hiányos,
-ezt a jelentésben **explicit módon jelezni kell**.
-
-Ilyen esetben **TILOS** a „nincs hír” vagy „nincs jelzés”
-megfogalmazás használata.
-
-Kötelező megkülönböztetés:
-- **Forrás elérve, de küszöb nem teljesült** → blokk üres, indoklással
-- **Forrás nem elérhető / hiányos** → blokk nem értékelhető, jelzéssel
-
----
-
-## 12. Zárás
-
-Ez a webbiblia lezárt, kanonikus állapot.
-Módosítás kizárólag verzióváltással történhet.
+Ez a webbiblia **lezárt, kanonikus állapot**.
+Módosítás kizárólag:
+- teljes fájl cseréjével,
+- új verziószámmal,
+- letölthető formában történhet.
