@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 
-VERSION = "v0.3.7-marketbeat-free-2026-01-21"
+VERSION = "v0.3.8-marketbeat-free-2026-01-21"
 BASE = "https://www.marketbeat.com"
 
 # MarketBeat "Today's" ratings lists (FREE).
@@ -186,6 +186,16 @@ def _clean_text(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
+
+def _clean_firm(s: str) -> str:
+    """Remove MarketBeat paywall boilerplate that sometimes gets injected into the firm cell."""
+    s = (s or "").strip()
+    s = re.sub(r"\s+Subscribe to MarketBeat.*$", "", s, flags=re.IGNORECASE).strip()
+    s = re.sub(r"\s+Visit MarketBeat.*$", "", s, flags=re.IGNORECASE).strip()
+    s = re.sub(r"\s+\|\s*MarketBeat.*$", "", s, flags=re.IGNORECASE).strip()
+    s = re.sub(r"\s{2,}", " ", s).strip()
+    return s
+
 def _parse_money(s: str) -> Optional[float]:
     s = s.strip()
     m = re.search(r"(-?\d+(?:\.\d+)?)", s.replace(",", ""))
@@ -279,7 +289,7 @@ def _extract_events_from_ratings_page(
         company_cell = _strip_tags(tds[0])
         action_cell = _strip_tags(tds[1]) if len(tds) > 1 else ""
         brokerage_cell = _strip_tags(tds[2]) if len(tds) > 2 else ""
-        firm = _clean_text(brokerage_cell) or "—"
+        firm = _clean_firm(_clean_text(brokerage_cell) or "—")
 
         pt_cell = _strip_tags(tds[5]) if len(tds) >= 6 else ""
         rating_cell = _strip_tags(tds[6]) if len(tds) >= 7 else ""
