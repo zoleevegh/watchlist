@@ -51,9 +51,9 @@ jobs:
           $days  = "${{ inputs.DAYS }}"
           if ([string]::IsNullOrWhiteSpace($days)) { $days = "2" }
           if ($debug -eq "1") {
-            python scripts\analyst_marketbeat.py --master reports\master.csv --days $days --out-md reports\analyst_last${days}d.md --out-json reports\analyst_last${days}d.json --debug
+            python scripts\analyst_marketbeat.py --master reports\master.csv --days $days --sleep 1.5 --out-md reports\analyst_last${days}d.md --out-json reports\analyst_last${days}d.json --debug
           } else {
-            python scripts\analyst_marketbeat.py --master reports\master.csv --days $days --out-md reports\analyst_last${days}d.md --out-json reports\analyst_last${days}d.json
+            python scripts\analyst_marketbeat.py --master reports\master.csv --days $days --sleep 1.5 --out-md reports\analyst_last${days}d.md --out-json reports\analyst_last${days}d.json
           }
 
       - name: Upload artifacts (analyst)
