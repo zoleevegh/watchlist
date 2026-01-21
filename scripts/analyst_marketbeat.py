@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# analyst_marketbeat.py — v0.3.3-marketbeat-free-2026-01-21
+# analyst_marketbeat.py — v0.3.4-marketbeat-free-2026-01-21
 #
 # FREE analyst feed (upgrade/downgrade + PT change) using MarketBeat HTML.
 # Goal: last N calendar days (default 2) for tickers in MASTER CSV.
@@ -22,8 +22,11 @@ from __future__ import annotations
 import argparse
 import csv
 import datetime as dt
+import gzip
 import html
+import http.cookiejar
 import json
+import random
 import re
 import time
 import urllib.parse
@@ -32,10 +35,14 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import List, Optional, Dict, Tuple
 
-VERSION = "v0.3.3-marketbeat-free-2026-01-21"
+VERSION = "v0.3.4-marketbeat-free-2026-01-21"
 
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36"
 BASE = "https://www.marketbeat.com"
+
+# Cookie-aware opener (MarketBeat sometimes blocks requests without a session).
+_COOKIEJAR = http.cookiejar.CookieJar()
+_OPENER = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(_COOKIEJAR))
 
 
 @dataclass
@@ -57,26 +64,61 @@ def _log(msg: str) -> None:
     print(f"[{ts}] {msg}", flush=True)
 
 
-def _http_get(url: str, timeout: int, debug_dir: Optional[Path], debug_tag: str) -> Tuple[int, str]:
+def _warmup_session(timeout: int, debug_dir: Optional[Path]) -> None:
+    """Best-effort warmup to obtain cookies/session."""
+    try:
+        status, _ = _http_get_raw(f"{BASE}/", timeout, debug_dir, "warmup_home")
+        _log(f"WARMUP home: HTTP {status}")
+    except Exception as e:
+        _log(f"WARMUP home: ERROR {e}")
+
+
+def _http_get_raw(url: str, timeout: int, debug_dir: Optional[Path], debug_tag: str) -> Tuple[int, str]:
+    """Low-level HTTP GET with cookie-aware opener."""
     req = urllib.request.Request(
         url,
         headers={
             "User-Agent": UA,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "gzip",
             "Connection": "close",
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
         },
         method="GET",
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _OPENER.open(req, timeout=timeout) as resp:
             status = getattr(resp, "status", 200)
             raw = resp.read()
+            enc = ""
+            try:
+                enc = (resp.headers.get("Content-Encoding") or "").lower()
+            except Exception:
+                enc = ""
+            if enc == "gzip":
+                try:
+                    raw = gzip.decompress(raw)
+                except Exception:
+                    pass
             text = raw.decode("utf-8", errors="replace")
     except urllib.error.HTTPError as e:
         status = e.code
         try:
-            text = e.read().decode("utf-8", errors="replace")
+            raw = e.read()
+            # HTTPError also has headers sometimes
+            enc = ""
+            try:
+                enc = (e.headers.get("Content-Encoding") or "").lower()
+            except Exception:
+                enc = ""
+            if enc == "gzip":
+                try:
+                    raw = gzip.decompress(raw)
+                except Exception:
+                    pass
+            text = raw.decode("utf-8", errors="replace")
         except Exception:
             text = ""
     except Exception as e:
@@ -89,6 +131,61 @@ def _http_get(url: str, timeout: int, debug_dir: Optional[Path], debug_tag: str)
         (debug_dir / f"{safe}.html").write_text(text, encoding="utf-8")
 
     return status, text
+
+
+def _jina_wrap(url: str) -> str:
+    if url.startswith("https://"):
+        return "https://r.jina.ai/https://" + url[len("https://"):]
+    if url.startswith("http://"):
+        return "https://r.jina.ai/http://" + url[len("http://"):]
+    return "https://r.jina.ai/" + url
+
+
+def _http_get_best(
+    url: str,
+    timeout: int,
+    debug_dir: Optional[Path],
+    debug_tag: str,
+    allow_jina: bool = True,
+    max_attempts: int = 3,
+) -> Tuple[int, str, str, int]:
+    """Best-effort GET: retry with jitter; optionally fallback via r.jina.ai.
+
+    Returns: (status, text, via, direct_status)
+    """
+    direct_status = 0
+    last_status = 0
+    last_text = ""
+
+    # Direct attempts first
+    for i in range(max_attempts):
+        status, text = _http_get_raw(url, timeout, debug_dir, f"{debug_tag}_direct_{i+1}")
+        direct_status = status if i == 0 else direct_status
+        last_status, last_text = status, text
+        if status < 400:
+            return status, text, "direct", direct_status
+        # retry on 403/429/5xx
+        if status in (403, 429) or status >= 500:
+            time.sleep(0.6 + random.random() * 0.8)
+            continue
+        break
+
+    if not allow_jina:
+        return last_status, last_text, "direct", direct_status
+
+    # Fallback via Jina proxy
+    jurl = _jina_wrap(url)
+    for i in range(max_attempts):
+        status, text = _http_get_raw(jurl, timeout, debug_dir, f"{debug_tag}_jina_{i+1}")
+        last_status, last_text = status, text
+        if status < 400:
+            return status, text, "jina", direct_status
+        if status in (403, 429) or status >= 500:
+            time.sleep(0.6 + random.random() * 0.8)
+            continue
+        break
+
+    return last_status, last_text, "jina", direct_status
 
 
 def _extract_first_stock_url_from_search(html_text: str) -> Optional[str]:
@@ -104,7 +201,7 @@ def _extract_first_stock_url_from_search(html_text: str) -> Optional[str]:
 def _resolve_ticker_to_stock_url(ticker: str, timeout: int, debug_dir: Optional[Path]) -> Optional[str]:
     q = urllib.parse.urlencode({"Symbol": ticker})
     url = f"{BASE}/stocks/?{q}"
-    status, text = _http_get(url, timeout, debug_dir, f"{ticker}_search")
+    status, text = _http_get_raw(url, timeout, debug_dir, f"{ticker}_search")
     if status >= 400:
         _log(f"RESOLVE {ticker}: HTTP {status} on search page")
         return None
@@ -281,7 +378,7 @@ def fetch_events_from_ratings_pages(
     timeout: int,
     sleep_s: float,
     debug_dir: Optional[Path],
-) -> Tuple[List[AnalystEvent], Dict[str, int], bool]:
+) -> Tuple[List[AnalystEvent], Dict[str, str], bool]:
     today = dt.datetime.utcnow().date()
     cutoff = today - dt.timedelta(days=days - 1)
     master_set = {t.upper() for t in master_tickers}
@@ -289,15 +386,21 @@ def fetch_events_from_ratings_pages(
     out: List[AnalystEvent] = []
     seen: set = set()
 
-    statuses: Dict[str, int] = {}
+    statuses: Dict[str, str] = {}
     pages_ok = 0
 
     for kind, path in RATINGS_SOURCES:
         url = BASE + path
-        status, page_html = _http_get(url, timeout, debug_dir, f"ratings_{kind}")
-        statuses[kind] = int(status)
+        status, page_html, via, direct_status = _http_get_best(
+            url, timeout, debug_dir, f"ratings_{kind}", allow_jina=True, max_attempts=3
+        )
+        if via == "direct":
+            statuses[kind] = str(status)
+        else:
+            statuses[kind] = f"{direct_status}->{status}({via})"
+
         if status >= 400:
-            _log(f"RATINGS {kind}: HTTP {status} (skip)")
+            _log(f"RATINGS {kind}: HTTP {statuses[kind]} (skip)")
             time.sleep(sleep_s)
             continue
 
@@ -456,7 +559,7 @@ def write_outputs(
     events: List[AnalystEvent],
     days: int,
     fetch_ok: bool,
-    statuses: Optional[Dict[str, int]] = None,
+    statuses: Optional[Dict[str, str]] = None,
 ) -> None:
     now = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     lines: List[str] = []
