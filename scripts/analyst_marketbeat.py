@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# analyst_marketbeat.py — v0.3.4-marketbeat-free-2026-01-21
+# analyst_marketbeat.py — v0.3.5-marketbeat-free-2026-01-21
 #
 # FREE analyst feed (upgrade/downgrade + PT change) using MarketBeat HTML.
 # Goal: last N calendar days (default 2) for tickers in MASTER CSV.
@@ -35,7 +35,7 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import List, Optional, Dict, Tuple
 
-VERSION = "v0.3.4-marketbeat-free-2026-01-21"
+VERSION = "v0.3.5-marketbeat-free-2026-01-21"
 
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36"
 BASE = "https://www.marketbeat.com"
@@ -71,6 +71,12 @@ def _warmup_session(timeout: int, debug_dir: Optional[Path]) -> None:
         _log(f"WARMUP home: HTTP {status}")
     except Exception as e:
         _log(f"WARMUP home: ERROR {e}")
+
+
+# Backward-compat: some older workflow/script revisions called the warmup function
+# without the leading underscore.
+def warmup_session(timeout: int, debug_dir: Optional[Path]) -> None:
+    _warmup_session(timeout=timeout, debug_dir=debug_dir)
 
 
 def _http_get_raw(url: str, timeout: int, debug_dir: Optional[Path], debug_tag: str) -> Tuple[int, str]:
