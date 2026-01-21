@@ -1,5 +1,7 @@
 name: Run Report — PRICE ENGINE
 
+# run_report.yml — v1.0.0-2026-01-21
+
 "on":
   workflow_dispatch:
     inputs:
@@ -45,6 +47,15 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
+      - name: Restore MarketBeat seen cache (first-seen dates)
+        if: env.REPORT == '1'
+        uses: actions/cache@v4
+        with:
+          path: reports/marketbeat_seen.json
+          key: marketbeat-seen-v1-${{ runner.os }}
+          restore-keys: |
+            marketbeat-seen-v1-
 
       - name: Install deps
         shell: bash
@@ -119,25 +130,13 @@ jobs:
             EARNINGS=""
           fi
 
-          # Run earnings next-7d audit (soft) -> reports/earnings_next7d.md
-          RC_E=0
-          set +e
-          if [ -n "${EARNINGS}" ]; then
-            if [ -f "reports/master.csv" ]; then
-              python "${EARNINGS}" --master "reports/master.csv" --out "reports/earnings_next7d.md"
-              RC_E=$?
-            else
-              python "${EARNINGS}" --master "${MASTER_URL}" --out "reports/earnings_next7d.md"
-              RC_E=$?
-            fi
+          # Pick analyst script path (optional)
+          if [ -f "scripts/analyst_marketbeat.py" ]; then
+            ANALYST="scripts/analyst_marketbeat.py"
+          elif [ -f "analyst_marketbeat.py" ]; then
+            ANALYST="analyst_marketbeat.py"
           else
-            RC_E=2
-          fi
-          set -e
-
-          if [ "${RC_E}" -ne 0 ] || [ ! -f "reports/earnings_next7d.md" ]; then
-            python -c "from pathlib import Path; Path('reports').mkdir(parents=True, exist_ok=True); Path('reports/earnings_next7d.md').write_text('# Earnings – következő 7 nap (MASTER szűrés)\n\nN/A: earnings.py nem található vagy nem futott le.\n', encoding='utf-8')"
-            echo "EARNINGS_EXIT=${RC_E}" | tee -a reports/runner.log
+            ANALYST=""
           fi
 
           # Run runner (never hard-fail the job; we still want the stable raw link + gist update)
@@ -153,14 +152,92 @@ jobs:
           set -e
 
           if [ "${RC}" -ne 0 ] || [ ! -f "${OUT_MD}" ]; then
-            python -c "from pathlib import Path; Path('reports').mkdir(parents=True, exist_ok=True); Path(out_md).write_text('# #1 – Premarket check (PRICE ENGINE)\n\nNO_DATA: a report nem készült el (runner crash / hiányzó fájl / forráshiba).\n', encoding='utf-8')"
+            python -c "from pathlib import Path; Path('reports').mkdir(parents=True, exist_ok=True); Path('${OUT_MD}').write_text('# #1 – Premarket check (PRICE ENGINE)\n\nNO_DATA: a report nem készült el (runner crash / hiányzó fájl / forráshiba).\n', encoding='utf-8')"
             echo "RUNNER_EXIT=${RC}" | tee -a reports/runner.log
           fi
 
-          # Inject earnings block BEFORE '## Pozíciók' (csak #1, ha van earnings file)
-          if [ "${REPORT}" = "1" ] && [ -f "reports/earnings_next7d.md" ] && [ -f "${OUT_MD}" ]; then
-            awk 'FNR==NR{e=e $0 ORS; next} /## Pozíciók/ && !done{printf "%s\\n", e; done=1} {print}' reports/earnings_next7d.md "${OUT_MD}" > reports/_tmp_with_earnings.md
-            mv reports/_tmp_with_earnings.md "${OUT_MD}"
+          # Run analyst feed (soft) -> reports/analyst_last2d.md / reports/analyst_last2d.json
+          RC_A=0
+          set +e
+          if [ "${REPORT}" = "1" ] && [ -n "${ANALYST}" ]; then
+            if [ -f "reports/master.csv" ]; then
+              python "${ANALYST}" --master "reports/master.csv" --days 2 --out-md "reports/analyst_last2d.md" --out-json "reports/analyst_last2d.json"
+              RC_A=$?
+            else
+              python "${ANALYST}" --master "${MASTER_URL}" --days 2 --out-md "reports/analyst_last2d.md" --out-json "reports/analyst_last2d.json"
+              RC_A=$?
+            fi
+          else
+            RC_A=2
+          fi
+          set -e
+          if [ "${REPORT}" = "1" ] && ( [ "${RC_A}" -ne 0 ] || [ ! -f "reports/analyst_last2d.md" ] ); then
+            python -c "from pathlib import Path; Path('reports').mkdir(parents=True, exist_ok=True); Path('reports/analyst_last2d.md').write_text('# Elemzői feed (MarketBeat) – utolsó 2 naptári nap\n\nN/A: analyst_marketbeat.py nem található vagy nem futott le (forrás blokkolás / hiba).\n', encoding='utf-8')"
+            echo "ANALYST_EXIT=${RC_A}" | tee -a reports/runner.log
+          fi
+
+          # Run earnings next-7d audit (soft) -> reports/earnings_next7d.md
+          RC_E=0
+          set +e
+          if [ -n "${EARNINGS}" ]; then
+            if [ -f "reports/master.csv" ]; then
+              python "${EARNINGS}" --master "reports/master.csv" --out "reports/earnings_next7d.md"
+              RC_E=$?
+            else
+              python "${EARNINGS}" --master "${MASTER_URL}" --out "reports/earnings_next7d.md"
+              RC_E=$?
+            fi
+          else
+            RC_E=2
+          fi
+          set -e
+          if [ "${RC_E}" -ne 0 ] || [ ! -f "reports/earnings_next7d.md" ]; then
+            python -c "from pathlib import Path; Path('reports').mkdir(parents=True, exist_ok=True); Path('reports/earnings_next7d.md').write_text('# Earnings – következő 7 nap (MASTER szűrés)\n\nN/A: earnings.py nem található vagy nem futott le.\n', encoding='utf-8')"
+            echo "EARNINGS_EXIT=${RC_E}" | tee -a reports/runner.log
+          fi
+
+          # Inject blocks into the final #1 markdown in order: Analyst -> Earnings
+          if [ "${REPORT}" = "1" ] && [ -f "${OUT_MD}" ]; then
+            python - <<'PY'
+            import os, re
+            from pathlib import Path
+
+            out_md = Path(os.environ["OUT_MD"])
+            analyst_md = Path("reports/analyst_last2d.md")
+            earnings_md = Path("reports/earnings_next7d.md")
+
+            def strip_leading_meta(text: str) -> str:
+                lines = text.splitlines()
+                while lines and (
+                    lines[0].startswith("#")
+                    or lines[0].startswith("Verzió:")
+                    or lines[0].startswith("Generálva")
+                    or lines[0].strip() == ""
+                ):
+                    lines.pop(0)
+                return "\n".join(lines).strip()
+
+            base = out_md.read_text(encoding="utf-8", errors="replace")
+
+            # prune previous injected blocks (if any)
+            base = re.split(r"\n## Elemzői feed \(MarketBeat\).*", base, maxsplit=1, flags=re.S)[0].rstrip() + "\n"
+            base = re.split(r"\n## Earnings — következő 7 nap.*", base, maxsplit=1, flags=re.S)[0].rstrip() + "\n"
+
+            a_raw = analyst_md.read_text(encoding="utf-8", errors="replace") if analyst_md.exists() else ""
+            e_raw = earnings_md.read_text(encoding="utf-8", errors="replace") if earnings_md.exists() else ""
+            a = strip_leading_meta(a_raw) or "N/A"
+            e = strip_leading_meta(e_raw) or "N/A"
+
+            injected = (
+                "\n\n## Elemzői feed (MarketBeat) — fel/leminősítések + célár (utolsó 2 naptári nap)\n\n"
+                + a
+                + "\n\n## Earnings — következő 7 nap\n\n"
+                + e
+                + "\n"
+            )
+
+            out_md.write_text(base.rstrip() + injected, encoding="utf-8")
+            PY
           fi
 
 
