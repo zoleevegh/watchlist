@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# analyst_marketbeat.py — v0.3.1-marketbeat-free-2026-01-21
+# analyst_marketbeat.py — v0.3.2-marketbeat-free-2026-01-21
 #
 # FREE analyst feed (upgrade/downgrade + PT change) using MarketBeat HTML.
 # Goal: last N calendar days (default 2) for tickers in MASTER CSV.
@@ -23,19 +23,30 @@ import argparse
 import csv
 import datetime as dt
 import html
+import http.cookiejar
+import io
 import json
 import re
 import time
 import urllib.parse
 import urllib.request
+import gzip
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import List, Optional, Dict, Tuple
 
-VERSION = "v0.3.1-marketbeat-free-2026-01-21"
+VERSION = "v0.3.2-marketbeat-free-2026-01-21"
 
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36"
 BASE = "https://www.marketbeat.com"
+
+# Session/cookies: MarketBeat can return HTTP 403 to "bare" clients (esp. from CI IP ranges).
+# We keep a cookie jar + opener and do a lightweight warmup request to obtain session cookies.
+_CJ = http.cookiejar.CookieJar()
+_OPENER = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(_CJ))
+
+# Last-resort fallback: Jina "Reader" proxy frequently bypasses WAF blocks for public pages.
+JINA_PREFIX = "https://r.jina.ai/"
 
 
 @dataclass
@@ -57,26 +68,50 @@ def _log(msg: str) -> None:
     print(f"[{ts}] {msg}", flush=True)
 
 
-def _http_get(url: str, timeout: int, debug_dir: Optional[Path], debug_tag: str) -> Tuple[int, str]:
-    req = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": UA,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Connection": "close",
-        },
-        method="GET",
-    )
+def _decode_response(raw: bytes, encoding: str, content_encoding: str) -> str:
+    if content_encoding and content_encoding.lower() == "gzip":
+        try:
+            raw = gzip.GzipFile(fileobj=io.BytesIO(raw)).read()
+        except Exception:
+            # If decompression fails, fall back to raw.
+            pass
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return raw.decode(encoding or "utf-8", errors="replace")
+    except Exception:
+        return raw.decode("utf-8", errors="replace")
+
+
+def _http_get_once(url: str, timeout: int, debug_dir: Optional[Path], debug_tag: str, referer: Optional[str] = None) -> Tuple[int, str]:
+    headers = {
+        "User-Agent": UA,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip",
+        "Connection": "close",
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-User": "?1",
+    }
+    if referer:
+        headers["Referer"] = referer
+
+    req = urllib.request.Request(url, headers=headers, method="GET")
+    try:
+        with _OPENER.open(req, timeout=timeout) as resp:
             status = getattr(resp, "status", 200)
             raw = resp.read()
-            text = raw.decode("utf-8", errors="replace")
+            enc = resp.headers.get_content_charset() if hasattr(resp.headers, "get_content_charset") else "utf-8"
+            content_encoding = resp.headers.get("Content-Encoding", "")
+            text = _decode_response(raw, enc or "utf-8", content_encoding)
     except urllib.error.HTTPError as e:
         status = e.code
         try:
-            text = e.read().decode("utf-8", errors="replace")
+            raw = e.read()
+            # best-effort decode
+            content_encoding = e.headers.get("Content-Encoding", "") if hasattr(e, "headers") else ""
+            text = _decode_response(raw, "utf-8", content_encoding)
         except Exception:
             text = ""
     except Exception as e:
@@ -89,6 +124,42 @@ def _http_get(url: str, timeout: int, debug_dir: Optional[Path], debug_tag: str)
         (debug_dir / f"{safe}.html").write_text(text, encoding="utf-8")
 
     return status, text
+
+
+def _http_get(url: str, timeout: int, debug_dir: Optional[Path], debug_tag: str) -> Tuple[int, str]:
+    """GET with pragmatic anti-403 tactics.
+
+    Order:
+    1) normal request with cookies + browser-like headers
+    2) retry once with referer set to MarketBeat base
+    3) fallback to Jina proxy (different host, often bypasses WAF)
+    """
+    status, text = _http_get_once(url, timeout, debug_dir, debug_tag, referer=None)
+
+    # Retry on typical WAF statuses.
+    if status in (403, 429) or (status >= 400 and not text):
+        status2, text2 = _http_get_once(url, timeout, debug_dir, f"{debug_tag}_retry", referer=BASE + "/")
+        if status2 < status or (status2 == 200 and text2):
+            status, text = status2, text2
+
+    # Last resort: proxy fetch
+    if status in (403, 429) and not url.startswith(JINA_PREFIX):
+        proxy_url = JINA_PREFIX + url
+        status3, text3 = _http_get_once(proxy_url, timeout, debug_dir, f"{debug_tag}_jina", referer=None)
+        # Jina typically returns 200 even when upstream blocks.
+        if status3 == 200 and text3:
+            status, text = status3, text3
+
+    return status, text
+
+
+def _warmup_session(timeout: int, debug_dir: Optional[Path]) -> None:
+    """Make a lightweight request to prime cookies."""
+    try:
+        s, _ = _http_get_once(BASE + "/", timeout, debug_dir, "warmup_home", referer=None)
+        _log(f"WARMUP home: HTTP {s}")
+    except Exception as e:
+        _log(f"WARMUP failed (non-fatal): {e}")
 
 
 def _extract_first_stock_url_from_search(html_text: str) -> Optional[str]:
@@ -493,6 +564,7 @@ def main() -> int:
     debug_dir = Path(args.debug_dir) if args.debug else None
 
     _log(f"START {VERSION} days={args.days} master={master} mode=ratings_pages")
+    _warmup_session(args.timeout, debug_dir)
 
     tickers = read_master_tickers(master)
 
