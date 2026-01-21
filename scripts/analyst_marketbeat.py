@@ -29,8 +29,15 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 
-VERSION = "v0.3.8-marketbeat-free-2026-01-21"
+VERSION = "v0.3.9-marketbeat-free-hu-2026-01-21"
 BASE = "https://www.marketbeat.com"
+
+# Magyar megnevezések a reporthoz
+ACTION_HU = {
+    "upgrade": "felminősítés",
+    "downgrade": "leminősítés",
+    "pt_change": "célár módosítás",
+}
 
 # MarketBeat "Today's" ratings lists (FREE).
 RATINGS_SOURCES: List[Tuple[str, str]] = [
@@ -432,7 +439,7 @@ def write_outputs(
 ) -> None:
     now = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     lines: List[str] = []
-    lines.append(f"# Analyst feed (upgrade/downgrade + PT) — last {days} calendar days")
+    lines.append(f"# Elemzői feed (fel/leminősítés + célár) — utolsó {days} naptári nap")
     lines.append("")
     lines.append(f"Verzió: {VERSION}")
     lines.append(f"Generálva (UTC): {now}")
@@ -457,14 +464,15 @@ def write_outputs(
         for t in sorted(by.keys()):
             lines.append(f"## {t}")
             for e in sorted(by[t], key=lambda x: x.date, reverse=True):
-                parts = [f"- {e.date} — {e.firm} — {e.action}"]
+                disp_action = ACTION_HU.get(e.action, e.action)
+                parts = [f"- {e.date} — {e.firm} — {disp_action}"]
                 if e.rating_from or e.rating_to:
-                    parts.append(f"Rating: {e.rating_from or '—'} → {e.rating_to or '—'}")
+                    parts.append(f"Ajánlás: {e.rating_from or '—'} → {e.rating_to or '—'}")
                 if e.pt_from is not None or e.pt_to is not None:
                     if e.pt_from is not None and e.pt_to is not None:
-                        parts.append(f"PT: {e.currency} {e.pt_from:.2f} → {e.pt_to:.2f}")
+                        parts.append(f"Célár: {e.currency} {e.pt_from:.2f} → {e.pt_to:.2f}")
                     elif e.pt_to is not None:
-                        parts.append(f"PT: {e.currency} {e.pt_to:.2f}")
+                        parts.append(f"Célár: {e.currency} {e.pt_to:.2f}")
                 parts.append(f"Forrás: {e.source_url}")
                 lines.append("  ".join(parts))
             lines.append("")
