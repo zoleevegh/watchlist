@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# analyst_marketbeat.py — v0.3.0-marketbeat-free-2026-01-15
+# analyst_marketbeat.py — v0.3.1-marketbeat-free-2026-01-21
 #
 # FREE analyst feed (upgrade/downgrade + PT change) using MarketBeat HTML.
 # Goal: last N calendar days (default 2) for tickers in MASTER CSV.
@@ -32,7 +32,7 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import List, Optional, Dict, Tuple
 
-VERSION = "v0.3.0-marketbeat-free-2026-01-15"
+VERSION = "v0.3.1-marketbeat-free-2026-01-21"
 
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36"
 BASE = "https://www.marketbeat.com"
@@ -101,18 +101,7 @@ def _extract_first_stock_url_from_search(html_text: str) -> Optional[str]:
     return None
 
 
-EXCHANGE_TRIES = ["NASDAQ", "NYSE", "AMEX", "NYSEARCA", "OTCMKTS", "OTCBB"]
-
 def _resolve_ticker_to_stock_url(ticker: str, timeout: int, debug_dir: Optional[Path]) -> Optional[str]:
-    # 1) próbáljuk direkt a stock oldalt (kerüli a 403-at adó search endpointot)
-    for ex in EXCHANGE_TRIES:
-        url = f"{BASE}/stocks/{ex}/{ticker}/"
-        status, text = _http_get(url, timeout, debug_dir, f"{ticker}_{ex}")
-        if status == 200 and (f"/stocks/{ex}/" in text or f"/stocks/{ex}/{ticker}/" in text):
-            return url
-        time.sleep(0.15)  # pici jitter is elég itt
-
-    # 2) fallback: ha nagyon muszáj, próbáld a search-öt (de lehet 403)
     q = urllib.parse.urlencode({"Symbol": ticker})
     url = f"{BASE}/stocks/?{q}"
     status, text = _http_get(url, timeout, debug_dir, f"{ticker}_search")
@@ -120,6 +109,7 @@ def _resolve_ticker_to_stock_url(ticker: str, timeout: int, debug_dir: Optional[
         _log(f"RESOLVE {ticker}: HTTP {status} on search page")
         return None
     return _extract_first_stock_url_from_search(text)
+
 
 _MONTHS = {
     "jan": 1, "january": 1,
@@ -169,18 +159,194 @@ def _parse_money(s: str) -> Optional[float]:
 
 
 def _extract_upgrade_rows(stock_html: str) -> List[List[str]]:
+    """Backward-compatible row extractor.
+    MarketBeat ratings pages and stock pages both typically render HTML tables.
+    We extract <tr> rows and convert <td>/<th> cells into plain text.
+    """
     rows: List[List[str]] = []
     for tr in re.findall(r"<tr[^>]*>.*?</tr>", stock_html, flags=re.I | re.S):
         tds = re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", tr, flags=re.I | re.S)
         if not tds:
             continue
         cells = [_clean_text(re.sub(r"<[^>]+>", " ", c)) for c in tds]
-        if not _parse_date_any(cells[0]):
+        # keep only rows that contain at least one parseable date cell
+        if not any(_parse_date_any(c) for c in cells[:2]):
             continue
         rows.append(cells)
     return rows
 
 
+RATINGS_SOURCES: List[Tuple[str, str]] = [
+    ("upgrade", "/ratings/upgrades/"),
+    ("downgrade", "/ratings/downgrades/"),
+    ("pt_change", "/ratings/pricetargetchanges/"),
+]
+
+
+def _extract_urls_from_row_html(tr_html: str) -> Dict[str, str]:
+    """Extract likely useful URLs (details + stock) from a <tr> HTML chunk."""
+    out: Dict[str, str] = {}
+    # stock page URLs like /stocks/NASDAQ/AAPL/
+    m = re.search(r'href="(?P<url>/stocks/[A-Z0-9]+/[A-Z0-9\.\-]+/)"', tr_html, flags=re.I)
+    if m:
+        out["stock"] = BASE + m.group("url")
+    # details page (often /ratings/ or /ratings/by-issuer/ or similar)
+    m2 = re.search(r'href="(?P<url>/ratings/[^"]+/)"', tr_html, flags=re.I)
+    if m2:
+        out["details"] = BASE + m2.group("url")
+    return out
+
+
+def _extract_ticker_from_row(tr_html: str, cells: List[str]) -> Optional[str]:
+    # Prefer stock URL because it is unambiguous.
+    m = re.search(r"/stocks/[A-Z0-9]+/(?P<t>[A-Z0-9\.\-]+)/", tr_html, flags=re.I)
+    if m:
+        return m.group("t").upper()
+    # Fallback: scan cells for a ticker-like token.
+    for c in cells:
+        c2 = re.sub(r"[^A-Z0-9\.\- ]", " ", c.upper()).strip()
+        for tok in c2.split():
+            if 1 <= len(tok) <= 6 and re.fullmatch(r"[A-Z][A-Z0-9\.\-]{0,5}", tok):
+                return tok
+    return None
+
+
+def _extract_rating_change(text: str) -> Tuple[Optional[str], Optional[str]]:
+    # Handles: "Hold ➝ Buy", "Hold → Buy", "Hold -> Buy"
+    arrow_pat = r"(Strong Buy|Buy|Hold|Sell|Overweight|Underweight|Outperform|Underperform|Market Perform|Sector Perform)"
+    m = re.search(rf"\b{arrow_pat}\b\s*(?:➝|→|->|to)\s*\b{arrow_pat}\b", text, flags=re.I)
+    if not m:
+        return None, None
+    # m.group(0) contains full; use findall to get both
+    vals = re.findall(arrow_pat, m.group(0), flags=re.I)
+    if len(vals) >= 2:
+        return vals[0].title(), vals[1].title()
+    return None, None
+
+
+def _extract_pt_change(text: str) -> Tuple[Optional[float], Optional[float], str]:
+    # Prefer explicit "from X to Y"
+    m = re.search(r"(?:from|From)\s*\$?([0-9]{1,6}(?:\.[0-9]{1,2})?)\s*(?:to|To)\s*\$?([0-9]{1,6}(?:\.[0-9]{1,2})?)", text)
+    if m:
+        return float(m.group(1)), float(m.group(2)), "$"
+    # Otherwise, we may only have a single price target in the row. Heuristic: last $ amount.
+    amts = [float(x) for x in re.findall(r"\$\s*([0-9]{1,6}(?:\.[0-9]{1,2})?)", text)]
+    if amts:
+        return None, amts[-1], "$"
+    return None, None, "$"
+
+
+def _guess_firm(cells: List[str], joined: str) -> str:
+    # Brokerage is usually present as a short token (e.g., "HSBC", "TD Cowen").
+    # Pick the first "name-like" cell that isn't a date, action, rating, or pure number.
+    blacklist = {"UPGRADED", "DOWNGRADED", "UPGRADED BY", "DOWNGRADED BY", "RAISED", "LOWERED", "PRICE", "TARGET", "RATING", "DETAILS", "ACTION", "BROKERAGE", "ANALYST", "COMPANY", "CURRENT"}
+    for c in cells:
+        cu = c.strip()
+        if not cu:
+            continue
+        if _parse_date_any(cu):
+            continue
+        if cu.upper() in blacklist:
+            continue
+        if re.search(r"\b(Upgraded|Downgraded)\b", cu, re.I):
+            continue
+        if re.fullmatch(r"\$?[0-9,\.]+%?", cu.replace(" ", "")):
+            continue
+        if re.search(r"\b(Strong Buy|Buy|Hold|Sell|Overweight|Underweight|Outperform|Underperform|Market Perform|Sector Perform)\b", cu, re.I):
+            continue
+        # likely a brokerage name
+        if 2 <= len(cu) <= 40:
+            return cu
+    return "—"
+
+
+def _kind_to_action(kind: str, joined: str) -> str:
+    if kind == "upgrade":
+        return "Upgrade"
+    if kind == "downgrade":
+        return "Downgrade"
+    if kind == "pt_change":
+        # if text hints direction, keep it
+        if re.search(r"\braised\b|\bincreased\b", joined, re.I):
+            return "Price target raised"
+        if re.search(r"\blowered\b|\bdecreased\b|\bcut\b", joined, re.I):
+            return "Price target lowered"
+        return "Price target change"
+    return kind
+
+
+def fetch_events_from_ratings_pages(master_tickers: List[str], days: int, timeout: int, sleep_s: float, debug_dir: Optional[Path]) -> List[AnalystEvent]:
+    today = dt.datetime.utcnow().date()
+    cutoff = today - dt.timedelta(days=days - 1)
+    master_set = {t.upper() for t in master_tickers}
+
+    out: List[AnalystEvent] = []
+    seen: set = set()
+
+    for kind, path in RATINGS_SOURCES:
+        url = BASE + path
+        status, page_html = _http_get(url, timeout, debug_dir, f"ratings_{kind}")
+        if status >= 400:
+            _log(f"RATINGS {kind}: HTTP {status} (skip)")
+            time.sleep(sleep_s)
+            continue
+
+        # Iterate <tr> blocks; this is robust for MarketBeat ratings pages.
+        for tr in re.findall(r"<tr[^>]*>.*?</tr>", page_html, flags=re.I | re.S):
+            tds = re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", tr, flags=re.I | re.S)
+            if not tds:
+                continue
+            cells = [_clean_text(re.sub(r"<[^>]+>", " ", c)) for c in tds]
+            # Find date cell (usually first)
+            date_obj = None
+            date_raw = None
+            for c in cells[:3]:
+                d = _parse_date_any(c)
+                if d:
+                    date_obj = d
+                    date_raw = d.isoformat()
+                    break
+            if not date_obj:
+                continue
+            if date_obj < cutoff or date_obj > today:
+                continue
+
+            ticker = _extract_ticker_from_row(tr, cells)
+            if not ticker or ticker.upper() not in master_set:
+                continue
+
+            urls = _extract_urls_from_row_html(tr)
+            stock_url = urls.get("stock", "")
+            details_url = urls.get("details", "")
+            source_url = details_url or stock_url or url
+
+            joined = " ".join([c for c in cells if c]).strip()
+            firm = _guess_firm(cells, joined)
+            action = _kind_to_action(kind, joined)
+            rating_from, rating_to = _extract_rating_change(joined)
+            pt_from, pt_to, currency = _extract_pt_change(joined)
+
+            e = AnalystEvent(
+                ticker=ticker.upper(),
+                date=date_raw,
+                firm=firm,
+                action=action,
+                rating_from=rating_from,
+                rating_to=rating_to,
+                pt_from=pt_from,
+                pt_to=pt_to,
+                currency=currency,
+                source_url=source_url,
+            )
+            key = (e.ticker, e.date, e.firm, e.action, e.rating_from, e.rating_to, e.pt_from, e.pt_to, e.source_url)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(e)
+
+        time.sleep(sleep_s)
+
+    return out
 def _rows_to_events(ticker: str, stock_url: str, rows: List[List[str]], days: int) -> List[AnalystEvent]:
     today = dt.datetime.utcnow().date()
     cutoff = today - dt.timedelta(days=days - 1)
@@ -326,31 +492,19 @@ def main() -> int:
 
     debug_dir = Path(args.debug_dir) if args.debug else None
 
-    _log(f"START {VERSION} days={args.days} master={master}")
+    _log(f"START {VERSION} days={args.days} master={master} mode=ratings_pages")
 
     tickers = read_master_tickers(master)
-    events: List[AnalystEvent] = []
 
-    for t in tickers:
-        try:
-            stock_url = _resolve_ticker_to_stock_url(t, args.timeout, debug_dir)
-            if not stock_url:
-                _log(f"{t}: not resolved (skip)")
-                time.sleep(args.sleep)
-                continue
-            status, stock_html = _http_get(stock_url, args.timeout, debug_dir, f"{t}_stock")
-            if status >= 400:
-                _log(f"{t}: HTTP {status} stock page (skip)")
-                time.sleep(args.sleep)
-                continue
-            rows = _extract_upgrade_rows(stock_html)
-            evs = _rows_to_events(t, stock_url, rows, args.days)
-            if evs:
-                _log(f"{t}: {len(evs)} event(s)")
-                events.extend(evs)
-        except Exception as e:
-            _log(f"{t}: ERROR {e}")
-        time.sleep(args.sleep)
+    # Solution #2: pull the central MarketBeat ratings lists once,
+    # then filter to MASTER tickers (avoids per-ticker search that triggers HTTP 403).
+    events = fetch_events_from_ratings_pages(
+        master_tickers=tickers,
+        days=args.days,
+        timeout=args.timeout,
+        sleep_s=max(args.sleep, 0.35),
+        debug_dir=debug_dir,
+    )
 
     events.sort(key=lambda e: (e.date, e.ticker), reverse=True)
     out_md = Path(args.out_md)
