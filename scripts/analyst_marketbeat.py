@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# analyst_marketbeat.py — v0.3.7-marketbeat-free-2026-01-21
+# analyst_marketbeat.py — v0.3.10-marketbeat-free-hu-2026-01-21
 # MarketBeat FREE analyst feed collector (CI-friendly).
 #
 # Changelog (v0.3.6):
@@ -37,6 +37,27 @@ ACTION_HU = {
     "upgrade": "felminősítés",
     "downgrade": "leminősítés",
     "pt_change": "célár módosítás",
+}
+
+RATING_HU = {
+    "Strong Buy": "Erős vétel",
+    "Buy": "Vétel",
+    "Outperform": "Felülteljesítés",
+    "Overweight": "Felülsúlyozás",
+    "Accumulate": "Gyűjtés",
+    "Positive": "Pozitív",
+    "Moderate Buy": "Mérsékelt vétel",
+    "Neutral": "Semleges",
+    "Hold": "Tartás",
+    "Equal-Weight": "Semleges súly",
+    "Market Perform": "Piaci teljesítés",
+    "In-Line": "Piaccal megegyező",
+    "Peer Perform": "Szektortársakkal azonos",
+    "Underperform": "Alulteljesítés",
+    "Underweight": "Alulsúlyozás",
+    "Reduce": "Csökkentés",
+    "Sell": "Eladás",
+    "Strong Sell": "Erős eladás",
 }
 
 # MarketBeat "Today's" ratings lists (FREE).
@@ -227,18 +248,21 @@ def _split_arrow(s: str) -> Tuple[Optional[str], Optional[str]]:
     return (s or None), None
 
 
-def _action_from_kind(kind: str, action_cell: str) -> str:
-    a = _clean_text(action_cell)
-    if a:
-        # e.g. "Upgraded by", "Target Raised by"
-        return a
+def _action_hu(kind: str, pt_from: float | None, pt_to: float | None) -> str:
+    """Adjon magyar, nem-hibrid eseménytípust."""
     if kind == "upgrade":
-        return "Upgraded"
+        return "Felminősítés"
     if kind == "downgrade":
-        return "Downgraded"
+        return "Leminősítés"
     if kind == "pt_change":
-        return "Price Target Changed"
-    return kind
+        if pt_from is not None and pt_to is not None:
+            if pt_to > pt_from:
+                return "Célár emelés"
+            if pt_to < pt_from:
+                return "Célár csökkentés"
+        return "Célár frissítés"
+    return "Elemzői frissítés"
+
 
 
 def _extract_events_from_ratings_page(
@@ -336,7 +360,7 @@ def _extract_events_from_ratings_page(
                 ticker=ticker,
                 date=asof_date,
                 firm=firm,
-                action=_action_from_kind(kind, action_cell),
+                action=_action_hu(kind, pt_from, pt_to),
                 rating_from=rating_from,
                 rating_to=rating_to,
                 pt_from=pt_from,
@@ -464,17 +488,18 @@ def write_outputs(
         for t in sorted(by.keys()):
             lines.append(f"## {t}")
             for e in sorted(by[t], key=lambda x: x.date, reverse=True):
-                disp_action = ACTION_HU.get(e.action, e.action)
-                parts = [f"- {e.date} — {e.firm} — {disp_action}"]
+                parts = [f"- {e.date} — {e.firm} — {e.action}"]
                 if e.rating_from or e.rating_to:
-                    parts.append(f"Ajánlás: {e.rating_from or '—'} → {e.rating_to or '—'}")
+                    rf = RATING_HU.get(e.rating_from, e.rating_from) if e.rating_from else "—"
+                    rt = RATING_HU.get(e.rating_to, e.rating_to) if e.rating_to else "—"
+                    parts.append(f"Ajánlás: {rf} → {rt}")
                 if e.pt_from is not None or e.pt_to is not None:
                     if e.pt_from is not None and e.pt_to is not None:
                         parts.append(f"Célár: {e.currency} {e.pt_from:.2f} → {e.pt_to:.2f}")
                     elif e.pt_to is not None:
                         parts.append(f"Célár: {e.currency} {e.pt_to:.2f}")
                 parts.append(f"Forrás: {e.source_url}")
-                lines.append("  ".join(parts))
+                lines.append(" | ".join(parts))
             lines.append("")
 
     out_md.parent.mkdir(parents=True, exist_ok=True)
