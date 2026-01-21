@@ -1,5 +1,6 @@
 name: Run Report — PRICE ENGINE
-# version: v4.6.11-run_report-gist-heredocless-2026-01-21
+
+# run_report.yml — v1.0.1-2026-01-21
 
 "on":
   workflow_dispatch:
@@ -46,6 +47,15 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
+      - name: Restore MarketBeat seen cache (first-seen dates)
+        if: ${{ env.REPORT == '1' }}
+        uses: actions/cache@v4
+        with:
+          path: reports/marketbeat_seen.json
+          key: marketbeat-seen-v1-${{ runner.os }}
+          restore-keys: |
+            marketbeat-seen-v1-
 
       - name: Install deps
         shell: bash
@@ -120,25 +130,13 @@ jobs:
             EARNINGS=""
           fi
 
-          # Run earnings next-7d audit (soft) -> reports/earnings_next7d.md
-          RC_E=0
-          set +e
-          if [ -n "${EARNINGS}" ]; then
-            if [ -f "reports/master.csv" ]; then
-              python "${EARNINGS}" --master "reports/master.csv" --out "reports/earnings_next7d.md"
-              RC_E=$?
-            else
-              python "${EARNINGS}" --master "${MASTER_URL}" --out "reports/earnings_next7d.md"
-              RC_E=$?
-            fi
+          # Pick analyst script path (optional)
+          if [ -f "scripts/analyst_marketbeat.py" ]; then
+            ANALYST="scripts/analyst_marketbeat.py"
+          elif [ -f "analyst_marketbeat.py" ]; then
+            ANALYST="analyst_marketbeat.py"
           else
-            RC_E=2
-          fi
-          set -e
-
-          if [ "${RC_E}" -ne 0 ] || [ ! -f "reports/earnings_next7d.md" ]; then
-            python -c "from pathlib import Path; Path('reports').mkdir(parents=True, exist_ok=True); Path('reports/earnings_next7d.md').write_text('# Earnings – következő 7 nap (MASTER szűrés)\n\nN/A: earnings.py nem található vagy nem futott le.\n', encoding='utf-8')"
-            echo "EARNINGS_EXIT=${RC_E}" | tee -a reports/runner.log
+            ANALYST=""
           fi
 
           # Run runner (never hard-fail the job; we still want the stable raw link + gist update)
@@ -154,14 +152,92 @@ jobs:
           set -e
 
           if [ "${RC}" -ne 0 ] || [ ! -f "${OUT_MD}" ]; then
-            python -c "from pathlib import Path; Path('reports').mkdir(parents=True, exist_ok=True); Path(out_md).write_text('# #1 – Premarket check (PRICE ENGINE)\n\nNO_DATA: a report nem készült el (runner crash / hiányzó fájl / forráshiba).\n', encoding='utf-8')"
+            python -c "from pathlib import Path; Path('reports').mkdir(parents=True, exist_ok=True); Path('${OUT_MD}').write_text('# #1 – Premarket check (PRICE ENGINE)\n\nNO_DATA: a report nem készült el (runner crash / hiányzó fájl / forráshiba).\n', encoding='utf-8')"
             echo "RUNNER_EXIT=${RC}" | tee -a reports/runner.log
           fi
 
-          # Inject earnings block BEFORE '## Pozíciók' (csak #1, ha van earnings file)
-          if [ "${REPORT}" = "1" ] && [ -f "reports/earnings_next7d.md" ] && [ -f "${OUT_MD}" ]; then
-            awk 'FNR==NR{e=e $0 ORS; next} /## Pozíciók/ && !done{printf "%s\\n", e; done=1} {print}' reports/earnings_next7d.md "${OUT_MD}" > reports/_tmp_with_earnings.md
-            mv reports/_tmp_with_earnings.md "${OUT_MD}"
+          # Run analyst feed (soft) -> reports/analyst_last2d.md / reports/analyst_last2d.json
+          RC_A=0
+          set +e
+          if [ "${REPORT}" = "1" ] && [ -n "${ANALYST}" ]; then
+            if [ -f "reports/master.csv" ]; then
+              python "${ANALYST}" --master "reports/master.csv" --days 2 --out-md "reports/analyst_last2d.md" --out-json "reports/analyst_last2d.json"
+              RC_A=$?
+            else
+              python "${ANALYST}" --master "${MASTER_URL}" --days 2 --out-md "reports/analyst_last2d.md" --out-json "reports/analyst_last2d.json"
+              RC_A=$?
+            fi
+          else
+            RC_A=2
+          fi
+          set -e
+          if [ "${REPORT}" = "1" ] && ( [ "${RC_A}" -ne 0 ] || [ ! -f "reports/analyst_last2d.md" ] ); then
+            python -c "from pathlib import Path; Path('reports').mkdir(parents=True, exist_ok=True); Path('reports/analyst_last2d.md').write_text('# Elemzői feed (MarketBeat) – utolsó 2 naptári nap\n\nN/A: analyst_marketbeat.py nem található vagy nem futott le (forrás blokkolás / hiba).\n', encoding='utf-8')"
+            echo "ANALYST_EXIT=${RC_A}" | tee -a reports/runner.log
+          fi
+
+          # Run earnings next-7d audit (soft) -> reports/earnings_next7d.md
+          RC_E=0
+          set +e
+          if [ -n "${EARNINGS}" ]; then
+            if [ -f "reports/master.csv" ]; then
+              python "${EARNINGS}" --master "reports/master.csv" --out "reports/earnings_next7d.md"
+              RC_E=$?
+            else
+              python "${EARNINGS}" --master "${MASTER_URL}" --out "reports/earnings_next7d.md"
+              RC_E=$?
+            fi
+          else
+            RC_E=2
+          fi
+          set -e
+          if [ "${RC_E}" -ne 0 ] || [ ! -f "reports/earnings_next7d.md" ]; then
+            python -c "from pathlib import Path; Path('reports').mkdir(parents=True, exist_ok=True); Path('reports/earnings_next7d.md').write_text('# Earnings – következő 7 nap (MASTER szűrés)\n\nN/A: earnings.py nem található vagy nem futott le.\n', encoding='utf-8')"
+            echo "EARNINGS_EXIT=${RC_E}" | tee -a reports/runner.log
+          fi
+
+          # Inject blocks into the final #1 markdown in order: Analyst -> Earnings
+          if [ "${REPORT}" = "1" ] && [ -f "${OUT_MD}" ]; then
+            python - <<'PY'
+            import os, re
+            from pathlib import Path
+
+            out_md = Path(os.environ["OUT_MD"])
+            analyst_md = Path("reports/analyst_last2d.md")
+            earnings_md = Path("reports/earnings_next7d.md")
+
+            def strip_leading_meta(text: str) -> str:
+                lines = text.splitlines()
+                while lines and (
+                    lines[0].startswith("#")
+                    or lines[0].startswith("Verzió:")
+                    or lines[0].startswith("Generálva")
+                    or lines[0].strip() == ""
+                ):
+                    lines.pop(0)
+                return "\n".join(lines).strip()
+
+            base = out_md.read_text(encoding="utf-8", errors="replace")
+
+            # prune previous injected blocks (if any)
+            base = re.split(r"\n## Elemzői feed \(MarketBeat\).*", base, maxsplit=1, flags=re.S)[0].rstrip() + "\n"
+            base = re.split(r"\n## Earnings — következő 7 nap.*", base, maxsplit=1, flags=re.S)[0].rstrip() + "\n"
+
+            a_raw = analyst_md.read_text(encoding="utf-8", errors="replace") if analyst_md.exists() else ""
+            e_raw = earnings_md.read_text(encoding="utf-8", errors="replace") if earnings_md.exists() else ""
+            a = strip_leading_meta(a_raw) or "N/A"
+            e = strip_leading_meta(e_raw) or "N/A"
+
+            injected = (
+                "\n\n## Elemzői feed (MarketBeat) — fel/leminősítések + célár (utolsó 2 naptári nap)\n\n"
+                + a
+                + "\n\n## Earnings — következő 7 nap\n\n"
+                + e
+                + "\n"
+            )
+
+            out_md.write_text(base.rstrip() + injected, encoding="utf-8")
+            PY
           fi
 
 
@@ -205,7 +281,52 @@ jobs:
             echo "${OUT_MD} not found - skip Gist update."
             exit 0
           fi
-          python -c 'import json,os;from pathlib import Path;import urllib.request,urllib.error;gist_id=os.environ["GIST_ID"];token=os.environ["GIST_TOKEN"];out_md=Path(os.environ["OUT_MD"]);target_fn=out_md.name;content=out_md.read_text(encoding="utf-8",errors="replace");api_url=f"https://api.github.com/gists/{gist_id}";hdr={"Authorization":f"token {token}","Accept":"application/vnd.github+json","User-Agent":"watchlist-price-engine"};def req(method,url,data=None): r=urllib.request.Request(url,data=data,headers=hdr,method=method); return urllib.request.urlopen(r,timeout=30).read();gist=json.loads(req("GET",api_url));files=gist.get("files",{});deletions={fn:None for fn in files if fn!=target_fn};payload={"files":{**deletions,target_fn:{"content":content}}};req("PATCH",api_url,json.dumps(payload).encode("utf-8"));print("Gist updated.")'
+          cat > /tmp/update_gist.py <<'PY'
+          import json, os, sys
+          from pathlib import Path
+          import urllib.request
+
+          gist_id = os.environ["GIST_ID"]
+          token = os.environ["GIST_TOKEN"]
+          out_md = Path(os.environ["OUT_MD"])
+          target_fn = out_md.name
+          content = out_md.read_text(encoding="utf-8", errors="replace")
+
+          api_url = f"https://api.github.com/gists/{gist_id}"
+
+          def gh_get(url):
+              req = urllib.request.Request(url, headers={
+                  "Authorization": f"token {token}",
+                  "Accept": "application/vnd.github+json",
+                  "User-Agent": "watchlist-price-engine"
+              })
+              with urllib.request.urlopen(req) as r:
+                  return json.load(r)
+
+          def gh_patch(url, payload):
+              data = json.dumps(payload).encode("utf-8")
+              req = urllib.request.Request(url, data=data, method="PATCH", headers={
+                  "Authorization": f"token {token}",
+                  "Accept": "application/vnd.github+json",
+                  "User-Agent": "watchlist-price-engine"
+              })
+              with urllib.request.urlopen(req) as r:
+                  return json.load(r)
+
+          gist = gh_get(api_url)
+          files = gist.get("files", {})
+
+          # Delete wrong summary_report_*.md files (keep only the target)
+          deletions = {}
+          for fn in files.keys():
+              if fn.startswith("summary_report_") and fn.endswith(".md") and fn != target_fn:
+                  deletions[fn] = None
+
+          payload = {"files": {**deletions, target_fn: {"content": content}}}
+          gh_patch(api_url, payload)
+          print("Gist updated.")
+          PY
+          python /tmp/update_gist.py
       - name: Write run summary (stable raw link)
         if: always()
         shell: bash
