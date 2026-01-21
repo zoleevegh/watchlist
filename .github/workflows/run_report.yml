@@ -1,6 +1,6 @@
 name: Run Report — PRICE ENGINE
 
-# run_report.yml — v1.0.1-2026-01-21
+# run_report.yml — v1.0.3-2026-01-21
 
 "on":
   workflow_dispatch:
@@ -49,7 +49,7 @@ jobs:
           python-version: "3.11"
 
       - name: Restore MarketBeat seen cache (first-seen dates)
-        if: ${{ env.REPORT == '1' }}
+        if: env.REPORT == '1'
         uses: actions/cache@v4
         with:
           path: reports/marketbeat_seen.json
@@ -197,47 +197,50 @@ jobs:
           fi
 
           # Inject blocks into the final #1 markdown in order: Analyst -> Earnings
+          # (helper script written once to avoid heredoc-in-indented-block issues)
+          cat > /tmp/inject_blocks.py <<'PY'
+          import os
+          import re
+          from pathlib import Path
+          
+          out_md = Path(os.environ["OUT_MD"])
+          analyst_md = Path("reports/analyst_last2d.md")
+          earnings_md = Path("reports/earnings_next7d.md")
+          
+          def strip_leading_meta(text: str) -> str:
+              lines = text.splitlines()
+              while lines and (
+                  lines[0].startswith("#")
+                  or lines[0].startswith("Verzió:")
+                  or lines[0].startswith("Generálva")
+                  or lines[0].strip() == ""
+              ):
+                  lines.pop(0)
+              return "\n".join(lines).strip()
+          
+          base = out_md.read_text(encoding="utf-8", errors="replace")
+          
+          # prune previous injected blocks (if any)
+          base = re.split(r"\n## Elemzői feed \(MarketBeat\).*", base, maxsplit=1, flags=re.S)[0].rstrip() + "\n"
+          base = re.split(r"\n## Earnings — következő 7 nap.*", base, maxsplit=1, flags=re.S)[0].rstrip() + "\n"
+          
+          a_raw = analyst_md.read_text(encoding="utf-8", errors="replace") if analyst_md.exists() else ""
+          e_raw = earnings_md.read_text(encoding="utf-8", errors="replace") if earnings_md.exists() else ""
+          a = strip_leading_meta(a_raw) or "N/A"
+          e = strip_leading_meta(e_raw) or "N/A"
+          
+          injected = (
+              "\n\n## Elemzői feed (MarketBeat) — fel/leminősítések + célár (utolsó 2 naptári nap)\n\n"
+              + a
+              + "\n\n## Earnings — következő 7 nap\n\n"
+              + e
+              + "\n"
+          )
+          
+          out_md.write_text(base.rstrip() + injected, encoding="utf-8")
+          PY
           if [ "${REPORT}" = "1" ] && [ -f "${OUT_MD}" ]; then
-            python - <<'PY'
-            import os, re
-            from pathlib import Path
-
-            out_md = Path(os.environ["OUT_MD"])
-            analyst_md = Path("reports/analyst_last2d.md")
-            earnings_md = Path("reports/earnings_next7d.md")
-
-            def strip_leading_meta(text: str) -> str:
-                lines = text.splitlines()
-                while lines and (
-                    lines[0].startswith("#")
-                    or lines[0].startswith("Verzió:")
-                    or lines[0].startswith("Generálva")
-                    or lines[0].strip() == ""
-                ):
-                    lines.pop(0)
-                return "\n".join(lines).strip()
-
-            base = out_md.read_text(encoding="utf-8", errors="replace")
-
-            # prune previous injected blocks (if any)
-            base = re.split(r"\n## Elemzői feed \(MarketBeat\).*", base, maxsplit=1, flags=re.S)[0].rstrip() + "\n"
-            base = re.split(r"\n## Earnings — következő 7 nap.*", base, maxsplit=1, flags=re.S)[0].rstrip() + "\n"
-
-            a_raw = analyst_md.read_text(encoding="utf-8", errors="replace") if analyst_md.exists() else ""
-            e_raw = earnings_md.read_text(encoding="utf-8", errors="replace") if earnings_md.exists() else ""
-            a = strip_leading_meta(a_raw) or "N/A"
-            e = strip_leading_meta(e_raw) or "N/A"
-
-            injected = (
-                "\n\n## Elemzői feed (MarketBeat) — fel/leminősítések + célár (utolsó 2 naptári nap)\n\n"
-                + a
-                + "\n\n## Earnings — következő 7 nap\n\n"
-                + e
-                + "\n"
-            )
-
-            out_md.write_text(base.rstrip() + injected, encoding="utf-8")
-            PY
+            python /tmp/inject_blocks.py
           fi
 
 
@@ -282,46 +285,46 @@ jobs:
             exit 0
           fi
           cat > /tmp/update_gist.py <<'PY'
-          import json, os, sys
+          import json, os
           from pathlib import Path
           import urllib.request
-
+          
           gist_id = os.environ["GIST_ID"]
           token = os.environ["GIST_TOKEN"]
           out_md = Path(os.environ["OUT_MD"])
           target_fn = out_md.name
           content = out_md.read_text(encoding="utf-8", errors="replace")
-
+          
           api_url = f"https://api.github.com/gists/{gist_id}"
-
-          def gh_get(url):
+          
+          def gh_get(url: str):
               req = urllib.request.Request(url, headers={
                   "Authorization": f"token {token}",
                   "Accept": "application/vnd.github+json",
-                  "User-Agent": "watchlist-price-engine"
+                  "User-Agent": "watchlist-price-engine",
               })
-              with urllib.request.urlopen(req) as r:
-                  return json.load(r)
-
-          def gh_patch(url, payload):
+              with urllib.request.urlopen(req, timeout=30) as r:
+                  return json.loads(r.read().decode("utf-8", errors="replace"))
+          
+          def gh_patch(url: str, payload: dict):
               data = json.dumps(payload).encode("utf-8")
-              req = urllib.request.Request(url, data=data, method="PATCH", headers={
+              req = urllib.request.Request(url, data=data, headers={
                   "Authorization": f"token {token}",
                   "Accept": "application/vnd.github+json",
-                  "User-Agent": "watchlist-price-engine"
-              })
-              with urllib.request.urlopen(req) as r:
-                  return json.load(r)
-
+                  "User-Agent": "watchlist-price-engine",
+              }, method="PATCH")
+              with urllib.request.urlopen(req, timeout=30) as r:
+                  return json.loads(r.read().decode("utf-8", errors="replace"))
+          
           gist = gh_get(api_url)
           files = gist.get("files", {})
-
+          
           # Delete wrong summary_report_*.md files (keep only the target)
           deletions = {}
-          for fn in files.keys():
+          for fn in list(files.keys()):
               if fn.startswith("summary_report_") and fn.endswith(".md") and fn != target_fn:
                   deletions[fn] = None
-
+          
           payload = {"files": {**deletions, target_fn: {"content": content}}}
           gh_patch(api_url, payload)
           print("Gist updated.")
