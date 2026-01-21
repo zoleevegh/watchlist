@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 
-VERSION = "v0.3.11-marketbeat-free-hu-2026-01-21"
+VERSION = "v0.3.12-marketbeat-free-hu-2026-01-21"
 BASE = "https://www.marketbeat.com"
 
 # Magyar megnevezések a reporthoz
@@ -85,7 +85,7 @@ class AnalystEvent:
     pt_from: Optional[float]
     pt_to: Optional[float]
     currency: str
-    sou
+    source: str
 def _event_key(e: "AnalystEvent") -> str:
     """
     Stable key for de-dup across runs.
@@ -353,7 +353,7 @@ def _extract_events_from_ratings_page(
     kind: str,
     master_set: set,
     asof_date: str,
-    source_url: str,
+    source: str,
 ) -> List[AnalystEvent]:
     # NOTE: We intentionally avoid external deps to keep GH Actions lean.
     # MarketBeat ratings pages contain a sortable table with rows referencing tickers via:
@@ -436,7 +436,7 @@ def _extract_events_from_ratings_page(
                 stock_url = href
             else:
                 stock_url = BASE + href
-        src_url = stock_url or source_url
+        src_url = stock_url or source
 
         events.append(
             AnalystEvent(
@@ -449,7 +449,7 @@ def _extract_events_from_ratings_page(
                 pt_from=pt_from,
                 pt_to=pt_to,
                 currency="USD",
-                source_url=src_url,
+                source=src_url,
             )
         )
 
@@ -490,7 +490,7 @@ def fetch_events_from_ratings_pages(
 
         events = _extract_events_from_ratings_page(page_html, kind, master_set, asof_date, url)
         for e in events:
-            k = (e.ticker, e.firm, e.action, e.rating_from, e.rating_to, e.pt_from, e.pt_to, e.source_url)
+            k = (e.ticker, e.firm, e.action, e.rating_from, e.rating_to, e.pt_from, e.pt_to, e.source)
             if k in seen:
                 continue
             seen.add(k)
@@ -581,7 +581,7 @@ def write_outputs(
                         parts.append(f"Célár: {e.currency} {e.pt_from:.2f} → {e.pt_to:.2f}")
                     elif e.pt_to is not None:
                         parts.append(f"Célár: {e.currency} {e.pt_to:.2f}")
-                parts.append(f"Forrás: {e.source_url}")
+                parts.append(f"Forrás: {e.source}")
                 lines.append(" | ".join(parts))
             lines.append("")
 
