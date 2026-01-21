@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# analyst_marketbeat.py — v0.3.6-marketbeat-free-2026-01-21
+# analyst_marketbeat.py — v0.3.7-marketbeat-free-2026-01-21
 # MarketBeat FREE analyst feed collector (CI-friendly).
 #
 # Changelog (v0.3.6):
@@ -19,6 +19,7 @@ import io
 import json
 import random
 import re
+import html
 import time
 import urllib.error
 import urllib.request
@@ -27,9 +28,8 @@ from http.cookiejar import CookieJar
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from bs4 import BeautifulSoup  # type: ignore
 
-VERSION = "v0.3.6-marketbeat-free-2026-01-21"
+VERSION = "v0.3.7-marketbeat-free-2026-01-21"
 BASE = "https://www.marketbeat.com"
 
 # MarketBeat "Today's" ratings lists (FREE).
@@ -225,69 +225,76 @@ def _action_from_kind(kind: str, action_cell: str) -> str:
 
 
 def _extract_events_from_ratings_page(
-    html: str,
+    html_text: str,
     kind: str,
     master_set: set,
     asof_date: str,
     source_url: str,
 ) -> List[AnalystEvent]:
-    soup = BeautifulSoup(html, "html.parser")
-    table = soup.select_one("table.scroll-table.sort-table")
-    if not table:
+    # NOTE: We intentionally avoid external deps to keep GH Actions lean.
+    # MarketBeat ratings pages contain a sortable table with rows referencing tickers via:
+    # - data-clean="TICKER|Company"
+    # - or stock link /stocks/EXCHANGE/TICKER/
+    #
+    # We parse rows with regex + tag stripping. This is robust enough for our use.
+    if not html_text:
         return []
+
+    # Locate rows (best-effort)
+    rows = re.findall(r"<tr[^>]*>(.*?)</tr>", html_text, flags=re.IGNORECASE | re.DOTALL)
+    if not rows:
+        return []
+
+    def _strip_tags(s: str) -> str:
+        s = re.sub(r"<script[\s\S]*?</script>", " ", s, flags=re.IGNORECASE)
+        s = re.sub(r"<style[\s\S]*?</style>", " ", s, flags=re.IGNORECASE)
+        s = re.sub(r"<[^>]+>", " ", s)
+        s = html.unescape(s)
+        s = re.sub(r"\s+", " ", s).strip()
+        return s
 
     events: List[AnalystEvent] = []
-    tbody = table.find("tbody")
-    if not tbody:
-        return []
 
-    for tr in tbody.find_all("tr"):
-        tds = tr.find_all("td")
+    for row_html in rows:
+        # Grab td cells
+        tds = re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", row_html, flags=re.IGNORECASE | re.DOTALL)
         if len(tds) < 6:
             continue
 
-        # Column order observed:
-        # 0 Company, 1 Action, 2 Brokerage, 3 Analyst, 4 Current Price, 5 Price Target, 6 Rating, 7 Details (optional)
-        company_td = tds[0]
-        dc = company_td.get("data-clean", "")
+        # Ticker: prefer data-clean attribute in the first cell
         ticker = ""
-        if "|" in dc:
-            ticker = dc.split("|", 1)[0].strip().upper()
+        m_dc = re.search(r'data-clean="(?P<t>[A-Z0-9\.\-]+)\|', tds[0], flags=re.IGNORECASE)
+        if m_dc:
+            ticker = m_dc.group("t").upper().strip()
         if not ticker:
-            # fallback: stock URL
-            m = re.search(r"/stocks/[A-Z0-9]+/(?P<t>[A-Z0-9\.\-]+)/", str(tr), flags=re.I)
-            if m:
-                ticker = m.group("t").upper()
+            m2 = re.search(r"/stocks/[A-Z0-9]+/(?P<t>[A-Z0-9\.\-]+)/", row_html, flags=re.IGNORECASE)
+            if m2:
+                ticker = m2.group("t").upper().strip()
 
         if not ticker or ticker not in master_set:
             continue
 
-        action_cell = tds[1].get_text(" ", strip=True) if len(tds) > 1 else ""
-        brokerage_cell = tds[2].get_text(" ", strip=True) if len(tds) > 2 else ""
-        firm = _clean_text(brokerage_cell)
-        if not firm:
-            firm = "—"
+        # Column order observed:
+        # 0 Company, 1 Action, 2 Brokerage, 3 Analyst, 4 Current Price, 5 Price Target, 6 Rating, 7 Details (optional)
+        company_cell = _strip_tags(tds[0])
+        action_cell = _strip_tags(tds[1]) if len(tds) > 1 else ""
+        brokerage_cell = _strip_tags(tds[2]) if len(tds) > 2 else ""
+        firm = _clean_text(brokerage_cell) or "—"
 
-        # Price target + rating columns
-        pt_cell = ""
-        rating_cell = ""
-        if len(tds) >= 6:
-            pt_cell = tds[5].get_text(" ", strip=True)
-        if len(tds) >= 7:
-            rating_cell = tds[6].get_text(" ", strip=True)
+        pt_cell = _strip_tags(tds[5]) if len(tds) >= 6 else ""
+        rating_cell = _strip_tags(tds[6]) if len(tds) >= 7 else ""
 
-        # Parse PT
+        # Parse PT (may be single value or arrow)
         pt_from = pt_to = None
         if pt_cell:
             pf, pt = _split_arrow(pt_cell)
             if pt is None:
-                # single value
                 pt_to = _parse_money(pf or "")
             else:
                 pt_from = _parse_money(pf or "")
                 pt_to = _parse_money(pt or "")
 
-        # Parse Rating
+        # Parse Rating (single or arrow)
         rating_from = rating_to = None
         if rating_cell:
             rf, rt = _split_arrow(rating_cell)
@@ -298,12 +305,14 @@ def _extract_events_from_ratings_page(
 
         # Source URL: prefer stock page if present
         stock_url = ""
-        for a in tr.find_all("a"):
-            href = a.get("href") or ""
-            if "/stocks/" in href:
-                stock_url = href if href.startswith("http") else (BASE + href)
-                break
-        src = stock_url or source_url
+        m_href = re.search(r'href="(?P<h>[^"]*/stocks/[^"]+)"', row_html, flags=re.IGNORECASE)
+        if m_href:
+            href = m_href.group("h")
+            if href.startswith("http"):
+                stock_url = href
+            else:
+                stock_url = BASE + href
+        src_url = stock_url or source_url
 
         events.append(
             AnalystEvent(
@@ -316,11 +325,12 @@ def _extract_events_from_ratings_page(
                 pt_from=pt_from,
                 pt_to=pt_to,
                 currency="USD",
-                source_url=src,
+                source_url=src_url,
             )
         )
 
     return events
+
 
 
 def fetch_events_from_ratings_pages(
