@@ -17,6 +17,7 @@ import datetime as dt
 import gzip
 import io
 import json
+import hashlib
 import random
 import re
 import html
@@ -29,7 +30,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 
-VERSION = "v0.3.9-marketbeat-free-hu-2026-01-21"
+VERSION = "v0.3.11-marketbeat-free-hu-2026-01-21"
 BASE = "https://www.marketbeat.com"
 
 # Magyar megnevezések a reporthoz
@@ -76,7 +77,7 @@ UA = (
 @dataclass
 class AnalystEvent:
     ticker: str
-    date: str  # ISO date YYYY-MM-DD (run day UTC)
+    date: str  # ISO date YYYY-MM-DD (first seen date, cache-based)
     firm: str
     action: str
     rating_from: Optional[str]
@@ -84,7 +85,89 @@ class AnalystEvent:
     pt_from: Optional[float]
     pt_to: Optional[float]
     currency: str
-    source_url: str
+    sou
+def _event_key(e: "AnalystEvent") -> str:
+    """
+    Stable key for de-dup across runs.
+    Note: action is already normalized HU text; rating strings are normalized too.
+    """
+    def f(x):
+        if x is None:
+            return ""
+        if isinstance(x, float):
+            return f"{x:.4f}"
+        return str(x).strip()
+
+    raw = "|".join([
+        e.ticker.upper().strip(),
+        f(e.firm),
+        f(e.action),
+        f(e.rating_from),
+        f(e.rating_to),
+        f(e.pt_from),
+        f(e.pt_to),
+    ])
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+
+def load_seen_cache(path: Path) -> Dict[str, str]:
+    """
+    Returns mapping: event_key -> first_seen_date (YYYY-MM-DD).
+    """
+    try:
+        if path.exists():
+            obj = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(obj, dict):
+                # keep only sane ISO dates
+                out: Dict[str, str] = {}
+                for k, v in obj.items():
+                    if isinstance(k, str) and isinstance(v, str) and re.match(r"^\d{4}-\d{2}-\d{2}$", v):
+                        out[k] = v
+                return out
+    except Exception:
+        pass
+    return {}
+
+
+def save_seen_cache(path: Path, cache: Dict[str, str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(cache, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def apply_seen_dates_and_filter(
+    events: List["AnalystEvent"],
+    days: int,
+    cache: Dict[str, str],
+    today_iso: str,
+) -> List["AnalystEvent"]:
+    """
+    - Assigns event.date from cache (first seen), otherwise today and stores into cache.
+    - Filters events to last N calendar days by first_seen date (inclusive).
+    """
+    if days < 1:
+        return []
+
+    today = dt.date.fromisoformat(today_iso)
+    out: List[AnalystEvent] = []
+    for e in events:
+        k = _event_key(e)
+        first = cache.get(k)
+        if not first:
+            cache[k] = today_iso
+            first = today_iso
+        e.date = first
+
+        try:
+            d = dt.date.fromisoformat(first)
+        except Exception:
+            d = today
+        delta = (today - d).days
+        if 0 <= delta <= (days - 1):
+            out.append(e)
+
+    return out
+
+rce_url: str
 
 
 def _log(msg: str) -> None:
@@ -463,7 +546,7 @@ def write_outputs(
 ) -> None:
     now = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     lines: List[str] = []
-    lines.append(f"# Elemzői feed (fel/leminősítés + célár) — utolsó {days} naptári nap")
+    lines.append(f"# Elemzői feed (fel/leminősítés + célár) — utolsó {days} naptári nap (első észlelés alapján)")
     lines.append("")
     lines.append(f"Verzió: {VERSION}")
     lines.append(f"Generálva (UTC): {now}")
@@ -539,6 +622,10 @@ def main() -> int:
     out_md = Path(args.out_md)
     out_json = Path(args.out_json) if args.out_json else None
 
+    # Seen-cache for assigning real (first-seen) dates, because ratings pages have no per-row timestamps
+    seen_path = out_md.parent / "marketbeat_seen.json"
+    seen_cache = load_seen_cache(seen_path)
+
     _log(f"START {VERSION} days={args.days} master={master} mode=ratings_pages")
 
     tickers = read_master_tickers(master)
@@ -550,6 +637,10 @@ def main() -> int:
         sleep_s=max(0.2, float(args.sleep)),
         debug_dir=debug_dir,
     )
+
+    today_iso = dt.datetime.utcnow().date().isoformat()
+    events = apply_seen_dates_and_filter(events, args.days, seen_cache, today_iso)
+    save_seen_cache(seen_path, seen_cache)
 
     write_outputs(out_md, out_json, events, args.days, status_map)
 
