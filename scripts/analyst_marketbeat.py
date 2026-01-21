@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# analyst_marketbeat.py — v0.3.2-marketbeat-free-2026-01-21
+# analyst_marketbeat.py — v0.3.3-marketbeat-free-2026-01-21
 #
 # FREE analyst feed (upgrade/downgrade + PT change) using MarketBeat HTML.
 # Goal: last N calendar days (default 2) for tickers in MASTER CSV.
@@ -23,30 +23,19 @@ import argparse
 import csv
 import datetime as dt
 import html
-import http.cookiejar
-import io
 import json
 import re
 import time
 import urllib.parse
 import urllib.request
-import gzip
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import List, Optional, Dict, Tuple
 
-VERSION = "v0.3.2-marketbeat-free-2026-01-21"
+VERSION = "v0.3.3-marketbeat-free-2026-01-21"
 
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36"
 BASE = "https://www.marketbeat.com"
-
-# Session/cookies: MarketBeat can return HTTP 403 to "bare" clients (esp. from CI IP ranges).
-# We keep a cookie jar + opener and do a lightweight warmup request to obtain session cookies.
-_CJ = http.cookiejar.CookieJar()
-_OPENER = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(_CJ))
-
-# Last-resort fallback: Jina "Reader" proxy frequently bypasses WAF blocks for public pages.
-JINA_PREFIX = "https://r.jina.ai/"
 
 
 @dataclass
@@ -68,50 +57,26 @@ def _log(msg: str) -> None:
     print(f"[{ts}] {msg}", flush=True)
 
 
-def _decode_response(raw: bytes, encoding: str, content_encoding: str) -> str:
-    if content_encoding and content_encoding.lower() == "gzip":
-        try:
-            raw = gzip.GzipFile(fileobj=io.BytesIO(raw)).read()
-        except Exception:
-            # If decompression fails, fall back to raw.
-            pass
+def _http_get(url: str, timeout: int, debug_dir: Optional[Path], debug_tag: str) -> Tuple[int, str]:
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": UA,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Connection": "close",
+        },
+        method="GET",
+    )
     try:
-        return raw.decode(encoding or "utf-8", errors="replace")
-    except Exception:
-        return raw.decode("utf-8", errors="replace")
-
-
-def _http_get_once(url: str, timeout: int, debug_dir: Optional[Path], debug_tag: str, referer: Optional[str] = None) -> Tuple[int, str]:
-    headers = {
-        "User-Agent": UA,
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip",
-        "Connection": "close",
-        "Upgrade-Insecure-Requests": "1",
-        "Sec-Fetch-Dest": "document",
-        "Sec-Fetch-Mode": "navigate",
-        "Sec-Fetch-Site": "none",
-        "Sec-Fetch-User": "?1",
-    }
-    if referer:
-        headers["Referer"] = referer
-
-    req = urllib.request.Request(url, headers=headers, method="GET")
-    try:
-        with _OPENER.open(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             status = getattr(resp, "status", 200)
             raw = resp.read()
-            enc = resp.headers.get_content_charset() if hasattr(resp.headers, "get_content_charset") else "utf-8"
-            content_encoding = resp.headers.get("Content-Encoding", "")
-            text = _decode_response(raw, enc or "utf-8", content_encoding)
+            text = raw.decode("utf-8", errors="replace")
     except urllib.error.HTTPError as e:
         status = e.code
         try:
-            raw = e.read()
-            # best-effort decode
-            content_encoding = e.headers.get("Content-Encoding", "") if hasattr(e, "headers") else ""
-            text = _decode_response(raw, "utf-8", content_encoding)
+            text = e.read().decode("utf-8", errors="replace")
         except Exception:
             text = ""
     except Exception as e:
@@ -124,42 +89,6 @@ def _http_get_once(url: str, timeout: int, debug_dir: Optional[Path], debug_tag:
         (debug_dir / f"{safe}.html").write_text(text, encoding="utf-8")
 
     return status, text
-
-
-def _http_get(url: str, timeout: int, debug_dir: Optional[Path], debug_tag: str) -> Tuple[int, str]:
-    """GET with pragmatic anti-403 tactics.
-
-    Order:
-    1) normal request with cookies + browser-like headers
-    2) retry once with referer set to MarketBeat base
-    3) fallback to Jina proxy (different host, often bypasses WAF)
-    """
-    status, text = _http_get_once(url, timeout, debug_dir, debug_tag, referer=None)
-
-    # Retry on typical WAF statuses.
-    if status in (403, 429) or (status >= 400 and not text):
-        status2, text2 = _http_get_once(url, timeout, debug_dir, f"{debug_tag}_retry", referer=BASE + "/")
-        if status2 < status or (status2 == 200 and text2):
-            status, text = status2, text2
-
-    # Last resort: proxy fetch
-    if status in (403, 429) and not url.startswith(JINA_PREFIX):
-        proxy_url = JINA_PREFIX + url
-        status3, text3 = _http_get_once(proxy_url, timeout, debug_dir, f"{debug_tag}_jina", referer=None)
-        # Jina typically returns 200 even when upstream blocks.
-        if status3 == 200 and text3:
-            status, text = status3, text3
-
-    return status, text
-
-
-def _warmup_session(timeout: int, debug_dir: Optional[Path]) -> None:
-    """Make a lightweight request to prime cookies."""
-    try:
-        s, _ = _http_get_once(BASE + "/", timeout, debug_dir, "warmup_home", referer=None)
-        _log(f"WARMUP home: HTTP {s}")
-    except Exception as e:
-        _log(f"WARMUP failed (non-fatal): {e}")
 
 
 def _extract_first_stock_url_from_search(html_text: str) -> Optional[str]:
@@ -346,7 +275,13 @@ def _kind_to_action(kind: str, joined: str) -> str:
     return kind
 
 
-def fetch_events_from_ratings_pages(master_tickers: List[str], days: int, timeout: int, sleep_s: float, debug_dir: Optional[Path]) -> List[AnalystEvent]:
+def fetch_events_from_ratings_pages(
+    master_tickers: List[str],
+    days: int,
+    timeout: int,
+    sleep_s: float,
+    debug_dir: Optional[Path],
+) -> Tuple[List[AnalystEvent], Dict[str, int], bool]:
     today = dt.datetime.utcnow().date()
     cutoff = today - dt.timedelta(days=days - 1)
     master_set = {t.upper() for t in master_tickers}
@@ -354,13 +289,23 @@ def fetch_events_from_ratings_pages(master_tickers: List[str], days: int, timeou
     out: List[AnalystEvent] = []
     seen: set = set()
 
+    statuses: Dict[str, int] = {}
+    pages_ok = 0
+
     for kind, path in RATINGS_SOURCES:
         url = BASE + path
         status, page_html = _http_get(url, timeout, debug_dir, f"ratings_{kind}")
+        statuses[kind] = int(status)
         if status >= 400:
             _log(f"RATINGS {kind}: HTTP {status} (skip)")
             time.sleep(sleep_s)
             continue
+
+        # Basic sanity: require some table/row signal.
+        if "<tr" not in page_html.lower():
+            time.sleep(sleep_s)
+            continue
+        pages_ok += 1
 
         # Iterate <tr> blocks; this is robust for MarketBeat ratings pages.
         for tr in re.findall(r"<tr[^>]*>.*?</tr>", page_html, flags=re.I | re.S):
@@ -417,7 +362,10 @@ def fetch_events_from_ratings_pages(master_tickers: List[str], days: int, timeou
 
         time.sleep(sleep_s)
 
-    return out
+    fetch_ok = pages_ok > 0
+    return out, statuses, fetch_ok
+
+
 def _rows_to_events(ticker: str, stock_url: str, rows: List[List[str]], days: int) -> List[AnalystEvent]:
     today = dt.datetime.utcnow().date()
     cutoff = today - dt.timedelta(days=days - 1)
@@ -502,7 +450,14 @@ def read_master_tickers(master_csv: Path) -> List[str]:
     return out
 
 
-def write_outputs(out_md: Path, out_json: Optional[Path], events: List[AnalystEvent], days: int) -> None:
+def write_outputs(
+    out_md: Path,
+    out_json: Optional[Path],
+    events: List[AnalystEvent],
+    days: int,
+    fetch_ok: bool,
+    statuses: Optional[Dict[str, int]] = None,
+) -> None:
     now = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     lines: List[str] = []
     lines.append(f"# Analyst feed (upgrade/downgrade + PT) — last {days} calendar days")
@@ -511,7 +466,16 @@ def write_outputs(out_md: Path, out_json: Optional[Path], events: List[AnalystEv
     lines.append(f"Generálva (UTC): {now}")
     lines.append("")
     if not events:
-        lines.append(f"_Nincs friss (≤{days} naptári nap) fel/leminősítés vagy célár-frissítés a forrásban._")
+        # IMPORTANT: distinguish between "no fresh events" and "source unreachable / blocked".
+        if not fetch_ok:
+            s_txt = ""
+            if statuses:
+                parts = [f"{k}={v}" for k, v in sorted(statuses.items())]
+                s_txt = " (HTTP: " + ", ".join(parts) + ")"
+            lines.append(f"_MarketBeat forrás nem elérhető / blokkolva, ezért nem tudtam friss analyst eseményeket lekérni._{s_txt}")
+        else:
+            # Pages loaded successfully, but nothing matched within the requested window.
+            lines.append(f"_Nincs friss (≤{days} naptári nap) fel/leminősítés vagy célár-frissítés a forrásban._")
     else:
         by: Dict[str, List[AnalystEvent]] = {}
         for e in events:
@@ -564,13 +528,15 @@ def main() -> int:
     debug_dir = Path(args.debug_dir) if args.debug else None
 
     _log(f"START {VERSION} days={args.days} master={master} mode=ratings_pages")
-    _warmup_session(args.timeout, debug_dir)
 
     tickers = read_master_tickers(master)
 
+    # Warm up cookies/session (best-effort).
+    _warmup_session(timeout=args.timeout, debug_dir=debug_dir)
+
     # Solution #2: pull the central MarketBeat ratings lists once,
     # then filter to MASTER tickers (avoids per-ticker search that triggers HTTP 403).
-    events = fetch_events_from_ratings_pages(
+    events, statuses, fetch_ok = fetch_events_from_ratings_pages(
         master_tickers=tickers,
         days=args.days,
         timeout=args.timeout,
@@ -581,7 +547,7 @@ def main() -> int:
     events.sort(key=lambda e: (e.date, e.ticker), reverse=True)
     out_md = Path(args.out_md)
     out_json = Path(args.out_json) if args.out_json else None
-    write_outputs(out_md, out_json, events, args.days)
+    write_outputs(out_md, out_json, events, args.days, fetch_ok=fetch_ok, statuses=statuses)
     _log(f"DONE events={len(events)}")
     return 0
 
