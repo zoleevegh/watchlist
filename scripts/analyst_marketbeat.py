@@ -101,7 +101,18 @@ def _extract_first_stock_url_from_search(html_text: str) -> Optional[str]:
     return None
 
 
+EXCHANGE_TRIES = ["NASDAQ", "NYSE", "AMEX", "NYSEARCA", "OTCMKTS", "OTCBB"]
+
 def _resolve_ticker_to_stock_url(ticker: str, timeout: int, debug_dir: Optional[Path]) -> Optional[str]:
+    # 1) próbáljuk direkt a stock oldalt (kerüli a 403-at adó search endpointot)
+    for ex in EXCHANGE_TRIES:
+        url = f"{BASE}/stocks/{ex}/{ticker}/"
+        status, text = _http_get(url, timeout, debug_dir, f"{ticker}_{ex}")
+        if status == 200 and (f"/stocks/{ex}/" in text or f"/stocks/{ex}/{ticker}/" in text):
+            return url
+        time.sleep(0.15)  # pici jitter is elég itt
+
+    # 2) fallback: ha nagyon muszáj, próbáld a search-öt (de lehet 403)
     q = urllib.parse.urlencode({"Symbol": ticker})
     url = f"{BASE}/stocks/?{q}"
     status, text = _http_get(url, timeout, debug_dir, f"{ticker}_search")
@@ -109,7 +120,6 @@ def _resolve_ticker_to_stock_url(ticker: str, timeout: int, debug_dir: Optional[
         _log(f"RESOLVE {ticker}: HTTP {status} on search page")
         return None
     return _extract_first_stock_url_from_search(text)
-
 
 _MONTHS = {
     "jan": 1, "january": 1,
