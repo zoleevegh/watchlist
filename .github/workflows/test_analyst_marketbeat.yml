@@ -1,4 +1,4 @@
-# Version: v0.3.10-marketbeat-free-hu-2026-01-21
+# Version: v0.3.11-marketbeat-free-hu-2026-01-21
 # Analyst-only test workflow (MarketBeat FREE).
 # Verzió-szabály: bármely fájl módosításakor a verziószámot folytatólagosan kell növelni, kihagyás nélkül.
 
@@ -32,6 +32,14 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Restore MarketBeat seen cache
+        uses: actions/cache/restore@v4
+        with:
+          path: reports/marketbeat_seen.json
+          key: marketbeat-seen-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            marketbeat-seen-${{ runner.os }}-${{ github.ref_name }}-
+
       - name: Fetch MASTER CSV
         shell: pwsh
         env:
@@ -55,6 +63,12 @@ jobs:
           } else {
             python scripts\analyst_marketbeat.py --master reports\master.csv --days $days --out-md reports\analyst_last${days}d.md --out-json reports\analyst_last${days}d.json
           }
+
+      - name: Save MarketBeat seen cache
+        uses: actions/cache/save@v4
+        with:
+          path: reports/marketbeat_seen.json
+          key: marketbeat-seen-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
 
       - name: Upload artifacts (analyst)
         uses: actions/upload-artifact@v4
