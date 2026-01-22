@@ -1,66 +1,220 @@
 #!/usr/bin/env python3
-# analyst_marketbeat.py — v0.3.13-marketbeat-free-hu-2026-01-22
-#
-# FREE analyst feed (upgrade/downgrade + PT change) using MarketBeat HTML.
-# Goal: last N calendar days (default 2) for tickers in MASTER CSV.
-#
-# Notes:
-# - Uses only stdlib (urllib, html, re). No API keys.
-# - Tries MarketBeat search to resolve ticker -> stock page URL.
-# - Parses "Analyst Upgrades and Downgrades" style rows when present.
-#
-# Exit codes:
-# - 0 OK (even if no events found)
-# - 2 bad args / missing master
-# - 3 master parse error
-# - 4 network errors (fatal)
-#
-# Verzió-szabály: bármely fájl módosításakor a verziószámot folytatólagosan kell növelni, kihagyás nélkül.
+# -*- coding: utf-8 -*-
+"""
+analyst_marketbeat.py — MarketBeat (FREE) "ratings pages" scraper (Solution #2)
+- No per-ticker search (avoids mass HTTP 403)
+- Pulls central ratings lists once and filters to MASTER tickers
+- Persists a small "first_seen" cache (reports/marketbeat_seen.json) so the "last N calendar days"
+  window is stable even if MarketBeat is temporarily blocked (HTTP 403) on a given run.
+- Hungarian output.
+
+Versioning: keep bumping VERSION for every change.
+"""
 
 from __future__ import annotations
 
 import argparse
-import csv
 import datetime as dt
-import html
-import json
 import hashlib
+import json
+import os
 import re
 import time
-import urllib.parse
+import urllib.error
 import urllib.request
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import List, Optional, Dict, Tuple
+from typing import Dict, List, Optional, Tuple
 
-VERSION = "v0.3.13-marketbeat-free-hu-2026-01-22"
 
-UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36"
+VERSION = "v0.3.15-marketbeat-free-hu-2026-01-22"
+
 BASE = "https://www.marketbeat.com"
-
-
-# MarketBeat ratings pages sometimes "roll" the list quickly.
-# To avoid missing yesterday's items (when today's central list no longer contains them),
-# we persist a small "first_seen" cache and use it as the effective event date.
 DEFAULT_SEEN_FILE = "reports/marketbeat_seen.json"
+
+# Central free pages (fast + low risk of 403 compared to per-ticker search)
+RATINGS_SOURCES: List[Tuple[str, str]] = [
+    ("upgrade", "/ratings/upgrades/"),
+    ("downgrade", "/ratings/downgrades/"),
+    ("pt_change", "/ratings/pricetargetchanges/"),
+]
+
+RATING_WORDS = [
+    "Strong Buy",
+    "Buy",
+    "Outperform",
+    "Overweight",
+    "Market Perform",
+    "Sector Perform",
+    "Neutral",
+    "Hold",
+    "Underperform",
+    "Underweight",
+    "Sell",
+]
+
+
+def _log(msg: str) -> None:
+    ts = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{ts} UTC] {msg}", flush=True)
+
+
+def _http_get(url: str, timeout: int, debug_dir: Optional[Path], debug_name: str) -> Tuple[int, str]:
+    hdrs = {
+        "User-Agent": "watchlist-price-engine/marketbeat-free (+https://github.com/zoleevegh/watchlist)",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Connection": "close",
+    }
+    req = urllib.request.Request(url, headers=hdrs, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            status = getattr(r, "status", 200) or 200
+            raw = r.read()
+            html = raw.decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as e:
+        status = int(getattr(e, "code", 500) or 500)
+        try:
+            html = e.read().decode("utf-8", errors="replace")
+        except Exception:
+            html = ""
+    except Exception:
+        status = 0
+        html = ""
+
+    if debug_dir is not None:
+        try:
+            debug_dir.mkdir(parents=True, exist_ok=True)
+            (debug_dir / f"{debug_name}.status.txt").write_text(str(status), encoding="utf-8")
+            (debug_dir / f"{debug_name}.html").write_text(html, encoding="utf-8")
+        except Exception:
+            pass
+
+    return status, html
+
+
+def _clean_text(s: str) -> str:
+    s = re.sub(r"\s+", " ", s or "").strip()
+    return s
+
+
+def _parse_date_any(s: str) -> Optional[dt.date]:
+    s = _clean_text(s)
+    if not s:
+        return None
+    # Typical MarketBeat format: "Jan 21, 2026"
+    for fmt in ("%b %d, %Y", "%B %d, %Y", "%Y-%m-%d"):
+        try:
+            return dt.datetime.strptime(s, fmt).date()
+        except Exception:
+            continue
+    return None
+
+
+def _extract_urls_from_row_html(tr_html: str) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    # First href is often the stock page; ratings page link can vary
+    hrefs = re.findall(r'href="([^"]+)"', tr_html, flags=re.I)
+    for h in hrefs:
+        if not h:
+            continue
+        if h.startswith("//"):
+            h = "https:" + h
+        elif h.startswith("/"):
+            h = BASE + h
+        if "marketbeat.com" not in h:
+            continue
+        if "/stocks/" in h and "stock" not in out:
+            out["stock"] = h
+        if "/ratings/" in h and "details" not in out:
+            out["details"] = h
+    return out
+
+
+def _extract_ticker_from_row(tr_html: str, cells: List[str]) -> str:
+    # Try from any cell that looks like "NFLX" or "NYSE:NFLX"
+    joined = " ".join(cells)
+    m = re.search(r"\b([A-Z]{1,5})\b", joined)
+    if m:
+        return m.group(1)
+    # Fallback: from stock URL /stocks/nasdaq/nflx/
+    m2 = re.search(r"/stocks/[^/]+/([a-z0-9.\-]+)/", tr_html, flags=re.I)
+    if m2:
+        return m2.group(1).upper()
+    return ""
+
+
+def _guess_firm(cells: List[str], joined: str) -> str:
+    # Often firm is 2nd column; otherwise try to find a plausible firm-like substring
+    if len(cells) >= 2:
+        c = cells[1]
+        if c and len(c) > 2:
+            return c
+    # Fallback: first long-ish token group
+    parts = [c for c in cells if c and len(c) > 2]
+    return parts[0] if parts else ""
+
+
+def _kind_to_action(kind: str, joined: str) -> str:
+    if kind == "upgrade":
+        return "Felminősítés"
+    if kind == "downgrade":
+        return "Leminősítés"
+    # price target change: decide direction later
+    return "Célár változás"
+
+
+def _extract_rating_change(text: str) -> Tuple[Optional[str], Optional[str]]:
+    t = text or ""
+    # Look for "from X to Y" patterns
+    m = re.search(r"\bfrom\b\s+([A-Za-z ]+?)\s+\bto\b\s+([A-Za-z ]+)", t, flags=re.I)
+    if m:
+        return _clean_text(m.group(1)), _clean_text(m.group(2))
+    # Or explicit arrows: "X → Y"
+    m2 = re.search(r"\b(" + "|".join([re.escape(w) for w in RATING_WORDS]) + r")\b\s*(?:→|->)\s*\b(" + "|".join([re.escape(w) for w in RATING_WORDS]) + r")\b", t)
+    if m2:
+        return _clean_text(m2.group(1)), _clean_text(m2.group(2))
+    return None, None
+
+
+def _parse_money(s: str) -> Optional[float]:
+    s = _clean_text(s)
+    if not s:
+        return None
+    s = s.replace("$", "").replace(",", "")
+    try:
+        return float(s)
+    except Exception:
+        return None
+
+
+def _extract_pt_change(text: str) -> Tuple[Optional[float], Optional[float], str]:
+    t = text or ""
+    # "from $145.00 to $130.00"
+    m = re.search(r"\bfrom\b\s*\$?([0-9]{1,6}(?:\.[0-9]{1,2})?)\s+\bto\b\s*\$?([0-9]{1,6}(?:\.[0-9]{1,2})?)", t, flags=re.I)
+    if m:
+        return float(m.group(1)), float(m.group(2)), "USD"
+    # Arrow form: "$145.00 -> $130.00"
+    m2 = re.search(r"\$?([0-9]{1,6}(?:\.[0-9]{1,2})?)\s*(?:→|->)\s*\$?([0-9]{1,6}(?:\.[0-9]{1,2})?)", t)
+    if m2:
+        return float(m2.group(1)), float(m2.group(2)), "USD"
+    return None, None, "USD"
 
 
 def _event_fingerprint(e: "AnalystEvent") -> str:
-    def norm(s: Optional[str]) -> str:
-        return (s or "").strip().lower()
-
-    base_url = (e.source_url or "").split("?", 1)[0]
-    parts = [
-        e.ticker.upper(),
-        norm(e.action),
-        norm(e.firm),
-        norm(e.rating_from),
-        norm(e.rating_to),
-        "" if e.pt_from is None else f"{e.pt_from:.4f}",
-        "" if e.pt_to is None else f"{e.pt_to:.4f}",
-        base_url,
-    ]
-    raw = "|".join(parts).encode("utf-8", errors="ignore")
+    # Stable identity for "same item" across runs
+    raw = "|".join(
+        [
+            e.ticker.upper(),
+            e.firm or "",
+            e.action or "",
+            e.rating_from or "",
+            e.rating_to or "",
+            "" if e.pt_from is None else f"{e.pt_from:.4f}",
+            "" if e.pt_to is None else f"{e.pt_to:.4f}",
+            e.source_url or "",
+        ]
+    ).encode("utf-8", errors="ignore")
     return hashlib.sha1(raw).hexdigest()
 
 
@@ -76,7 +230,7 @@ def _load_seen_db(path: Path) -> Dict[str, dict]:
 def _save_seen_db(path: Path, db: Dict[str, dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(db, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    tmp.write_text(json.dumps(db, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     tmp.replace(path)
 
 
@@ -86,12 +240,14 @@ def _fresh_events_from_seen(db: Dict[str, dict], cutoff_iso: str) -> List["Analy
         fs = str(v.get("first_seen", ""))
         if fs and fs >= cutoff_iso:
             ev = v.get("event") or {}
-            ev["date"] = fs  # first_seen drives the "last N calendar days" window
+            ev["date"] = fs  # first_seen drives the "last N days" window
             try:
                 out.append(AnalystEvent(**ev))
             except Exception:
                 continue
-    return out, statuses, fetch_ok
+    return out
+
+
 def _update_seen_with_today(db: Dict[str, dict], events_today: List["AnalystEvent"], today_iso: str) -> None:
     for e in events_today:
         key = _event_fingerprint(e)
@@ -107,7 +263,7 @@ def _update_seen_with_today(db: Dict[str, dict], events_today: List["AnalystEven
 @dataclass
 class AnalystEvent:
     ticker: str
-    date: str  # ISO date YYYY-MM-DD
+    date: str  # ISO date YYYY-MM-DD (we use first_seen for output stability)
     firm: str
     action: str
     rating_from: Optional[str]
@@ -118,269 +274,48 @@ class AnalystEvent:
     source_url: str
 
 
-def _log(msg: str) -> None:
-    ts = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
-    print(f"[{ts}] {msg}", flush=True)
-
-
-def _http_get(url: str, timeout: int, debug_dir: Optional[Path], debug_tag: str) -> Tuple[int, str]:
-    req = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": UA,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Connection": "close",
-        },
-        method="GET",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            status = getattr(resp, "status", 200)
-            raw = resp.read()
-            text = raw.decode("utf-8", errors="replace")
-    except urllib.error.HTTPError as e:
-        status = e.code
-        try:
-            text = e.read().decode("utf-8", errors="replace")
-        except Exception:
-            text = ""
-    except Exception as e:
-        raise RuntimeError(f"Network error for {url}: {e}") from e
-
-    if debug_dir:
-        debug_dir.mkdir(parents=True, exist_ok=True)
-        safe = re.sub(r"[^A-Za-z0-9._-]+", "_", debug_tag)[:120]
-        (debug_dir / f"{safe}.status.txt").write_text(str(status), encoding="utf-8")
-        (debug_dir / f"{safe}.html").write_text(text, encoding="utf-8")
-
-    return status, text
-
-
-def _extract_first_stock_url_from_search(html_text: str) -> Optional[str]:
-    m = re.search(r'href="(/stocks/[A-Z]+/[A-Z0-9.\-]+/)"', html_text)
-    if m:
-        return urllib.parse.urljoin(BASE, m.group(1))
-    m2 = re.search(r'<link[^>]+rel="canonical"[^>]+href="([^"]+)"', html_text, re.I)
-    if m2 and "/stocks/" in m2.group(1):
-        return m2.group(1)
-    return None
-
-
-def _resolve_ticker_to_stock_url(ticker: str, timeout: int, debug_dir: Optional[Path]) -> Optional[str]:
-    q = urllib.parse.urlencode({"Symbol": ticker})
-    url = f"{BASE}/stocks/?{q}"
-    status, text = _http_get(url, timeout, debug_dir, f"{ticker}_search")
-    if status >= 400:
-        _log(f"RESOLVE {ticker}: HTTP {status} on search page")
-        return None
-    return _extract_first_stock_url_from_search(text)
-
-
-_MONTHS = {
-    "jan": 1, "january": 1,
-    "feb": 2, "february": 2,
-    "mar": 3, "march": 3,
-    "apr": 4, "april": 4,
-    "may": 5,
-    "jun": 6, "june": 6,
-    "jul": 7, "july": 7,
-    "aug": 8, "august": 8,
-    "sep": 9, "sept": 9, "september": 9,
-    "oct": 10, "october": 10,
-    "nov": 11, "november": 11,
-    "dec": 12, "december": 12,
-}
-
-def _parse_date_any(s: str) -> Optional[dt.date]:
-    s = s.strip()
-    m = re.match(r"([A-Za-z]+)\s+(\d{1,2}),\s*(\d{4})", s)
-    if m:
-        mon = _MONTHS.get(m.group(1).lower())
-        if mon:
-            return dt.date(int(m.group(3)), mon, int(m.group(2)))
-    try:
-        return dt.date.fromisoformat(s[:10])
-    except Exception:
-        return None
-
-
-def _clean_text(s: str) -> str:
-    s = html.unescape(s)
-    s = re.sub(r"\s+", " ", s).strip()
-    return s
-
-
-def _parse_money(s: str) -> Optional[float]:
-    s = _clean_text(s)
-    if not s:
-        return None
-    s2 = re.sub(r"[^0-9.\-]", "", s)
-    if not s2 or s2 in ("-", "."):
-        return None
-    try:
-        return float(s2)
-    except Exception:
-        return None
-
-
-def _extract_upgrade_rows(stock_html: str) -> List[List[str]]:
-    """Backward-compatible row extractor.
-    MarketBeat ratings pages and stock pages both typically render HTML tables.
-    We extract <tr> rows and convert <td>/<th> cells into plain text.
-    """
-    rows: List[List[str]] = []
-    for tr in re.findall(r"<tr[^>]*>.*?</tr>", stock_html, flags=re.I | re.S):
-        tds = re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", tr, flags=re.I | re.S)
-        if not tds:
-            continue
-        cells = [_clean_text(re.sub(r"<[^>]+>", " ", c)) for c in tds]
-        # keep only rows that contain at least one parseable date cell
-        if not any(_parse_date_any(c) for c in cells[:2]):
-            continue
-        rows.append(cells)
-    return rows
-
-
-RATINGS_SOURCES: List[Tuple[str, str]] = [
-    ("upgrade", "/ratings/upgrades/"),
-    ("downgrade", "/ratings/downgrades/"),
-    ("pt_change", "/ratings/pricetargetchanges/"),
-]
-
-
-def _extract_urls_from_row_html(tr_html: str) -> Dict[str, str]:
-    """Extract likely useful URLs (details + stock) from a <tr> HTML chunk."""
-    out: Dict[str, str] = {}
-    # stock page URLs like /stocks/NASDAQ/AAPL/
-    m = re.search(r'href="(?P<url>/stocks/[A-Z0-9]+/[A-Z0-9\.\-]+/)"', tr_html, flags=re.I)
-    if m:
-        out["stock"] = BASE + m.group("url")
-    # details page (often /ratings/ or /ratings/by-issuer/ or similar)
-    m2 = re.search(r'href="(?P<url>/ratings/[^"]+/)"', tr_html, flags=re.I)
-    if m2:
-        out["details"] = BASE + m2.group("url")
-    return out
-
-
-def _extract_ticker_from_row(tr_html: str, cells: List[str]) -> Optional[str]:
-    # Prefer stock URL because it is unambiguous.
-    m = re.search(r"/stocks/[A-Z0-9]+/(?P<t>[A-Z0-9\.\-]+)/", tr_html, flags=re.I)
-    if m:
-        return m.group("t").upper()
-    # Fallback: scan cells for a ticker-like token.
-    for c in cells:
-        c2 = re.sub(r"[^A-Z0-9\.\- ]", " ", c.upper()).strip()
-        for tok in c2.split():
-            if 1 <= len(tok) <= 6 and re.fullmatch(r"[A-Z][A-Z0-9\.\-]{0,5}", tok):
-                return tok
-    return None
-
-
-def _extract_rating_change(text: str) -> Tuple[Optional[str], Optional[str]]:
-    # Handles: "Hold ➝ Buy", "Hold → Buy", "Hold -> Buy"
-    arrow_pat = r"(Strong Buy|Buy|Hold|Sell|Overweight|Underweight|Outperform|Underperform|Market Perform|Sector Perform)"
-    m = re.search(rf"\b{arrow_pat}\b\s*(?:➝|→|->|to)\s*\b{arrow_pat}\b", text, flags=re.I)
-    if not m:
-        return None, None
-    # m.group(0) contains full; use findall to get both
-    vals = re.findall(arrow_pat, m.group(0), flags=re.I)
-    if len(vals) >= 2:
-        return vals[0].title(), vals[1].title()
-    return None, None
-
-
-def _extract_pt_change(text: str) -> Tuple[Optional[float], Optional[float], str]:
-    # Prefer explicit "from X to Y"
-    m = re.search(r"(?:from|From)\s*\$?([0-9]{1,6}(?:\.[0-9]{1,2})?)\s*(?:to|To)\s*\$?([0-9]{1,6}(?:\.[0-9]{1,2})?)", text)
-    if m:
-        return float(m.group(1)), float(m.group(2)), "$"
-    # Otherwise, we may only have a single price target in the row. Heuristic: last $ amount.
-    amts = [float(x) for x in re.findall(r"\$\s*([0-9]{1,6}(?:\.[0-9]{1,2})?)", text)]
-    if amts:
-        return None, amts[-1], "$"
-    return None, None, "$"
-
-
-def _guess_firm(cells: List[str], joined: str) -> str:
-    # Brokerage is usually present as a short token (e.g., "HSBC", "TD Cowen").
-    # Pick the first "name-like" cell that isn't a date, action, rating, or pure number.
-    blacklist = {"UPGRADED", "DOWNGRADED", "UPGRADED BY", "DOWNGRADED BY", "RAISED", "LOWERED", "PRICE", "TARGET", "RATING", "DETAILS", "ACTION", "BROKERAGE", "ANALYST", "COMPANY", "CURRENT"}
-    for c in cells:
-        cu = c.strip()
-        if not cu:
-            continue
-        if _parse_date_any(cu):
-            continue
-        if cu.upper() in blacklist:
-            continue
-        if re.search(r"\b(Upgraded|Downgraded)\b", cu, re.I):
-            continue
-        if re.fullmatch(r"\$?[0-9,\.]+%?", cu.replace(" ", "")):
-            continue
-        if re.search(r"\b(Strong Buy|Buy|Hold|Sell|Overweight|Underweight|Outperform|Underperform|Market Perform|Sector Perform)\b", cu, re.I):
-            continue
-        # likely a brokerage name
-        if 2 <= len(cu) <= 40:
-            return cu
-    return "—"
-
-
-def _kind_to_action(kind: str, joined: str) -> str:
-    if kind == "upgrade":
-        return "Upgrade"
-    if kind == "downgrade":
-        return "Downgrade"
-    if kind == "pt_change":
-        # if text hints direction, keep it
-        if re.search(r"\braised\b|\bincreased\b", joined, re.I):
-            return "Price target raised"
-        if re.search(r"\blowered\b|\bdecreased\b|\bcut\b", joined, re.I):
-            return "Price target lowered"
-        return "Price target change"
-    return kind
-
-
-def fetch_events_from_ratings_pages(master_tickers: List[str], days: int, timeout: int, sleep_s: float, debug_dir: Optional[Path]) -> Tuple[List[AnalystEvent], Dict[str, str], bool]:
+def fetch_events_from_ratings_pages(
+    master_tickers: List[str],
+    days: int,
+    timeout: int,
+    sleep_s: float,
+    debug_dir: Optional[Path],
+) -> Tuple[List[AnalystEvent], Dict[str, str], bool, Optional[str]]:
     today = dt.datetime.utcnow().date()
     cutoff = today - dt.timedelta(days=days - 1)
     master_set = {t.upper() for t in master_tickers}
 
     statuses: Dict[str, str] = {}
     fetch_ok = False
-
     out: List[AnalystEvent] = []
     seen: set = set()
 
     for kind, path in RATINGS_SOURCES:
         url = BASE + path
         status, page_html = _http_get(url, timeout, debug_dir, f"ratings_{kind}")
-        statuses[kind] = f"HTTP {status}"
-        if status >= 400:
-            _log(f"RATINGS {kind}: HTTP {status} (skip)")
+        statuses[kind] = f"HTTP {status}" if status else "HTTP ?"
+        if status >= 400 or status == 0:
+            _log(f"RATINGS {kind}: {statuses[kind]} (skip)")
             time.sleep(sleep_s)
             continue
 
         fetch_ok = True
 
-        # Iterate <tr> blocks; this is robust for MarketBeat ratings pages.
+        # Iterate <tr> blocks
         for tr in re.findall(r"<tr[^>]*>.*?</tr>", page_html, flags=re.I | re.S):
             tds = re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", tr, flags=re.I | re.S)
             if not tds:
                 continue
             cells = [_clean_text(re.sub(r"<[^>]+>", " ", c)) for c in tds]
-            # Find date cell (usually first)
-            date_obj = None
-            date_raw = None
-            for c in cells[:3]:
-                d = _parse_date_any(c)
-                if d:
-                    date_obj = d
-                    date_raw = d.isoformat()
-                    break
+            if not cells:
+                continue
+
+            # Date (usually first cell)
+            date_obj = _parse_date_any(cells[0]) if cells else None
             if not date_obj:
+                # If missing, treat as today so it can be cached; still filtered later via first_seen
                 date_obj = today
-                date_raw = today.isoformat()
+
             if date_obj < cutoff or date_obj > today:
                 continue
 
@@ -396,12 +331,25 @@ def fetch_events_from_ratings_pages(master_tickers: List[str], days: int, timeou
             joined = " ".join([c for c in cells if c]).strip()
             firm = _guess_firm(cells, joined)
             action = _kind_to_action(kind, joined)
+
             rating_from, rating_to = _extract_rating_change(joined)
             pt_from, pt_to, currency = _extract_pt_change(joined)
 
+            # For PT change decide direction label
+            if kind == "pt_change":
+                if pt_from is not None and pt_to is not None:
+                    if pt_to > pt_from:
+                        action = "Célár emelés"
+                    elif pt_to < pt_from:
+                        action = "Célár csökkentés"
+                    else:
+                        action = "Célár változatlan"
+                else:
+                    action = "Célár változás"
+
             e = AnalystEvent(
                 ticker=ticker.upper(),
-                date=date_raw,
+                date=date_obj.isoformat(),  # will be replaced by first_seen on output
                 firm=firm,
                 action=action,
                 rating_from=rating_from,
@@ -411,7 +359,16 @@ def fetch_events_from_ratings_pages(master_tickers: List[str], days: int, timeou
                 currency=currency,
                 source_url=source_url,
             )
-            key = (e.ticker, e.date, e.firm, e.action, e.rating_from, e.rating_to, e.pt_from, e.pt_to, e.source_url)
+            key = (
+                e.ticker,
+                e.firm,
+                e.action,
+                e.rating_from,
+                e.rating_to,
+                e.pt_from,
+                e.pt_to,
+                e.source_url,
+            )
             if key in seen:
                 continue
             seen.add(key)
@@ -419,103 +376,50 @@ def fetch_events_from_ratings_pages(master_tickers: List[str], days: int, timeou
 
         time.sleep(sleep_s)
 
-    return out
-def _rows_to_events(ticker: str, stock_url: str, rows: List[List[str]], days: int) -> List[AnalystEvent]:
-    today = dt.datetime.utcnow().date()
-    cutoff = today - dt.timedelta(days=days - 1)
-    out: List[AnalystEvent] = []
-    for cells in rows:
-        d = _parse_date_any(cells[0])
-        if not d or d < cutoff:
-            continue
-
-        firm = cells[1] if len(cells) > 1 else ""
-        action = cells[2] if len(cells) > 2 else ""
-
-        rating_from = None
-        rating_to = None
-        pt_from = None
-        pt_to = None
-        currency = "USD"
-
-        joined = " | ".join(cells)
-
-        if len(cells) >= 5:
-            if re.search(r"(Buy|Hold|Sell|Overweight|Underweight|Neutral|Outperform|Underperform|Market Perform|Sector Perform|Strong Buy)", cells[3], re.I):
-                rating_from = cells[3] or None
-            if re.search(r"(Buy|Hold|Sell|Overweight|Underweight|Neutral|Outperform|Underperform|Market Perform|Sector Perform|Strong Buy)", cells[4], re.I):
-                rating_to = cells[4] or None
-
-        mpt = re.search(r"(?:from|From)\s*\$?([0-9]{1,5}(?:\.[0-9]{1,2})?)\s*(?:to|To)\s*\$?([0-9]{1,5}(?:\.[0-9]{1,2})?)", joined)
-        if mpt:
-            pt_from = float(mpt.group(1))
-            pt_to = float(mpt.group(2))
+    note = None
+    if not fetch_ok:
+        # If everything is blocked, expose that clearly (we will still output cache if available)
+        if any("403" in v for v in statuses.values()):
+            note = "Megjegyzés: MarketBeat blokkolás (HTTP 403). Kimenet cache-ből, ha elérhető."
         else:
-            v1 = _parse_money(cells[-2]) if len(cells) >= 2 else None
-            v2 = _parse_money(cells[-1])
-            if v1 is not None and v2 is not None:
-                pt_from, pt_to = v1, v2
-            elif v2 is not None:
-                pt_to = v2
+            note = "Megjegyzés: MarketBeat nem elérhető. Kimenet cache-ből, ha elérhető."
 
-        if not firm and not action:
-            continue
-
-        out.append(AnalystEvent(
-            ticker=ticker,
-            date=d.isoformat(),
-            firm=firm.strip(),
-            action=action.strip(),
-            rating_from=rating_from,
-            rating_to=rating_to,
-            pt_from=pt_from,
-            pt_to=pt_to,
-            currency=currency,
-            source_url=stock_url,
-        ))
-    return out
+    return out, statuses, fetch_ok, note
 
 
-def read_master_tickers(master_csv: Path) -> List[str]:
-    with master_csv.open("r", encoding="utf-8-sig", newline="") as f:
-        reader = csv.reader(f)
-        rows = list(reader)
-    if not rows:
-        return []
-    header = [c.strip().lower() for c in rows[0]]
-    ticker_idx = 0
-    for i, c in enumerate(header):
-        if c in ("ticker", "symbol"):
-            ticker_idx = i
-            break
-    tickers: List[str] = []
-    for r in rows[1:]:
-        if len(r) <= ticker_idx:
-            continue
-        t = r[ticker_idx].strip().upper()
-        if t and not t.startswith("#"):
-            tickers.append(t)
-    seen = set()
-    out = []
-    for t in tickers:
-        if t not in seen:
-            seen.add(t)
-            out.append(t)
-    return out
-
-
-def write_outputs(out_md: Path, out_json: Optional[Path], events: List[AnalystEvent], days: int, fetch_ok: bool = True, statuses: Optional[Dict[str, str]] = None, note: Optional[str] = None) -> None:
+def write_outputs(
+    out_md: Path,
+    out_json: Optional[Path],
+    events: List[AnalystEvent],
+    days: int,
+    fetch_ok: bool = True,
+    statuses: Optional[Dict[str, str]] = None,
+    note: Optional[str] = None,
+) -> None:
     now = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     lines: List[str] = []
     lines.append(f"# Elemzői feed (MarketBeat) – fel/leminősítések + célár (utolsó {days} naptári nap) (első észlelés alapján)")
     lines.append("")
     lines.append(f"Verzió: {VERSION}")
     lines.append(f"Generálva (UTC): {now}")
+
     if note:
         lines.append(note)
+
+    if statuses and (note is not None or not fetch_ok):
+        # Only show when the fetch had an issue (avoid clutter on normal runs)
+        st = ", ".join([f"{k}={v}" for k, v in statuses.items()])
+        lines.append(f"Státuszok: {st}")
+
     lines.append("")
+
     if not events:
-        lines.append(f"_Nincs friss (≤{days} naptári nap) fel/leminősítés vagy célár-frissítés a forrásban._")
+        if fetch_ok:
+            # True empty (source reachable but no items)
+            lines.append(f"_Nincs friss (≤{days} naptári nap) fel/leminősítés vagy célár-frissítés a forrásban._")
+        else:
+            # Error / blocked (do NOT show the misleading "no fresh" line)
+            lines.append("_N/A: MarketBeat nem elérhető / blokkolás. Cache-ben sincs friss elem._")
     else:
         by: Dict[str, List[AnalystEvent]] = {}
         for e in events:
@@ -525,17 +429,19 @@ def write_outputs(out_md: Path, out_json: Optional[Path], events: List[AnalystEv
             for e in sorted(by[t], key=lambda x: x.date, reverse=True):
                 parts = [f"- {e.date} — {e.firm} — {e.action}"]
                 if e.rating_from or e.rating_to:
-                    parts.append(f"Rating: {e.rating_from or '—'} → {e.rating_to or '—'}")
+                    parts.append(f"Ajánlás: {e.rating_from or '—'} → {e.rating_to or '—'}")
                 if e.pt_from is not None or e.pt_to is not None:
                     if e.pt_from is not None and e.pt_to is not None:
-                        parts.append(f"PT: {e.currency} {e.pt_from:.2f} → {e.pt_to:.2f}")
+                        parts.append(f"Célár: {e.currency} {e.pt_from:.2f} → {e.pt_to:.2f}")
                     elif e.pt_to is not None:
-                        parts.append(f"PT: {e.currency} {e.pt_to:.2f}")
+                        parts.append(f"Célár: {e.currency} {e.pt_to:.2f}")
                 parts.append(f"Forrás: {e.source_url}")
-                lines.append("  ".join(parts))
+                lines.append(" | ".join(parts))
             lines.append("")
+
     out_md.parent.mkdir(parents=True, exist_ok=True)
     out_md.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+
     if out_json:
         out_json.parent.mkdir(parents=True, exist_ok=True)
         payload = {
@@ -546,6 +452,32 @@ def write_outputs(out_md: Path, out_json: Optional[Path], events: List[AnalystEv
             "events": [asdict(e) for e in events],
         }
         out_json.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def read_master_tickers(master_csv: Path) -> List[str]:
+    # CSV exported from Google Sheets: contains "Ticker" column (or similar)
+    txt = master_csv.read_text(encoding="utf-8", errors="replace")
+    lines = [l for l in txt.splitlines() if l.strip()]
+    if not lines:
+        return []
+    header = [h.strip().strip('"') for h in lines[0].split(",")]
+    # Try common column names
+    idx = None
+    for cand in ("Ticker", "ticker", "TICKER", "Symbol", "symbol"):
+        if cand in header:
+            idx = header.index(cand)
+            break
+    if idx is None:
+        # Fallback: first column
+        idx = 0
+    out: List[str] = []
+    for l in lines[1:]:
+        cols = [c.strip().strip('"') for c in l.split(",")]
+        if idx < len(cols):
+            t = cols[idx].strip().upper()
+            if t and re.fullmatch(r"[A-Z0-9.\-]{1,12}", t):
+                out.append(t)
+    return sorted(set(out))
 
 
 def main() -> int:
@@ -564,29 +496,61 @@ def main() -> int:
     master = Path(args.master)
     if not master.exists():
         _log(f"ERROR: MASTER CSV not found: {master}")
-        return 2
+        # Still write a small md so the main report doesn't break
+        out_md = Path(args.out_md)
+        write_outputs(out_md, None, [], args.days, fetch_ok=False, statuses={"master": "missing"}, note="Megjegyzés: MASTER CSV hiányzik.")
+        return 0
 
     debug_dir = Path(args.debug_dir) if args.debug else None
 
     _log(f"START {VERSION} days={args.days} master={master} mode=ratings_pages")
 
+    today_iso = dt.datetime.utcnow().date().isoformat()
+    cutoff_iso = (dt.datetime.utcnow().date() - dt.timedelta(days=args.days - 1)).isoformat()
+
     tickers = read_master_tickers(master)
 
-    # Solution #2: pull the central MarketBeat ratings lists once,
-    # then filter to MASTER tickers (avoids per-ticker search that triggers HTTP 403).
-    events = fetch_events_from_ratings_pages(
-        master_tickers=tickers,
-        days=args.days,
-        timeout=args.timeout,
-        sleep_s=max(args.sleep, 0.35),
-        debug_dir=debug_dir,
-    )
+    seen_path = Path(args.seen_file)
+    seen_db = _load_seen_db(seen_path)
 
-    events.sort(key=lambda e: (e.date, e.ticker), reverse=True)
+    # Fetch today's items (best effort)
+    events_today: List[AnalystEvent] = []
+    statuses: Dict[str, str] = {}
+    fetch_ok = False
+    note: Optional[str] = None
+
+    try:
+        events_today, statuses, fetch_ok, note = fetch_events_from_ratings_pages(
+            master_tickers=tickers,
+            days=args.days,
+            timeout=args.timeout,
+            sleep_s=max(args.sleep, 0.35),
+            debug_dir=debug_dir,
+        )
+    except Exception as e:
+        fetch_ok = False
+        note = f"Megjegyzés: kivétel a MarketBeat lekérésben ({type(e).__name__}). Kimenet cache-ből, ha elérhető."
+        _log(f"WARN: exception during fetch: {e}")
+
+    if fetch_ok and events_today:
+        _update_seen_with_today(seen_db, events_today, today_iso)
+        _save_seen_db(seen_path, seen_db)
+    elif fetch_ok:
+        # Source ok but no events: still update db 'last_seen' is irrelevant; keep db as-is
+        _save_seen_db(seen_path, seen_db)
+    else:
+        # Source not ok: do not overwrite cache; keep db untouched
+        pass
+
+    # Output from cache window (first_seen-based)
+    events_out = _fresh_events_from_seen(seen_db, cutoff_iso)
+    events_out.sort(key=lambda e: (e.date, e.ticker), reverse=True)
+
     out_md = Path(args.out_md)
     out_json = Path(args.out_json) if args.out_json else None
-    write_outputs(out_md, out_json, events, args.days, fetch_ok=fetch_ok, statuses=statuses, note=note)
-    _log(f"DONE events={len(events)}")
+
+    write_outputs(out_md, out_json, events_out, args.days, fetch_ok=fetch_ok, statuses=statuses, note=note)
+    _log(f"DONE events={len(events_out)}")
     return 0
 
 
