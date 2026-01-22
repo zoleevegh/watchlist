@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+# Ima (v0.3.20): bocsáss meg uram mert balfék voltam;
+# vezess, hogy a cache megmentsen, ha a botvédelem rámtalál.
 """
 analyst_marketbeat.py — MarketBeat (FREE) "ratings pages" scraper (Solution #2)
 - No per-ticker search (avoids mass HTTP 403)
@@ -28,7 +30,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 
-VERSION="v0.3.19-marketbeat-free-hu-2026-01-22"
+VERSION="v0.3.20-marketbeat-free-hu-2026-01-22"
 
 BASE = "https://www.marketbeat.com"
 DEFAULT_SEEN_FILE = "reports/marketbeat_seen.json"
@@ -81,6 +83,19 @@ UA_POOL = [
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
 ]
 
+
+
+def _looks_like_block_page(html: str) -> bool:
+    """Best-effort bot/challenge detection (MarketBeat sometimes returns HTTP 200 with a challenge page)."""
+    if not html:
+        return True
+    h = html.lower()
+    markers = [
+        "cf-chl", "cloudflare", "attention required", "captcha", "verify you are human",
+        "unusual activity", "enable javascript", "access denied", "robot check",
+        "perimeterx", "px-captcha", "akamai", "incapsula", "distil", "datadome",
+    ]
+    return any(m in h for m in markers)
 
 def _http_get(
     opener: urllib.request.OpenerDirector,
@@ -318,6 +333,7 @@ def fetch_events_from_ratings_pages(
     master_set = {t.upper() for t in master_tickers}
 
     statuses: Dict[str, str] = {}
+    parse_issue = False
     fetch_ok = False
 
     # Session-like opener with cookies + realistic UA; try UA fallbacks if blocked
@@ -346,6 +362,13 @@ def fetch_events_from_ratings_pages(
             time.sleep(sleep_s)
             continue
 
+        # Some bot protections return HTTP 200 with a challenge page.
+        if _looks_like_block_page(page_html):
+            statuses[kind] = f"HTTP {status} (blocked/challenge)"
+            _log(f"RATINGS {kind}: {statuses[kind]} (skip)")
+            time.sleep(sleep_s)
+            continue
+
         fetch_ok = True
 
         # Iterate <tr> blocks
@@ -367,6 +390,8 @@ def fetch_events_from_ratings_pages(
                 continue
 
             ticker = _extract_ticker_from_row(tr, cells)
+            if ticker:
+                parsed_rows += 1
             if not ticker or ticker.upper() not in master_set:
                 continue
 
@@ -457,7 +482,7 @@ def write_outputs(
     if not events:
         if fetch_ok:
             # True empty (source reachable but no items)
-            lines.append(f"_Nincs új fel/leminősítés vagy célár‑változás az elmúlt {days} naptári napban (MarketBeat)._")
+            lines.append(f"_Nincs új fel/leminősítés vagy célár‑változás az elmúlt {days} naptári napban (MarketBeat / szűrés)._")
         else:
             # Error / blocked (do NOT show the misleading "no fresh" line)
             lines.append("_N/A._")
@@ -590,6 +615,15 @@ def main() -> int:
 
     out_md = Path(args.out_md)
     out_json = Path(args.out_json) if args.out_json else None
+
+    if not fetch_ok:
+        st = " ".join(statuses.values()).lower()
+        if "blocked" in st or "http 403" in st or "http 429" in st:
+            note = "Megjegyzés: MarketBeat blokkolás / robotvédelem (a feed nem megbízhatóan elérhető). Ha van korábbi cache, azt használjuk."
+        elif statuses.get("_note") == "parse_issue":
+            note = "Megjegyzés: MarketBeat oldal szerkezete változhatott (parse 0 sor). Ha van korábbi cache, azt használjuk."
+        else:
+            note = "Megjegyzés: MarketBeat forráshiba. Ha van korábbi cache, azt használjuk."
 
     write_outputs(out_md, out_json, events_out, args.days, fetch_ok=fetch_ok, statuses=statuses, note=note)
     _log(f"DONE events={len(events_out)}")
