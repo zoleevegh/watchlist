@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 
-VERSION = "v0.3.18-marketbeat-free-hu-2026-01-22"
+VERSION="v0.3.19-marketbeat-free-hu-2026-01-22"
 
 BASE = "https://www.marketbeat.com"
 DEFAULT_SEEN_FILE = "reports/marketbeat_seen.json"
@@ -558,12 +558,6 @@ def main() -> int:
     events_today: List[AnalystEvent] = []
     statuses: Dict[str, str] = {}
     fetch_ok = False
-
-    # Session-like opener with cookies + realistic UA; try UA fallbacks if blocked
-    opener = _build_opener(UA_POOL[0])
-
-    # Warmup home to get cookies (some runs require it)
-    _http_get(opener, BASE + "/", timeout, debug_dir, "warmup_home", referer=None)
 
     note: Optional[str] = None
 
