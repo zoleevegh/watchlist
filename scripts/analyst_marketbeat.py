@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# Ima (v0.3.20): bocsáss meg uram mert balfék voltam;
-# vezess, hogy a cache megmentsen, ha a botvédelem rámtalál.
+# Ima (v0.3.21): bocsáss meg uram mert balfék voltam;
+# vezess, hogy a /ratings/us megmentsen, ha a többi oldal botvédelmet dob.
 """
 analyst_marketbeat.py — MarketBeat (FREE) "ratings pages" scraper (Solution #2)
 - No per-ticker search (avoids mass HTTP 403)
@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 
-VERSION="v0.3.20-marketbeat-free-hu-2026-01-22"
+VERSION = "v0.3.21-marketbeat-free-hu-2026-01-22"
 
 BASE = "https://www.marketbeat.com"
 DEFAULT_SEEN_FILE = "reports/marketbeat_seen.json"
@@ -58,7 +58,7 @@ RATING_WORDS = [
 
 
 def _log(msg: str) -> None:
-    ts = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    ts = dt.dt.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{ts} UTC] {msg}", flush=True)
 
 
@@ -152,7 +152,7 @@ def _parse_date_any(s: str) -> Optional[dt.date]:
     # Typical MarketBeat format: "Jan 21, 2026"
     for fmt in ("%b %d, %Y", "%B %d, %Y", "%Y-%m-%d"):
         try:
-            return dt.datetime.strptime(s, fmt).date()
+            return dt.dt.strptime(s, fmt).date()
         except Exception:
             continue
     return None
@@ -321,6 +321,144 @@ class AnalystEvent:
     source_url: str
 
 
+def _action_kind_from_us_action(action: str, joined: str) -> Optional[str]:
+    """Map MarketBeat /ratings/us action text to our internal kind."""
+    a = (action or "").strip().lower()
+    j = (joined or "").lower()
+    if "upgraded" in a or "upgraded" in j:
+        return "upgrade"
+    if "downgraded" in a or "downgraded" in j:
+        return "downgrade"
+    # Price target related actions on /ratings/us/
+    if "target" in a or "price target" in a or "target" in j:
+        return "pt_change"
+    return None
+
+
+def fetch_events_from_ratings_us(
+    opener: urllib.request.OpenerDirector,
+    timeout: int,
+    debug_dir: Optional[str],
+    statuses: Dict[str, str],
+    note: List[str],
+    tickers_set: set,
+    seen_db: Dict[str, str],
+    days: int,
+) -> List[AnalystEvent]:
+    """Fetch ratings from MarketBeat /ratings/us/ (one aggregated page), with pagination if available."""
+    base_url = BASE + "/ratings/us/"
+    events: List[AnalystEvent] = []
+    visited: set = set()
+    to_visit: List[str] = [base_url]
+
+    # cutoff based on first-seen date (cache). We set row date to today if unknown.
+    today = dt.date.today()
+    cutoff = today - dt.timedelta(days=max(1, days) - 1)
+
+    pages = 0
+    while to_visit and pages < 10:
+        url = to_visit.pop(0)
+        if url in visited:
+            continue
+        visited.add(url)
+        pages += 1
+
+        status, html = _http_get(
+            opener,
+            url,
+            timeout,
+            debug_dir,
+            label="ratings_us_page",
+            referer=BASE + "/",
+        )
+        statuses["RATINGS us"] = f"HTTP {status}"
+        if status != 200 or _looks_blocked(html):
+            note.append("MarketBeat blokkolás / challenge a /ratings/us oldalon.")
+            break
+
+        # next page discovery (rel=next or explicit pagination links)
+        nxt = None
+        m = re.search(r'rel=["\']next["\'][^>]*href=["\']([^"\']+)["\']', html, flags=re.I)
+        if m:
+            nxt = m.group(1)
+        if nxt:
+            if nxt.startswith("/"):
+                nxt = BASE + nxt
+            if nxt.startswith("http"):
+                to_visit.append(nxt)
+
+        rows = re.findall(r"<tr[^>]*>(.*?)</tr>", html, flags=re.I | re.S)
+        for row_html in rows:
+            if "<td" not in row_html.lower():
+                continue
+
+            tds = re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", row_html, flags=re.I | re.S)
+            if not tds:
+                continue
+            cells = [_clean_text(_strip_tags(x)) for x in tds]
+            headerish = " ".join(cells).upper()
+            if "COMPANY" in headerish and "ACTION" in headerish:
+                continue
+
+            joined = " | ".join(cells)
+
+            # ticker
+            ticker = _extract_ticker_from_row(joined, row_html)
+            if not ticker or ticker not in tickers_set:
+                continue
+
+            action_raw = cells[1] if len(cells) > 1 else ""
+            kind = _action_kind_from_us_action(action_raw, joined)
+            if kind not in ("upgrade", "downgrade", "pt_change"):
+                continue
+
+            firm = cells[2] if len(cells) > 2 else ""
+            analyst = cells[3] if len(cells) > 3 else ""
+
+            # rating: last cell often contains rating (e.g., OUTPERFORM)
+            rating_to = cells[-1] if cells else ""
+            rating_from = ""
+
+            # price target: try to capture the last $ value in the row (often the PT column)
+            pt_from = None
+            pt_to = None
+            money = re.findall(r"\$\s*([0-9]{1,6}(?:,[0-9]{3})*(?:\.[0-9]{1,2})?)", joined)
+            if money:
+                try:
+                    pt_to = float(money[-1].replace(",", ""))
+                except Exception:
+                    pt_to = None
+
+            # date: /ratings/us is often already filtered by reporting date, but if no per-row date is shown, use today.
+            date_obj = today
+            date = date_obj.isoformat()
+
+            source_url = base_url  # stable for fingerprints; detail links would be nicer, but not guaranteed
+            fp = _fingerprint(ticker, kind, firm, analyst, rating_from, rating_to, pt_from, pt_to, source_url)
+            if fp not in seen_db:
+                seen_db[fp] = date
+            first_seen = _parse_date_any(seen_db.get(fp, date)) or date_obj
+
+            if first_seen < cutoff:
+                continue
+
+            events.append(
+                AnalystEvent(
+                    ticker=ticker,
+                    date=first_seen.isoformat(),
+                    firm=firm,
+                    analyst=analyst,
+                    kind=kind,
+                    rating_from=rating_from,
+                    rating_to=rating_to,
+                    pt_from=pt_from,
+                    pt_to=pt_to,
+                    source_url=source_url,
+                )
+            )
+
+    return events
+
 def fetch_events_from_ratings_pages(
     master_tickers: List[str],
     days: int,
@@ -328,13 +466,32 @@ def fetch_events_from_ratings_pages(
     sleep_s: float,
     debug_dir: Optional[Path],
 ) -> Tuple[List[AnalystEvent], Dict[str, str], bool, Optional[str]]:
-    today = dt.datetime.utcnow().date()
+    today = dt.dt.utcnow().date()
     cutoff = today - dt.timedelta(days=days - 1)
     master_set = {t.upper() for t in master_tickers}
 
     statuses: Dict[str, str] = {}
     parse_issue = False
     fetch_ok = False
+
+    # Aggregált /ratings/us/ oldal (gyakran tartalmaz "Target Set by" jellegű frissítéseket is)
+    try:
+        us_events = fetch_events_from_ratings_us(
+            opener=opener,
+            timeout=timeout,
+            debug_dir=debug_dir,
+            statuses=statuses,
+            note=note,
+            tickers_set=tickers_set,
+            seen_db=seen_db,
+            days=days,
+        )
+        if statuses.get("RATINGS us", "").startswith("HTTP 200"):
+            fetch_ok = True
+        events.extend(us_events)
+    except Exception as e:
+        note.append(f"RATINGS us – feldolgozási hiba: {e}")
+
 
     # Session-like opener with cookies + realistic UA; try UA fallbacks if blocked
     opener = _build_opener(UA_POOL[0])
@@ -390,8 +547,6 @@ def fetch_events_from_ratings_pages(
                 continue
 
             ticker = _extract_ticker_from_row(tr, cells)
-            if ticker:
-                parsed_rows += 1
             if not ticker or ticker.upper() not in master_set:
                 continue
 
@@ -468,7 +623,7 @@ def write_outputs(
     statuses: Optional[Dict[str, str]] = None,
     note: Optional[str] = None,
 ) -> None:
-    now = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    now = dt.dt.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     lines: List[str] = []
     lines.append(f"# Elemzői feed (MarketBeat) – fel/leminősítések + célár (utolsó {days} naptári nap) (első észlelés alapján)")
     lines.append("")
@@ -571,8 +726,8 @@ def main() -> int:
 
     _log(f"START {VERSION} days={args.days} master={master} mode=ratings_pages")
 
-    today_iso = dt.datetime.utcnow().date().isoformat()
-    cutoff_iso = (dt.datetime.utcnow().date() - dt.timedelta(days=args.days - 1)).isoformat()
+    today_iso = dt.dt.utcnow().date().isoformat()
+    cutoff_iso = (dt.dt.utcnow().date() - dt.timedelta(days=args.days - 1)).isoformat()
 
     tickers = read_master_tickers(master)
 
