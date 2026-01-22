@@ -1,4 +1,4 @@
-# run_report.yml — v1.0.5-2026-01-22
+# run_report.yml — v1.0.6-2026-01-22
 
 name: Run Report — PRICE ENGINE
 
@@ -54,7 +54,10 @@ jobs:
         if: ${{ env.REPORT == '1' }}
         uses: actions/cache@v4
         with:
-          path: reports/marketbeat_seen.json
+          path: |
+            reports/marketbeat_seen.json
+            reports/analyst_last2d.md
+            reports/analyst_last2d.json
           # Always save a fresh cache each run (unique key), but restore the latest prior one via restore-keys.
           key: marketbeat-seen-v1-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
           restore-keys: |
@@ -187,7 +190,7 @@ jobs:
           fi
           set -e
           if [ "${REPORT}" = "1" ] && ( [ "${RC_A}" -ne 0 ] || [ ! -f "reports/analyst_last2d.md" ] ); then
-            python -c "from pathlib import Path; Path('reports').mkdir(parents=True, exist_ok=True); Path('reports/analyst_last2d.md').write_text('# Elemzői feed (MarketBeat) – utolsó 2 naptári nap\n\nN/A: analyst_marketbeat.py nem található vagy nem futott le (forrás blokkolás / hiba).\n', encoding='utf-8')"
+            python -c "from pathlib import Path; Path('reports').mkdir(parents=True, exist_ok=True); Path('reports/analyst_last2d.md').write_text('# Elemzői feed (MarketBeat) – utolsó 2 naptári nap\n\n_N/A._\n', encoding='utf-8')"
             echo "ANALYST_EXIT=${RC_A}" | tee -a reports/runner.log
           fi
 
