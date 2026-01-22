@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 
-VERSION = "v0.3.17-marketbeat-free-hu-2026-01-22"
+VERSION = "v0.3.18-marketbeat-free-hu-2026-01-22"
 
 BASE = "https://www.marketbeat.com"
 DEFAULT_SEEN_FILE = "reports/marketbeat_seen.json"
@@ -324,21 +324,21 @@ def fetch_events_from_ratings_pages(
     opener = _build_opener(UA_POOL[0])
 
     # Warmup home to get cookies (some runs require it)
-    _http_get(opener, BASE + "/", args.timeout, debug_dir, "warmup_home", referer=None)
+    _http_get(opener, BASE + "/", timeout, debug_dir, "warmup_home", referer=None)
 
     out: List[AnalystEvent] = []
     seen: set = set()
 
     for kind, path in RATINGS_SOURCES:
         url = BASE + path
-        status, page_html = _http_get(opener, url, args.timeout, debug_dir, f"ratings_{kind}", referer=BASE + '/')
+        status, page_html = _http_get(opener, url, timeout, debug_dir, f"ratings_{kind}", referer=BASE + '/')
         statuses[kind] = f"HTTP {status}" if status else "HTTP ?"
 
         # If blocked, retry once with alternate UA (new cookie jar)
         if status == 403 and len(UA_POOL) > 1:
             opener = _build_opener(UA_POOL[1])
-            _http_get(opener, BASE + "/", args.timeout, debug_dir, "warmup_home_alt", referer=None)
-            status, page_html = _http_get(opener, url, args.timeout, debug_dir, f"ratings_{kind}_alt", referer=BASE + "/")
+            _http_get(opener, BASE + "/", timeout, debug_dir, "warmup_home_alt", referer=None)
+            status, page_html = _http_get(opener, url, timeout, debug_dir, f"ratings_{kind}_alt", referer=BASE + "/")
             statuses[kind] = f"HTTP {status}" if status else "HTTP ?"
 
         if status >= 400 or status == 0:
@@ -450,20 +450,14 @@ def write_outputs(
     lines.append(f"Verzió: {VERSION}")
     lines.append(f"Generálva (UTC): {now}")
 
-    if note:
-        lines.append(note)
 
-    if statuses and (note is not None or not fetch_ok):
-        # Only show when the fetch had an issue (avoid clutter on normal runs)
-        st = ", ".join([f"{k}={v}" for k, v in statuses.items()])
-        lines.append(f"Státuszok: {st}")
 
     lines.append("")
 
     if not events:
         if fetch_ok:
             # True empty (source reachable but no items)
-            lines.append(f"_Nincs friss (≤{days} naptári nap) fel/leminősítés vagy célár-frissítés a forrásban._")
+            lines.append(f"_Nincs új fel/leminősítés vagy célár‑változás az elmúlt {days} naptári napban (MarketBeat)._")
         else:
             # Error / blocked (do NOT show the misleading "no fresh" line)
             lines.append("_N/A._")
@@ -569,7 +563,7 @@ def main() -> int:
     opener = _build_opener(UA_POOL[0])
 
     # Warmup home to get cookies (some runs require it)
-    _http_get(opener, BASE + "/", args.timeout, debug_dir, "warmup_home", referer=None)
+    _http_get(opener, BASE + "/", timeout, debug_dir, "warmup_home", referer=None)
 
     note: Optional[str] = None
 
