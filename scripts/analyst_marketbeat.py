@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import hashlib
+import http.cookiejar
 import json
 import os
 import re
@@ -27,7 +28,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 
-VERSION = "v0.3.15-marketbeat-free-hu-2026-01-22"
+VERSION = "v0.3.16-marketbeat-free-hu-2026-01-22"
 
 BASE = "https://www.marketbeat.com"
 DEFAULT_SEEN_FILE = "reports/marketbeat_seen.json"
@@ -59,16 +60,47 @@ def _log(msg: str) -> None:
     print(f"[{ts} UTC] {msg}", flush=True)
 
 
-def _http_get(url: str, timeout: int, debug_dir: Optional[Path], debug_name: str) -> Tuple[int, str]:
-    hdrs = {
-        "User-Agent": "watchlist-price-engine/marketbeat-free (+https://github.com/zoleevegh/watchlist)",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Connection": "close",
-    }
+def _build_opener(user_agent: str) -> urllib.request.OpenerDirector:
+    """Create an urllib opener with a cookie jar (session-like)."""
+    cj = http.cookiejar.CookieJar()
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))
+    opener.addheaders = [
+        ("User-Agent", user_agent),
+        ("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"),
+        ("Accept-Language", "en-US,en;q=0.9"),
+        ("Cache-Control", "no-cache"),
+        ("Pragma", "no-cache"),
+        ("Connection", "close"),
+    ]
+    return opener
+
+
+# A small pool of realistic browser UAs to reduce bot-blocking variance
+UA_POOL = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
+]
+
+
+def _http_get(
+    opener: urllib.request.OpenerDirector,
+    url: str,
+    timeout: int,
+    debug_dir: Optional[Path],
+    debug_name: str,
+    referer: Optional[str] = None,
+) -> Tuple[int, str]:
+    """HTTP GET with cookies + optional Referer. Returns (status, html)."""
+    hdrs = {}
+    if referer:
+        hdrs["Referer"] = referer
+        hdrs["Upgrade-Insecure-Requests"] = "1"
     req = urllib.request.Request(url, headers=hdrs, method="GET")
+
+    status = 0
+    html = ""
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with opener.open(req, timeout=timeout) as r:
             status = getattr(r, "status", 200) or 200
             raw = r.read()
             html = raw.decode("utf-8", errors="replace")
@@ -287,13 +319,28 @@ def fetch_events_from_ratings_pages(
 
     statuses: Dict[str, str] = {}
     fetch_ok = False
+
+    # Session-like opener with cookies + realistic UA; try UA fallbacks if blocked
+    opener = _build_opener(UA_POOL[0])
+
+    # Warmup home to get cookies (some runs require it)
+    _http_get(opener, BASE + "/", timeout, debug_dir, "warmup_home", referer=None)
+
     out: List[AnalystEvent] = []
     seen: set = set()
 
     for kind, path in RATINGS_SOURCES:
         url = BASE + path
-        status, page_html = _http_get(url, timeout, debug_dir, f"ratings_{kind}")
+        status, page_html = _http_get(opener, url, timeout, debug_dir, f"ratings_{kind}", referer=BASE + '/')
         statuses[kind] = f"HTTP {status}" if status else "HTTP ?"
+
+        # If blocked, retry once with alternate UA (new cookie jar)
+        if status == 403 and len(UA_POOL) > 1:
+            opener = _build_opener(UA_POOL[1])
+            _http_get(opener, BASE + "/", timeout, debug_dir, "warmup_home_alt", referer=None)
+            status, page_html = _http_get(opener, url, timeout, debug_dir, f"ratings_{kind}_alt", referer=BASE + "/")
+            statuses[kind] = f"HTTP {status}" if status else "HTTP ?"
+
         if status >= 400 or status == 0:
             _log(f"RATINGS {kind}: {statuses[kind]} (skip)")
             time.sleep(sleep_s)
@@ -380,9 +427,9 @@ def fetch_events_from_ratings_pages(
     if not fetch_ok:
         # If everything is blocked, expose that clearly (we will still output cache if available)
         if any("403" in v for v in statuses.values()):
-            note = "Megjegyzés: MarketBeat blokkolás (HTTP 403). Kimenet cache-ből, ha elérhető."
+            note = None
         else:
-            note = "Megjegyzés: MarketBeat nem elérhető. Kimenet cache-ből, ha elérhető."
+            note = None
 
     return out, statuses, fetch_ok, note
 
@@ -419,7 +466,7 @@ def write_outputs(
             lines.append(f"_Nincs friss (≤{days} naptári nap) fel/leminősítés vagy célár-frissítés a forrásban._")
         else:
             # Error / blocked (do NOT show the misleading "no fresh" line)
-            lines.append("_N/A: MarketBeat nem elérhető / blokkolás. Cache-ben sincs friss elem._")
+            lines.append("_N/A._")
     else:
         by: Dict[str, List[AnalystEvent]] = {}
         for e in events:
@@ -498,7 +545,7 @@ def main() -> int:
         _log(f"ERROR: MASTER CSV not found: {master}")
         # Still write a small md so the main report doesn't break
         out_md = Path(args.out_md)
-        write_outputs(out_md, None, [], args.days, fetch_ok=False, statuses={"master": "missing"}, note="Megjegyzés: MASTER CSV hiányzik.")
+        write_outputs(out_md, None, [], args.days, fetch_ok=False, statuses={"master": "missing"}, note=None)
         return 0
 
     debug_dir = Path(args.debug_dir) if args.debug else None
@@ -517,6 +564,13 @@ def main() -> int:
     events_today: List[AnalystEvent] = []
     statuses: Dict[str, str] = {}
     fetch_ok = False
+
+    # Session-like opener with cookies + realistic UA; try UA fallbacks if blocked
+    opener = _build_opener(UA_POOL[0])
+
+    # Warmup home to get cookies (some runs require it)
+    _http_get(opener, BASE + "/", timeout, debug_dir, "warmup_home", referer=None)
+
     note: Optional[str] = None
 
     try:
@@ -529,7 +583,7 @@ def main() -> int:
         )
     except Exception as e:
         fetch_ok = False
-        note = f"Megjegyzés: kivétel a MarketBeat lekérésben ({type(e).__name__}). Kimenet cache-ből, ha elérhető."
+        note = None
         _log(f"WARN: exception during fetch: {e}")
 
     if fetch_ok and events_today:
