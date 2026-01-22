@@ -1,7 +1,7 @@
-# Ima (v1.0.7): bocsáss meg uram, ha megint mellényúltam;
-# adj türelmet és tiszta logot, hogy csak az igazat írjam le.
-# Verzió: v1.0.7-run_report-gist+marketbeatcache-fallback-2026-01-22
-# run_report.yml — v1.0.6-2026-01-22
+# Ima (v1.0.8): bocsáss meg uram mert balfék voltam;
+# add, hogy a '##' fejlécek ne tűnjenek el többé az injectnél.
+# Verzió: v1.0.8
+# run_report.yml — v1.0.8 (analyst headers fix + /ratings/us support)
 
 name: Run Report — PRICE ENGINE
 
@@ -229,7 +229,7 @@ jobs:
           def strip_leading_meta(text: str) -> str:
               lines = text.splitlines()
               while lines and (
-                  lines[0].startswith("#")
+                  (re.match(r"^#\s", lines[0]) is not None)
                   or lines[0].startswith("Verzió:")
                   or lines[0].startswith("Generálva")
                   or lines[0].strip() == ""
@@ -252,14 +252,11 @@ jobs:
           a = strip_leading_meta(a_raw)
           e = strip_leading_meta(e_raw)
           
-          # Avoid showing the old italic "no fresh" sentence; keep it clean.
-          if "Nincs friss" in a and "fel/leminősítés" in a:
-              a = ""
           
           if not a:
-              a = "N/A"
+              a = "_N/A._"
           if not e:
-              e = "N/A"
+              e = "_N/A._"
           
           injected = (
               "\n\n## Elemzői feed (MarketBeat) — fel/leminősítések + célár (utolsó 2 naptári nap)\n\n"
