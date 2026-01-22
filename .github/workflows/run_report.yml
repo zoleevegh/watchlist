@@ -1,6 +1,8 @@
+# run_report.yml — v1.0.5-2026-01-22
+
 name: Run Report — PRICE ENGINE
 
-# run_report.yml — v1.0.3-2026-01-21
+# run_report.yml — v1.0.0-2026-01-21
 
 "on":
   workflow_dispatch:
@@ -48,14 +50,27 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Restore MarketBeat seen cache (first-seen dates)
-        if: env.REPORT == '1'
+      - name: Restore/Save MarketBeat seen cache (first-seen dates)
+        if: ${{ env.REPORT == '1' }}
         uses: actions/cache@v4
         with:
           path: reports/marketbeat_seen.json
-          key: marketbeat-seen-v1-${{ runner.os }}
+          # Always save a fresh cache each run (unique key), but restore the latest prior one via restore-keys.
+          key: marketbeat-seen-v1-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
           restore-keys: |
-            marketbeat-seen-v1-
+            marketbeat-seen-v1-${{ runner.os }}-${{ github.ref_name }}-
+            marketbeat-seen-v1-${{ runner.os }}-
+
+      - name: Ensure MarketBeat seen state file exists
+        if: ${{ env.REPORT == '1' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p reports
+          if [ ! -f reports/marketbeat_seen.json ]; then
+            echo '{}' > reports/marketbeat_seen.json
+          fi
+
 
       - name: Install deps
         shell: bash
@@ -197,13 +212,11 @@ jobs:
           fi
 
           # Inject blocks into the final #1 markdown in order: Analyst -> Earnings
-          # (helper script written once to avoid heredoc-in-indented-block issues)
           cat > /tmp/inject_blocks.py <<'PY'
-          import os
-          import re
+          import os, re
           from pathlib import Path
           
-          out_md = Path(os.environ["OUT_MD"])
+          out_md = Path(os.environ.get("OUT_MD", ""))
           analyst_md = Path("reports/analyst_last2d.md")
           earnings_md = Path("reports/earnings_next7d.md")
           
@@ -218,6 +231,9 @@ jobs:
                   lines.pop(0)
               return "\n".join(lines).strip()
           
+          if not out_md or not out_md.exists():
+              raise SystemExit(0)
+          
           base = out_md.read_text(encoding="utf-8", errors="replace")
           
           # prune previous injected blocks (if any)
@@ -226,8 +242,18 @@ jobs:
           
           a_raw = analyst_md.read_text(encoding="utf-8", errors="replace") if analyst_md.exists() else ""
           e_raw = earnings_md.read_text(encoding="utf-8", errors="replace") if earnings_md.exists() else ""
-          a = strip_leading_meta(a_raw) or "N/A"
-          e = strip_leading_meta(e_raw) or "N/A"
+          
+          a = strip_leading_meta(a_raw)
+          e = strip_leading_meta(e_raw)
+          
+          # Avoid showing the old italic "no fresh" sentence; keep it clean.
+          if "Nincs friss" in a and "fel/leminősítés" in a:
+              a = ""
+          
+          if not a:
+              a = "N/A"
+          if not e:
+              e = "N/A"
           
           injected = (
               "\n\n## Elemzői feed (MarketBeat) — fel/leminősítések + célár (utolsó 2 naptári nap)\n\n"
@@ -284,52 +310,51 @@ jobs:
             echo "${OUT_MD} not found - skip Gist update."
             exit 0
           fi
-          cat > /tmp/update_gist.py <<'PY'
-          import json, os
+          python - <<'PY'
+          import json, os, sys
           from pathlib import Path
           import urllib.request
-          
+
           gist_id = os.environ["GIST_ID"]
           token = os.environ["GIST_TOKEN"]
           out_md = Path(os.environ["OUT_MD"])
           target_fn = out_md.name
           content = out_md.read_text(encoding="utf-8", errors="replace")
-          
+
           api_url = f"https://api.github.com/gists/{gist_id}"
-          
-          def gh_get(url: str):
+
+          def gh_get(url):
               req = urllib.request.Request(url, headers={
                   "Authorization": f"token {token}",
                   "Accept": "application/vnd.github+json",
-                  "User-Agent": "watchlist-price-engine",
+                  "User-Agent": "watchlist-price-engine"
               })
-              with urllib.request.urlopen(req, timeout=30) as r:
-                  return json.loads(r.read().decode("utf-8", errors="replace"))
-          
-          def gh_patch(url: str, payload: dict):
+              with urllib.request.urlopen(req) as r:
+                  return json.load(r)
+
+          def gh_patch(url, payload):
               data = json.dumps(payload).encode("utf-8")
-              req = urllib.request.Request(url, data=data, headers={
+              req = urllib.request.Request(url, data=data, method="PATCH", headers={
                   "Authorization": f"token {token}",
                   "Accept": "application/vnd.github+json",
-                  "User-Agent": "watchlist-price-engine",
-              }, method="PATCH")
-              with urllib.request.urlopen(req, timeout=30) as r:
-                  return json.loads(r.read().decode("utf-8", errors="replace"))
-          
+                  "User-Agent": "watchlist-price-engine"
+              })
+              with urllib.request.urlopen(req) as r:
+                  return json.load(r)
+
           gist = gh_get(api_url)
           files = gist.get("files", {})
-          
+
           # Delete wrong summary_report_*.md files (keep only the target)
           deletions = {}
-          for fn in list(files.keys()):
+          for fn in files.keys():
               if fn.startswith("summary_report_") and fn.endswith(".md") and fn != target_fn:
                   deletions[fn] = None
-          
+
           payload = {"files": {**deletions, target_fn: {"content": content}}}
           gh_patch(api_url, payload)
           print("Gist updated.")
           PY
-          python /tmp/update_gist.py
       - name: Write run summary (stable raw link)
         if: always()
         shell: bash
