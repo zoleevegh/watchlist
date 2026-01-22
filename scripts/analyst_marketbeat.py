@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# Ima (v0.3.22): bocsáss meg uram, ha megint mellényúltam;
-# adj tiszta HTML-t és élő cache-t, hogy a botvédelem se ölje meg a feedet.
+# Ima (v0.3.24): bocsáss meg uram, ha megint mellényúltam;
+# adj józan cache-t és tiszta logot, hogy blokkoláskor se maradjunk vakon.
 """
 analyst_marketbeat.py — MarketBeat (FREE) "ratings pages" scraper (Solution #2)
 - No per-ticker search (avoids mass HTTP 403)
@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 
-VERSION="v0.3.22-marketbeat-free-hu-2026-01-22"
+VERSION="v0.3.24-marketbeat-cache-mode-2026-01-22"
 
 BASE = "https://www.marketbeat.com"
 DEFAULT_SEEN_FILE = "reports/marketbeat_seen.json"
@@ -521,6 +521,7 @@ def write_outputs(
     events: List[AnalystEvent],
     days: int,
     fetch_ok: bool = True,
+    cache_based: bool = False,
     statuses: Optional[Dict[str, str]] = None,
     note: Optional[str] = None,
 ) -> str:
@@ -540,8 +541,11 @@ def write_outputs(
             # True empty (source reachable but no items)
             lines.append(f"_Nincs új fel/leminősítés vagy célár‑változás az elmúlt {days} naptári napban (MarketBeat / szűrés)._")
         else:
-            # Error / blocked (do NOT show the misleading "no fresh" line)
-            lines.append("_N/A._")
+            # Blocked/error: if we have any previously-seen/cache state, show a cache-based "no events" line.
+            if cache_based:
+                lines.append(f"_Nincs friss fel/leminősítés vagy célár‑változás az elmúlt {days} naptári napban (utolsó ismert cache alapján)._")
+            else:
+                lines.append("_N/A._")
     else:
         by: Dict[str, List[AnalystEvent]] = {}
         for e in events:
@@ -727,7 +731,9 @@ def main() -> int:
 
     fetch_ok_all = all(_clean_status(statuses.get(k, "")) for k in ("upgrade", "downgrade", "pt_change"))
 
-    md_text = write_outputs(out_md, out_json, events_out, args.days, fetch_ok=fetch_ok, statuses=statuses, note=note)
+    cache_any = Path(args.seen_file).exists() or Path(LAST_SUCCESS_JSON).exists()
+
+    md_text = write_outputs(out_md, out_json, events_out, args.days, fetch_ok=fetch_ok, cache_based=((not fetch_ok) and cache_any), statuses=statuses, note=note)
 
     if fetch_ok_all:
         payload = {
