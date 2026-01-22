@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# Ima (v0.3.20): bocsáss meg uram mert balfék voltam;
-# vezess, hogy a cache megmentsen, ha a botvédelem rámtalál.
+# Ima (v0.3.22): bocsáss meg uram, ha megint mellényúltam;
+# adj tiszta HTML-t és élő cache-t, hogy a botvédelem se ölje meg a feedet.
 """
 analyst_marketbeat.py — MarketBeat (FREE) "ratings pages" scraper (Solution #2)
 - No per-ticker search (avoids mass HTTP 403)
@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 
-VERSION="v0.3.21-marketbeat-free-hu-2026-01-22"
+VERSION="v0.3.22-marketbeat-free-hu-2026-01-22"
 
 BASE = "https://www.marketbeat.com"
 DEFAULT_SEEN_FILE = "reports/marketbeat_seen.json"
@@ -448,8 +448,6 @@ def fetch_events_from_ratings_pages(
                 continue
 
             ticker = _extract_ticker_from_row(tr, cells)
-            if ticker:
-                parsed_rows += 1
             if not ticker or ticker.upper() not in master_set:
                 continue
 
@@ -684,21 +682,21 @@ def main() -> int:
         last_payload = _load_last_success(Path(LAST_SUCCESS_JSON))
         if last_payload and isinstance(last_payload.get("events"), list):
             gen = str(last_payload.get("generated_utc") or "")
-            cached = []
+            cached: List[AnalystEvent] = []
             for d in last_payload.get("events", []):
                 try:
+                    # last_success payload is saved from this script, so field names match AnalystEvent.
                     ev = AnalystEvent(
                         ticker=str(d.get("ticker") or "").upper(),
                         date=str(d.get("date") or ""),
-                        kind=str(d.get("kind") or ""),
-                        brokerage=str(d.get("brokerage") or ""),
-                        analyst=str(d.get("analyst") or ""),
-                        rating_from=str(d.get("rating_from") or ""),
-                        rating_to=str(d.get("rating_to") or ""),
-                        pt_from=str(d.get("pt_from") or ""),
-                        pt_to=str(d.get("pt_to") or ""),
-                        url=str(d.get("url") or ""),
-                        raw=str(d.get("raw") or ""),
+                        firm=str(d.get("firm") or ""),
+                        action=str(d.get("action") or ""),
+                        rating_from=(d.get("rating_from") if d.get("rating_from") not in ("", None) else None),
+                        rating_to=(d.get("rating_to") if d.get("rating_to") not in ("", None) else None),
+                        pt_from=(float(d["pt_from"]) if d.get("pt_from") not in ("", None) else None),
+                        pt_to=(float(d["pt_to"]) if d.get("pt_to") not in ("", None) else None),
+                        currency=str(d.get("currency") or "USD"),
+                        source_url=str(d.get("source_url") or ""),
                     )
                     if ev.date and ev.date >= cutoff_iso:
                         cached.append(ev)
