@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 
-VERSION = "v0.3.16-marketbeat-free-hu-2026-01-22"
+VERSION = "v0.3.17-marketbeat-free-hu-2026-01-22"
 
 BASE = "https://www.marketbeat.com"
 DEFAULT_SEEN_FILE = "reports/marketbeat_seen.json"
@@ -324,21 +324,21 @@ def fetch_events_from_ratings_pages(
     opener = _build_opener(UA_POOL[0])
 
     # Warmup home to get cookies (some runs require it)
-    _http_get(opener, BASE + "/", timeout, debug_dir, "warmup_home", referer=None)
+    _http_get(opener, BASE + "/", args.timeout, debug_dir, "warmup_home", referer=None)
 
     out: List[AnalystEvent] = []
     seen: set = set()
 
     for kind, path in RATINGS_SOURCES:
         url = BASE + path
-        status, page_html = _http_get(opener, url, timeout, debug_dir, f"ratings_{kind}", referer=BASE + '/')
+        status, page_html = _http_get(opener, url, args.timeout, debug_dir, f"ratings_{kind}", referer=BASE + '/')
         statuses[kind] = f"HTTP {status}" if status else "HTTP ?"
 
         # If blocked, retry once with alternate UA (new cookie jar)
         if status == 403 and len(UA_POOL) > 1:
             opener = _build_opener(UA_POOL[1])
-            _http_get(opener, BASE + "/", timeout, debug_dir, "warmup_home_alt", referer=None)
-            status, page_html = _http_get(opener, url, timeout, debug_dir, f"ratings_{kind}_alt", referer=BASE + "/")
+            _http_get(opener, BASE + "/", args.timeout, debug_dir, "warmup_home_alt", referer=None)
+            status, page_html = _http_get(opener, url, args.timeout, debug_dir, f"ratings_{kind}_alt", referer=BASE + "/")
             statuses[kind] = f"HTTP {status}" if status else "HTTP ?"
 
         if status >= 400 or status == 0:
@@ -569,7 +569,7 @@ def main() -> int:
     opener = _build_opener(UA_POOL[0])
 
     # Warmup home to get cookies (some runs require it)
-    _http_get(opener, BASE + "/", timeout, debug_dir, "warmup_home", referer=None)
+    _http_get(opener, BASE + "/", args.timeout, debug_dir, "warmup_home", referer=None)
 
     note: Optional[str] = None
 
