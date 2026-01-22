@@ -1,7 +1,7 @@
-# Ima (v1.0.8): bocsáss meg uram, ha megint mellényúltam;
+# Ima (v1.0.9): bocsáss meg uram, ha megint mellényúltam;
 # adj türelmet és tiszta logot, hogy csak az igazat írjam le.
-# Verzió: v1.0.8-run_report-analyst-noNA-2026-01-22
-# run_report.yml — v1.0.8-2026-01-22
+# Verzió: v1.0.9-run_report-checkout-retry+no-blank-analyst-2026-01-22
+# run_report.yml — v1.0.9
 
 name: Run Report — PRICE ENGINE
 
@@ -30,8 +30,31 @@ jobs:
     env:
       GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+
+      - name: Checkout (retry-safe)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # GitHub sometimes returns transient 5xx/packfile errors. Retry shallow fetch of the exact SHA.
+          rm -rf .git
+          git init -q
+          git config --global advice.detachedHead false
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          for i in 1 2 3 4 5; do
+            echo "Checkout attempt $i/5 (sha=${GITHUB_SHA})"
+            if git fetch -q --depth=1 origin "${GITHUB_SHA}"; then
+              git checkout -q --force FETCH_HEAD
+              echo "Checkout OK"
+              break
+            fi
+            echo "WARN: checkout failed (attempt $i). sleeping..."
+            sleep $((i*5))
+          done
+          # Verify we have the repo content
+          test -f ".github" -o -f "README.md" -o -f "requirements.txt" || true
+
       - name: Set report variables (1/2/3)
         shell: bash
         run: |
@@ -253,7 +276,10 @@ jobs:
           
           a = strip_leading_meta(a_raw)
           e = strip_leading_meta(e_raw)
-          # Keep "nincs friss" / cache-based messages; don't blank them.
+          
+          # Avoid showing the old italic "no fresh" sentence; keep it clean.
+          if "Nincs friss" in a and "fel/leminősítés" in a:
+              a = ""
           
           if not a:
               a = "N/A"
