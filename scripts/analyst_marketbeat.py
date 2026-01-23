@@ -1,78 +1,74 @@
 #!/usr/bin/env python3
-# analyst_marketbeat.py – v0.3.35-marketbeat-fmp-primary-finnhub-quotecheck-cli-alias-2026-01-23
-# NOTE: Increment version on every modification (strictly monotonic).
-
+# Ima (v0.3.36): bocsáss meg uram, ha megint mellényúltam;
+# add, hogy a robotvédelem ellenére is legyen tiszta fallback és korrekt üzenet.
+# Version: v0.3.36-marketbeat-fmp-grades-latest-news-no-premium-2026-01-23
 """
-Analyst feed module for Price Engine (#1): upgrades/downgrades/price-target changes.
+analyst_marketbeat.py
 
-Primary: MarketBeat ratings pages (may be blocked by Cloudflare "HTTP 200 challenge")
-Fallback: Financial Modeling Prep (FMP) upgrades/downgrades RSS feed (recommended)
-Optional diagnostic: Finnhub quote API key validation + premium detection for upgrade/downgrade endpoint.
+Purpose (PRICE ENGINE #1):
+- Produce a short "Analyst feed" block for the last N calendar days:
+  upgrades / downgrades (+ minimal context) and (if available) price-target changes.
+
+Reality check:
+- MarketBeat frequently returns HTTP 200 with a bot-challenge page. That is treated as "blocked/challenge".
+  We DO NOT try to bypass robot protection.
+- Fallback: Financial Modeling Prep (FMP) "Stock Grade Latest News API" (grades-latest-news).
+  This yields upgrades/downgrades/reiterations (grades) but typically does NOT include explicit price-target changes.
 
 Outputs:
-- Markdown snippet (reports/analyst_last2d.md by default)
-- JSON events (reports/analyst_last2d.json by default)
+- Markdown: reports/analyst_last2d.md (default)
+- JSON:     reports/analyst_last2d.json (default)
 
-Two-line "ima" for hotfix bundles:
-Bocsáss meg Uram, mert balfék voltam, és NameError-ral felrobbantottam a futást.
-Adj türelmet és jó logot, hogy legközelebb elsőre stabil legyen.
+Exit behavior:
+- Always write outputs and exit 0 so the workflow can continue.
+- Prints "ANALYST_EXIT=1" for degraded mode (blocked/empty/fallback issues), "ANALYST_EXIT=0" for OK.
+
+CLI compatibility:
+- Keeps legacy args used by the workflow: --days --master --mode --seen_path --last_success_path
+  and both --out_md / --out-md, --out_json / --out-json.
 """
-
-from __future__ import annotations
 
 import argparse
 import csv
-import datetime as _dt
 import hashlib
 import json
 import os
-import re
 import sys
 import time
-import urllib.error
-import urllib.parse
 import urllib.request
-import xml.etree.ElementTree as ET
-from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+import urllib.error
+from datetime import datetime, timezone, timedelta
+from typing import Any, Dict, List, Optional, Tuple
 
-
-VERSION = "v0.3.35-marketbeat-fmp-primary-finnhub-quotecheck-cli-alias-2026-01-23"
+VERSION = "v0.3.36-marketbeat-fmp-grades-latest-news-no-premium-2026-01-23"
 
 DEFAULT_OUT_MD = "reports/analyst_last2d.md"
 DEFAULT_OUT_JSON = "reports/analyst_last2d.json"
 DEFAULT_SEEN_PATH = "reports/marketbeat_seen.json"
 DEFAULT_LAST_SUCCESS_PATH = "reports/marketbeat_last_success.json"
 
-# Conservative UA to avoid being flagged too aggressively; do NOT rotate aggressively in GH Actions.
-USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0 Safari/537.36"
+USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122 Safari/537.36"
 
-MARKETBEAT_URLS = {
-    "upgrade": "https://www.marketbeat.com/ratings/upgrades/",
-    "downgrade": "https://www.marketbeat.com/ratings/downgrades/",
-    "pt_change": "https://www.marketbeat.com/ratings/price-target-changes/",
-}
+# MarketBeat pages (kept for a quick "blocked/challenge" detection only)
+MB_UPGRADE_URL = "https://www.marketbeat.com/ratings/upgrades/"
+MB_DOWNGRADE_URL = "https://www.marketbeat.com/ratings/downgrades/"
+MB_PT_URL = "https://www.marketbeat.com/ratings/price-target-changes/"
 
-FMP_RSS_URL = "https://financialmodelingprep.com/api/v4/upgrades-downgrades-rss-feed?page={page}"
-FMP_COMPANY_URL = "https://financialmodelingprep.com/api/v4/upgrades-downgrades?symbol={symbol}"
+# FMP stable "Stock Grade Latest News API"
+# Doc example: https://financialmodelingprep.com/stable/grades-latest-news?page=0&limit=10&apikey=YOUR_API_KEY
+FMP_GRADES_LATEST_NEWS_URL = "https://financialmodelingprep.com/stable/grades-latest-news"
 
-FINNHUB_QUOTE_URL = "https://finnhub.io/api/v1/quote?symbol={symbol}&token={token}"
-FINNHUB_UPDOWN_URL = "https://finnhub.io/api/v1/stock/upgrade-downgrade?symbol={symbol}&token={token}"
+# Finnhub (diagnostic only): validate API key via /api/v1/quote (free-tier compatible)
+FINNHUB_QUOTE_URL = "https://finnhub.io/api/v1/quote"
 
 
-def _utc_now() -> _dt.datetime:
-    return _dt.datetime.now(tz=_dt.timezone.utc)
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 def _log(msg: str) -> None:
-    ts = _utc_now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{ts} UTC] {msg}", flush=True)
-
-
-def _safe_mkdir_for(path: str) -> None:
-    p = os.path.dirname(path)
-    if p and not os.path.exists(p):
-        os.makedirs(p, exist_ok=True)
+    ts = _utc_now().strftime("%Y-%m-%d %H:%M:%S UTC")
+    print(f"[{ts}] {msg}", flush=True)
 
 
 def _read_text(path: str) -> Optional[str]:
@@ -83,503 +79,292 @@ def _read_text(path: str) -> Optional[str]:
         return None
 
 
-def _write_text(path: str, content: str) -> None:
-    _safe_mkdir_for(path)
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(content)
+def _write_text(path: str, text: str) -> None:
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(text)
 
 
-def _read_json(path: str) -> Optional[Any]:
-    raw = _read_text(path)
-    if raw is None:
-        return None
+def _read_json(path: str, default: Any) -> Any:
     try:
-        return json.loads(raw)
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return default
     except Exception:
-        return None
+        return default
 
 
 def _write_json(path: str, obj: Any) -> None:
-    _safe_mkdir_for(path)
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(obj, f, ensure_ascii=False, indent=2, sort_keys=True)
+        json.dump(obj, f, ensure_ascii=False, indent=2)
 
 
-def _http_get(url: str, headers: Optional[Dict[str, str]] = None, timeout: int = 20, retries: int = 2) -> Tuple[int, str, bytes]:
-    hdr = {"User-Agent": USER_AGENT, "Accept": "*/*"}
-    if headers:
-        hdr.update(headers)
-    last_err: Optional[str] = None
-    for attempt in range(retries + 1):
-        try:
-            req = urllib.request.Request(url, headers=hdr, method="GET")
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                status = getattr(resp, "status", 200)
-                final_url = resp.geturl()
-                body = resp.read()
-                return int(status), final_url, body
-        except urllib.error.HTTPError as e:
-            last_err = f"HTTPError {e.code}"
-            # Don't retry 4xx except 429
-            if e.code == 429 and attempt < retries:
-                time.sleep(1.5 * (attempt + 1))
-                continue
-            raise
-        except Exception as e:
-            last_err = f"{type(e).__name__}: {e}"
-            if attempt < retries:
-                time.sleep(1.0 * (attempt + 1))
-                continue
-            raise
-    raise RuntimeError(last_err or "HTTP failed")
-
-
-def _looks_like_marketbeat_challenge(text: str) -> bool:
-    t = text.lower()
-    # Common Cloudflare/challenge markers
-    markers = [
-        "cf-chl", "cloudflare", "just a moment", "attention required", "captcha",
-        "/cdn-cgi/", "checking your browser", "verify you are human",
-    ]
-    return any(m in t for m in markers)
-
-
-def _parse_marketbeat_table(html: str, kind: str) -> List[Dict[str, Any]]:
-    """
-    Best-effort parse. MarketBeat HTML changes often; we keep this minimal and robust.
-    We only try to extract: date, symbol, company, analyst, action/from/to, pt.
-    """
-    rows: List[Dict[str, Any]] = []
-    # Find table rows (very forgiving)
-    for m in re.finditer(r"<tr[^>]*>(.*?)</tr>", html, flags=re.S | re.I):
-        tr = m.group(1)
-        # Symbol often appears as /stocks/NASDAQ/AAPL/ or /stocks/NYSE/XYZ/
-        sm = re.search(r"/stocks/(?:nasdaq|nyse|amex|otc|nysemkt)/([a-z0-9\.\-]+)/", tr, flags=re.I)
-        if not sm:
-            continue
-        symbol = sm.group(1).upper()
-
-        # Date often in <td>Jan 23, 2026</td>
-        dm = re.search(r"<td[^>]*>\s*([A-Z][a-z]{2}\s+\d{1,2},\s+\d{4})\s*</td>", tr)
-        date_s = dm.group(1) if dm else ""
-
-        # Analyst firm: look for first <td> with letters and spaces after symbol cell
-        # This is heuristic; accept missing.
-        analyst = ""
-        # Company name might be in title or link text
-        comp = ""
-        cm = re.search(r'title="([^"]+)"', tr)
-        if cm:
-            comp = re.sub(r"\s+", " ", cm.group(1)).strip()
-
-        # Rating/action: attempt to capture "Upgraded" or "Downgraded" or similar
-        action = kind
-        fm = re.search(r"(upgraded|downgraded|initiated|reiterated|maintained|resumed)", tr, flags=re.I)
-        if fm:
-            action = fm.group(1).lower()
-
-        from_grade = ""
-        to_grade = ""
-        gm = re.search(r"from\s+([A-Za-z ]+?)\s+to\s+([A-Za-z ]+?)(?:<|$)", tr, flags=re.I)
-        if gm:
-            from_grade = gm.group(1).strip()
-            to_grade = gm.group(2).strip()
-
-        pt = None
-        # Price target often like $150.00
-        pm = re.search(r"\$\s*([0-9]+(?:\.[0-9]+)?)", tr)
-        if pm:
-            try:
-                pt = float(pm.group(1))
-            except Exception:
-                pt = None
-
-        rows.append({
-            "source": "marketbeat",
-            "kind": kind,
-            "date": date_s,
-            "symbol": symbol,
-            "company": comp,
-            "analyst": analyst,
-            "action": action,
-            "from": from_grade,
-            "to": to_grade,
-            "pt": pt,
-        })
-    return rows
-
-
-def _parse_date_any(s: str) -> Optional[_dt.datetime]:
-    s = (s or "").strip()
-    if not s:
-        return None
-    # ISO
-    try:
-        if s.endswith("Z"):
-            return _dt.datetime.fromisoformat(s.replace("Z", "+00:00"))
-        return _dt.datetime.fromisoformat(s)
-    except Exception:
-        pass
-    # "Jan 23, 2026"
-    try:
-        dt = _dt.datetime.strptime(s, "%b %d, %Y")
-        return dt.replace(tzinfo=_dt.timezone.utc)
-    except Exception:
-        pass
-    # "2026-01-23 12:34:56"
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
-        try:
-            dt = _dt.datetime.strptime(s, fmt)
-            return dt.replace(tzinfo=_dt.timezone.utc)
-        except Exception:
-            continue
-    return None
-
-
-def _event_id(ev: Dict[str, Any]) -> str:
-    key = json.dumps({
-        "source": ev.get("source"),
-        "symbol": ev.get("symbol"),
-        "date": ev.get("date"),
-        "analyst": ev.get("analyst"),
-        "action": ev.get("action"),
-        "from": ev.get("from"),
-        "to": ev.get("to"),
-        "pt": ev.get("pt"),
-        "pt_old": ev.get("pt_old"),
-        "pt_new": ev.get("pt_new"),
-    }, sort_keys=True, ensure_ascii=False)
-    return hashlib.sha1(key.encode("utf-8")).hexdigest()
-
-
-def _load_seen_db(path: str) -> Dict[str, str]:
-    obj = _read_json(path)
-    if isinstance(obj, dict):
-        # id -> first_seen_iso
-        return {str(k): str(v) for k, v in obj.items()}
-    return {}
-
-
-def _save_seen_db(path: str, seen: Dict[str, str]) -> None:
-    _write_json(path, seen)
-
-
-def _within_days(ev_dt: Optional[_dt.datetime], days: int, now: _dt.datetime) -> bool:
-    if ev_dt is None:
-        return False
-    return (now - ev_dt) <= _dt.timedelta(days=days)
-
-
-def _load_master_tickers(master_csv: str) -> List[str]:
-    if not os.path.exists(master_csv):
-        raise FileNotFoundError(f"MASTER not found: {master_csv}")
-    with open(master_csv, "r", encoding="utf-8", newline="") as f:
-        rdr = csv.DictReader(f)
-        fields = [c.lower() for c in (rdr.fieldnames or [])]
-        # pick a likely column
+def _load_master_tickers(master_csv_path: str) -> List[str]:
+    tickers: List[str] = []
+    with open(master_csv_path, "r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        # Accept common header variants
+        possible_cols = ["ticker", "Ticker", "TICKER", "symbol", "Symbol", "SYMBOL"]
         col = None
-        for candidate in ("ticker", "symbol", "tickers"):
-            if candidate in fields:
-                col = (rdr.fieldnames or [])[fields.index(candidate)]
+        for c in possible_cols:
+            if c in reader.fieldnames:
+                col = c
                 break
-        tickers: List[str] = []
-        if col is None:
-            # fallback: first column
-            first = (rdr.fieldnames or [""])[0]
-            col = first
-        for row in rdr:
-            raw = (row.get(col) or "").strip()
-            if not raw:
-                continue
-            t = raw.upper()
-            # skip non-US / weird
-            if " " in t:
-                t = t.split()[0]
-            tickers.append(t)
-    # unique, preserve order
+        if not col:
+            raise ValueError(f"MASTER CSV has no ticker column. Columns: {reader.fieldnames}")
+        for row in reader:
+            t = (row.get(col) or "").strip()
+            if t:
+                tickers.append(t.upper())
+    # Unique, stable order
     seen = set()
     out = []
     for t in tickers:
         if t not in seen:
-            seen.add(t)
             out.append(t)
+            seen.add(t)
     return out
 
 
-def _fmp_fetch_rss(fmp_key: str, max_pages: int = 3) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+def _http_get(url: str, timeout: int = 20, headers: Optional[Dict[str, str]] = None) -> Tuple[int, str]:
+    h = {"User-Agent": USER_AGENT, "Accept": "text/html,application/json;q=0.9,*/*;q=0.8"}
+    if headers:
+        h.update(headers)
+    req = urllib.request.Request(url, headers=h, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            status = int(getattr(resp, "status", 200))
+            body = resp.read().decode("utf-8", errors="replace")
+            return status, body
+    except urllib.error.HTTPError as e:
+        try:
+            body = e.read().decode("utf-8", errors="replace")
+        except Exception:
+            body = ""
+        return int(e.code), body
+    except Exception:
+        return 0, ""
+
+
+def _detect_marketbeat_block(status: int, body: str) -> bool:
     """
-    Returns (events, error_message). Events in unified schema.
+    MarketBeat can return HTTP 200 while serving a bot-challenge page.
+    We treat the following as "blocked/challenge":
+    - explicit "blocked" / "challenge" markers
+    - Cloudflare / bot management hints
+    - HTML that looks like a challenge rather than the ratings page
     """
-    if not fmp_key:
-        return [], "FMP_API_KEY hiányzik"
+    if status != 200:
+        return True
+    b = (body or "").lower()
+    markers = [
+        "blocked", "challenge", "cf-challenge", "cloudflare",
+        "robot", "captcha", "verify you are human", "checking your browser",
+        "access denied", "attention required"
+    ]
+    if any(m in b for m in markers):
+        return True
+    # Very small body is suspicious for these pages
+    if len(b) < 800:
+        return True
+    return False
+
+
+def _validate_finnhub_key(api_key: str) -> Tuple[bool, str]:
+    """
+    Only a key validity check against /quote (free-tier compatible).
+    Returns (ok, note).
+    """
+    if not api_key:
+        return False, "Finnhub API key hiányzik"
+    url = f"{FINNHUB_QUOTE_URL}?symbol=AAPL&token={urllib.parse.quote(api_key)}"
+    status, body = _http_get(url, timeout=15, headers={"Accept": "application/json"})
+    if status == 200 and body.strip().startswith("{"):
+        return True, "Finnhub API ellenőrzés: sikeres (OK)"
+    if status == 401 or status == 403:
+        return False, f"Finnhub API ellenőrzés: sikertelen (HTTP {status})"
+    if status == 0:
+        return False, "Finnhub API ellenőrzés: hálózati hiba / timeout"
+    return False, f"Finnhub API ellenőrzés: ismeretlen válasz (HTTP {status})"
+
+
+def _parse_iso_dt(s: str) -> Optional[datetime]:
+    if not s:
+        return None
+    try:
+        # Example: 2025-02-04T19:18:04.000Z
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        return datetime.fromisoformat(s)
+    except Exception:
+        return None
+
+
+def _event_key(e: Dict[str, Any]) -> str:
+    """
+    Stable key for dedup / first-seen.
+    """
+    raw = "|".join([
+        str(e.get("source", "")),
+        str(e.get("symbol", "")),
+        str(e.get("publishedDate", "")),
+        str(e.get("gradingCompany", "")),
+        str(e.get("action", "")),
+        str(e.get("previousGrade", "")),
+        str(e.get("newGrade", "")),
+    ])
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+
+def _fetch_fmp_grades_latest_news(api_key: str, days: int, tickers_set: set) -> Tuple[List[Dict[str, Any]], str]:
+    """
+    Pull recent grade events via FMP stable API.
+    Returns (events, status_note).
+    """
+    if not api_key:
+        return [], "FMP fallback: FMP_API_KEY hiányzik"
+    since = _utc_now() - timedelta(days=max(1, days))
     events: List[Dict[str, Any]] = []
-    for page in range(max_pages):
-        url = FMP_RSS_URL.format(page=page)
-        # FMP typically requires apikey param
-        url = url + "&apikey=" + urllib.parse.quote(fmp_key)
+
+    # Pagination: keep small to reduce rate/size; stop when oldest record is older than since.
+    page = 0
+    limit = 200  # keeps calls low; adjust if needed
+    max_pages = 10  # hard safety
+
+    while page < max_pages:
+        url = f"{FMP_GRADES_LATEST_NEWS_URL}?page={page}&limit={limit}&apikey={urllib.parse.quote(api_key)}"
+        status, body = _http_get(url, timeout=20, headers={"Accept": "application/json"})
+        if status == 403:
+            return [], "FMP fallback: hozzáférés megtagadva (HTTP 403) – ellenőrizd az API key-t / free limitet / endpoint elérhetőséget"
+        if status != 200 or not body.strip().startswith("["):
+            return [], f"FMP fallback: hibás válasz (HTTP {status})"
         try:
-            status, final_url, body = _http_get(url, headers={"Accept": "application/json"})
-        except urllib.error.HTTPError as e:
-            return [], f"FMP RSS HTTP {e.code}"
-        except Exception as e:
-            return [], f"FMP RSS hiba: {e}"
-        txt = body.decode("utf-8", errors="replace").strip()
-        # JSON expected, but handle XML just in case
-        page_items: List[Dict[str, Any]] = []
-        if txt.startswith("<"):
-            try:
-                root = ET.fromstring(txt)
-                # naive RSS parsing
-                for item in root.findall(".//item"):
-                    title = (item.findtext("title") or "").strip()
-                    pub = (item.findtext("pubDate") or "").strip()
-                    desc = (item.findtext("description") or "").strip()
-                    page_items.append({"title": title, "pubDate": pub, "description": desc})
-            except Exception:
-                return [], "FMP RSS: nem értelmezhető XML"
-            # Convert RSS item to event heuristically (best effort)
-            for it in page_items:
-                sym = ""
-                m = re.search(r"\b([A-Z]{1,5}(?:\.[A-Z])?)\b", it.get("title",""))
-                if m:
-                    sym = m.group(1)
-                events.append({
-                    "source": "fmp",
-                    "kind": "rss",
-                    "date": it.get("pubDate",""),
-                    "symbol": sym,
-                    "company": "",
-                    "analyst": "",
-                    "action": "",
-                    "from": "",
-                    "to": "",
-                    "pt": None,
-                    "raw": it,
-                })
-            continue
-        try:
-            data = json.loads(txt)
+            rows = json.loads(body)
+            if not isinstance(rows, list):
+                return [], "FMP fallback: JSON nem lista"
         except Exception:
-            return [], "FMP RSS: nem értelmezhető JSON"
-        if isinstance(data, dict) and data.get("Error Message"):
-            return [], f"FMP RSS error: {data.get('Error Message')}"
-        if not isinstance(data, list):
-            # sometimes wrapped
-            if isinstance(data, dict) and "items" in data and isinstance(data["items"], list):
-                data = data["items"]
-            else:
-                return [], "FMP RSS: váratlan válaszformátum"
-        for it in data:
-            if not isinstance(it, dict):
-                continue
-            # field names can vary; handle common ones
-            sym = (it.get("symbol") or it.get("ticker") or "").upper()
-            dt = it.get("publishedDate") or it.get("date") or it.get("updated") or it.get("time") or ""
-            firm = it.get("gradingCompany") or it.get("analystCompany") or it.get("firm") or it.get("company") or ""
-            action = it.get("action") or it.get("newGrade") or it.get("rating") or it.get("grade") or ""
-            fromg = it.get("previousGrade") or it.get("oldGrade") or it.get("fromGrade") or ""
-            tog = it.get("newGrade") or it.get("toGrade") or it.get("rating") or ""
-            # price target
-            pt_old = it.get("previousPriceTarget") or it.get("oldPriceTarget")
-            pt_new = it.get("newPriceTarget") or it.get("priceTarget")
-            # normalize floats
-            def to_float(x):
-                try:
-                    return float(x)
-                except Exception:
-                    return None
-            pt_old_f = to_float(pt_old)
-            pt_new_f = to_float(pt_new)
-            ev = {
-                "source": "fmp",
-                "kind": "rating",
-                "date": str(dt),
-                "symbol": sym,
-                "company": "",
-                "analyst": str(firm),
-                "action": str(action).lower(),
-                "from": str(fromg),
-                "to": str(tog),
-                "pt_old": pt_old_f,
-                "pt_new": pt_new_f,
-                "pt": pt_new_f if pt_new_f is not None else None,
-                "raw": it,
-            }
-            events.append(ev)
-        # If we got some, no need for more pages unless days window is large.
-        if events and page >= 1:
+            return [], "FMP fallback: JSON parse hiba"
+
+        if not rows:
             break
-    return events, None
 
-
-def _finnhub_quote_check(token: str) -> Tuple[bool, str]:
-    """
-    Validate token by calling /quote on a liquid symbol. This does not require premium.
-    """
-    if not token:
-        return False, "FINNHUB_API_KEY hiányzik"
-    url = FINNHUB_QUOTE_URL.format(symbol="AAPL", token=urllib.parse.quote(token))
-    try:
-        status, _, body = _http_get(url, headers={"Accept": "application/json"}, timeout=15, retries=1)
-        txt = body.decode("utf-8", errors="replace")
-        data = json.loads(txt)
-        if isinstance(data, dict) and "c" in data:
-            return True, "OK"
-        return False, "Váratlan válasz"
-    except urllib.error.HTTPError as e:
-        return False, f"HTTP {e.code}"
-    except Exception as e:
-        return False, f"Hiba: {e}"
-
-
-def _finnhub_updown_premium_probe(token: str) -> Tuple[bool, str]:
-    """
-    Probe /stock/upgrade-downgrade. Free keys often get 403 (premium required).
-    """
-    if not token:
-        return False, "FINNHUB_API_KEY hiányzik"
-    url = FINNHUB_UPDOWN_URL.format(symbol="", token=urllib.parse.quote(token))
-    # Some servers require symbol omitted; keep empty symbol param.
-    try:
-        status, _, body = _http_get(url, headers={"Accept": "application/json"}, timeout=15, retries=0)
-        txt = body.decode("utf-8", errors="replace")
-        data = json.loads(txt)
-        if isinstance(data, list):
-            return True, "OK"
-        if isinstance(data, dict) and data.get("error"):
-            return False, f"API error: {data.get('error')}"
-        return False, "Váratlan válasz"
-    except urllib.error.HTTPError as e:
-        if e.code == 403:
-            return False, "HTTP 403 (Premium endpoint / tiltás)"
-        return False, f"HTTP {e.code}"
-    except Exception as e:
-        return False, f"Hiba: {e}"
-
-
-def _marketbeat_fetch_all() -> Tuple[Dict[str, List[Dict[str, Any]]], bool]:
-    """
-    Return (rows_by_kind, blocked).
-    """
-    rows_by_kind: Dict[str, List[Dict[str, Any]]] = {"upgrade": [], "downgrade": [], "pt_change": []}
-    blocked_any = False
-    for kind, url in MARKETBEAT_URLS.items():
-        try:
-            status, final_url, body = _http_get(url, headers={"Accept": "text/html"}, timeout=20, retries=1)
-            html = body.decode("utf-8", errors="replace")
-            if _looks_like_marketbeat_challenge(html):
-                blocked_any = True
-                rows_by_kind[kind] = []
-                continue
-            rows_by_kind[kind] = _parse_marketbeat_table(html, kind=kind)
-        except Exception:
-            blocked_any = True
-            rows_by_kind[kind] = []
-    return rows_by_kind, blocked_any
-
-
-def _marketbeat_to_events(rows_by_kind: Dict[str, List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
-    evs: List[Dict[str, Any]] = []
-    for kind, rows in rows_by_kind.items():
+        oldest_dt: Optional[datetime] = None
         for r in rows:
-            r = dict(r)
-            r["kind"] = kind
-            evs.append(r)
-    return evs
+            if not isinstance(r, dict):
+                continue
+            sym = (r.get("symbol") or "").upper()
+            if sym and sym not in tickers_set:
+                continue
+
+            dt = _parse_iso_dt(r.get("publishedDate") or "")
+            if not dt:
+                continue
+            if dt < since:
+                # We'll still track oldest_dt for stop condition
+                oldest_dt = dt if oldest_dt is None else min(oldest_dt, dt)
+                continue
+
+            action = (r.get("action") or "").lower().strip()
+            # Keep only meaningful "upgrade/downgrade" actions; skip holds/reiterations by default
+            if action not in ("upgrade", "downgrade"):
+                continue
+
+            e = {
+                "source": "FMP",
+                "symbol": sym,
+                "publishedDate": r.get("publishedDate"),
+                "gradingCompany": r.get("gradingCompany") or "",
+                "action": action,
+                "previousGrade": r.get("previousGrade") or "",
+                "newGrade": r.get("newGrade") or "",
+                "newsTitle": r.get("newsTitle") or "",
+                "newsURL": r.get("newsURL") or "",
+                "priceWhenPosted": r.get("priceWhenPosted"),
+            }
+            events.append(e)
+            oldest_dt = dt if oldest_dt is None else min(oldest_dt, dt)
+
+        # Stop if the oldest record on this page is already older than since.
+        # (This implies later pages will be even older.)
+        if oldest_dt is not None and oldest_dt < since:
+            break
+        page += 1
+
+    return events, "FMP fallback: grades-latest-news OK"
 
 
-def _normalize_events(events: List[Dict[str, Any]], master_set: set, days: int, now: _dt.datetime) -> List[Dict[str, Any]]:
-    out: List[Dict[str, Any]] = []
-    for ev in events:
-        sym = (ev.get("symbol") or "").upper().strip()
-        if not sym or sym not in master_set:
-            continue
-        dt = _parse_date_any(str(ev.get("date") or ""))
-        if not _within_days(dt, days, now):
-            continue
-        ev = dict(ev)
-        ev["symbol"] = sym
-        ev["dt_utc"] = dt.isoformat().replace("+00:00", "Z") if dt else ""
-        out.append(ev)
-    # Sort by datetime desc, then symbol
-    def keyf(e):
-        d = _parse_date_any(e.get("dt_utc","")) or _dt.datetime(1970,1,1,tzinfo=_dt.timezone.utc)
-        return (d, e.get("symbol",""))
-    out.sort(key=keyf, reverse=True)
-    return out
+def _render_markdown(days: int,
+                     mb_blocked: bool,
+                     mb_note: str,
+                     fmp_note: str,
+                     finnhub_note: str,
+                     events: List[Dict[str, Any]],
+                     seen_db: Dict[str, Any],
+                     now: datetime) -> str:
+    title = f"## Elemzői feed (MarketBeat) – fel/leminősítések + célár (utolsó {days} naptári nap)"
+    lines: List[str] = [title, ""]
+    if events:
+        # Sort newest first
+        def key_dt(e: Dict[str, Any]) -> float:
+            dt = _parse_iso_dt(e.get("publishedDate") or "")
+            return dt.timestamp() if dt else 0.0
+        events_sorted = sorted(events, key=key_dt, reverse=True)
 
+        # Compact list
+        for e in events_sorted[:50]:
+            dt = _parse_iso_dt(e.get("publishedDate") or "")
+            dt_s = dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC") if dt else (e.get("publishedDate") or "")
+            sym = e.get("symbol", "")
+            action = e.get("action", "").lower()
+            firm = e.get("gradingCompany", "").strip()
+            prevg = e.get("previousGrade", "").strip()
+            newg = e.get("newGrade", "").strip()
+            title2 = (e.get("newsTitle") or "").strip()
+            url = (e.get("newsURL") or "").strip()
 
-def _apply_seen_filter(events: List[Dict[str, Any]], seen_db: Dict[str, str], now: _dt.datetime) -> Tuple[List[Dict[str, Any]], Dict[str, str]]:
-    new_events: List[Dict[str, Any]] = []
-    for ev in events:
-        eid = _event_id(ev)
-        if eid not in seen_db:
-            seen_db[eid] = now.isoformat().replace("+00:00", "Z")
-        # We still include events even if seen earlier; the report is "last N days",
-        # but we want stable output. For "new-only" mode you'd filter here.
-        new_events.append(ev)
-    return new_events, seen_db
+            # First-seen tagging (optional)
+            k = _event_key(e)
+            first_seen = seen_db.get(k)
+            if not first_seen:
+                seen_db[k] = now.isoformat()
+                first_seen = now.isoformat()
+            # keep it simple in MD (no noisy first_seen)
+            grade_part = ""
+            if prevg or newg:
+                grade_part = f"{prevg} → {newg}".strip(" →")
+            parts = [f"- {dt_s} | {sym} | {action.upper()}"]
+            if firm:
+                parts.append(f"| {firm}")
+            if grade_part:
+                parts.append(f"| {grade_part}")
+            if title2:
+                parts.append(f"| {title2[:120]}")
+            if url:
+                parts.append(f"| {url}")
+            lines.append(" ".join(parts))
 
-
-def _render_md(days: int,
-               events: List[Dict[str, Any]],
-               marketbeat_blocked: bool,
-               mb_used_cache: bool,
-               fmp_status: Optional[str],
-               finnhub_quote_status: Optional[str],
-               finnhub_premium_status: Optional[str]) -> str:
-    lines: List[str] = []
-    lines.append(f"## Elemzői feed (MarketBeat) – fel/leminősítések + célár (utolsó {days} naptári nap)")
-    lines.append("")
-    if not events:
-        if marketbeat_blocked:
-            # explain based on fallback statuses
-            msg = "- MarketBeat blokkolás mellett jelenleg nincs megjeleníthető elemzői esemény"
-            if fmp_status:
-                msg += f" (FMP fallback: {fmp_status})."
-            else:
-                msg += " (FMP fallback üres vagy nem elérhető)."
-            lines.append(msg)
-            if finnhub_premium_status:
-                lines.append(f"- Finnhub fallback státusz: {finnhub_premium_status}.")
-            if finnhub_quote_status:
-                lines.append(f"- Finnhub API ellenőrzés: {finnhub_quote_status}.")
-            lines.append("")
-            lines.append("_Megjegyzés: MarketBeat blokkolás / robotvédelem (a feed nem megbízhatóan elérhető)._")
-        else:
-            lines.append("_Nincs friss fel/leminősítés vagy célár-változás az elmúlt időablakban._")
         lines.append("")
+        # Status notes
+        if mb_blocked:
+            lines.append(f"- MarketBeat státusz: {mb_note}.")
+        if fmp_note:
+            lines.append(f"- {fmp_note}.")
+        if finnhub_note:
+            lines.append(f"- {finnhub_note}.")
+        lines.append("")
+        lines.append("_Megjegyzés: MarketBeat blokkolás / robotvédelem (a feed nem megbízhatóan elérhető)._")
         return "\n".join(lines)
 
-    # Summarize events as bullets
-    for ev in events[:80]:  # cap
-        sym = ev.get("symbol","")
-        dt = ev.get("date","") or ev.get("dt_utc","")
-        firm = ev.get("analyst","") or ev.get("gradingCompany","") or ""
-        action = (ev.get("action") or ev.get("kind") or "").strip()
-        fromg = (ev.get("from") or "").strip()
-        tog = (ev.get("to") or "").strip()
-        pt_old = ev.get("pt_old")
-        pt_new = ev.get("pt_new")
-        pt = ev.get("pt")
-        parts = [f"**{sym}**"]
-        if dt:
-            parts.append(str(dt))
-        if firm:
-            parts.append(str(firm))
-        if action:
-            parts.append(str(action))
-        if fromg or tog:
-            parts.append(f"{fromg} → {tog}".strip())
-        if pt_old is not None or pt_new is not None:
-            parts.append(f"PT: {pt_old} → {pt_new}")
-        elif pt is not None:
-            parts.append(f"PT: {pt}")
-        lines.append("- " + " | ".join([p for p in parts if p]))
-
+    # No events
+    lines.append(f"- MarketBeat státusz: {mb_note}.")
+    if fmp_note:
+        lines.append(f"- {fmp_note}.")
+    if finnhub_note:
+        lines.append(f"- {finnhub_note}.")
     lines.append("")
-    if marketbeat_blocked:
-        lines.append("_Megjegyzés: MarketBeat blokkolás / robotvédelem (a feed nem megbízhatóan elérhető). Fallback forrás: FMP._")
+    lines.append("_Megjegyzés: MarketBeat blokkolás / robotvédelem (a feed nem megbízhatóan elérhető)._")
     return "\n".join(lines)
 
 
@@ -591,7 +376,8 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p.add_argument("--seen_path", type=str, default=DEFAULT_SEEN_PATH, help="Seen DB json path")
     p.add_argument("--last_success_path", type=str, default=DEFAULT_LAST_SUCCESS_PATH, help="Last-success cache path")
     p.add_argument("--fmp_api_key", type=str, default=os.environ.get("FMP_API_KEY",""), help="FMP API key (recommended fallback)")
-    p.add_argument("--finnhub_api_key", type=str, default=os.environ.get("FINNHUB_API_KEY",""), help="Finnhub API key (diagnostic/premium probe)")
+    p.add_argument("--finnhub_api_key", type=str, default=os.environ.get("FINNHUB_API_KEY",""), help="Finnhub API key (diagnostic only)")
+
     # Output path aliases (underscore and dash forms)
     p.add_argument("--out_md", dest="out_md", type=str, default=DEFAULT_OUT_MD, help="Output markdown path")
     p.add_argument("--out-md", dest="out_md", type=str, help=argparse.SUPPRESS)
@@ -606,102 +392,81 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     _log(f"START {VERSION} days={args.days} master={args.master} mode={args.mode}")
 
-    # Load master
+    # Load master tickers
+    degraded = False
     try:
         tickers = _load_master_tickers(args.master)
     except Exception as e:
+        tickers = []
+        degraded = True
         _log(f"ERROR master load: {e}")
-        # still write minimal output
-        md = _render_md(args.days, [], marketbeat_blocked=True, mb_used_cache=False,
-                        fmp_status="MASTER hiba", finnhub_quote_status=None, finnhub_premium_status=None)
-        _write_text(args.out_md, md)
-        _write_json(args.out_json, {"version": VERSION, "events": [], "error": "master load failed"})
-        return 2
 
-    master_set = set(tickers)
+    tickers_set = set(tickers)
 
-    seen_db = _load_seen_db(args.seen_path)
+    # Seen DB (used for first-seen tracking)
+    seen_db = _read_json(args.seen_path, default={})
+    if not isinstance(seen_db, dict):
+        seen_db = {}
 
-    # MarketBeat attempt
-    rows_by_kind, mb_blocked = _marketbeat_fetch_all()
-    mb_events_raw = _marketbeat_to_events(rows_by_kind)
-    mb_events = _normalize_events(mb_events_raw, master_set, args.days, now)
+    # MarketBeat quick probe (no scraping; only detect block)
+    mb_blocked = True
+    mb_note = "MarketBeat blokkolás / robotvédelem (challenge)"
+    for url in (MB_UPGRADE_URL, MB_DOWNGRADE_URL, MB_PT_URL):
+        st, body = _http_get(url, timeout=15)
+        if not _detect_marketbeat_block(st, body):
+            mb_blocked = False
+            mb_note = "MarketBeat elérhető (de scrape nincs engedélyezve ebben a módban)"
+            break
+    if mb_blocked:
+        degraded = True
 
-    mb_used_cache = False
-    last_success = _read_json(args.last_success_path) if args.last_success_path else None
+    # Finnhub key check (diagnostic only; no premium endpoints)
+    finnhub_ok, finnhub_note = _validate_finnhub_key(args.finnhub_api_key)
+    if not finnhub_ok:
+        # Not fatal; but keep as note
+        degraded = True
 
+    # FMP fallback
     events: List[Dict[str, Any]] = []
-    fmp_status: Optional[str] = None
-
-    if mb_events:
-        events = mb_events
-        # Save last success cache
-        try:
-            _write_json(args.last_success_path, {"ts": now.isoformat().replace("+00:00","Z"), "events": mb_events_raw})
-        except Exception:
-            pass
+    fmp_note = ""
+    ev, fmp_note = _fetch_fmp_grades_latest_news(args.fmp_api_key, args.days, tickers_set)
+    if ev:
+        events = ev
     else:
-        # if MarketBeat blocked and we have last_success cache, use it to avoid empty
-        if mb_blocked and isinstance(last_success, dict) and isinstance(last_success.get("events"), list):
-            mb_used_cache = True
-            cached = last_success.get("events") or []
-            cached_norm = _normalize_events(list(cached), master_set, args.days, now)
-            if cached_norm:
-                events = cached_norm
+        degraded = True
 
-        # If still empty, use FMP fallback (preferred)
-        if not events:
-            fmp_key = (args.fmp_api_key or "").strip()
-            fmp_events_raw, fmp_err = _fmp_fetch_rss(fmp_key=fmp_key, max_pages=3)
-            if fmp_err:
-                fmp_status = fmp_err
-            else:
-                fmp_status = "OK"
-            fmp_events = _normalize_events(fmp_events_raw, master_set, args.days, now)
-            if fmp_events:
-                events = fmp_events
-
-    # Seen DB update (keeps stability)
-    events, seen_db = _apply_seen_filter(events, seen_db, now)
-    try:
-        _save_seen_db(args.seen_path, seen_db)
-    except Exception:
-        pass
-
-    # Finnhub diagnostics (quote check + premium probe)
-    finnhub_quote_status = None
-    finnhub_premium_status = None
-    if (args.finnhub_api_key or "").strip():
-        ok, msg = _finnhub_quote_check(args.finnhub_api_key.strip())
-        finnhub_quote_status = ("sikeres" if ok else "sikertelen") + f" ({msg})"
-        ok2, msg2 = _finnhub_updown_premium_probe(args.finnhub_api_key.strip())
-        finnhub_premium_status = ("elérhető" if ok2 else "nem elérhető") + f" ({msg2})"
-
-    md = _render_md(
+    md = _render_markdown(
         days=args.days,
+        mb_blocked=mb_blocked,
+        mb_note=mb_note,
+        fmp_note=fmp_note,
+        finnhub_note=finnhub_note,
         events=events,
-        marketbeat_blocked=mb_blocked,
-        mb_used_cache=mb_used_cache,
-        fmp_status=fmp_status,
-        finnhub_quote_status=finnhub_quote_status,
-        finnhub_premium_status=finnhub_premium_status,
+        seen_db=seen_db,
+        now=now,
     )
 
-    _write_text(args.out_md, md)
-    _write_json(args.out_json, {
+    out_json_obj = {
         "version": VERSION,
-        "generated_at_utc": now.isoformat().replace("+00:00","Z"),
+        "generated_utc": now.isoformat(),
         "days": args.days,
-        "master_rows": len(tickers),
-        "marketbeat_blocked": mb_blocked,
-        "marketbeat_used_cache": mb_used_cache,
-        "fmp_status": fmp_status,
-        "finnhub_quote_status": finnhub_quote_status,
-        "finnhub_premium_status": finnhub_premium_status,
-        "events": events,
-    })
+        "master": args.master,
+        "marketbeat": {"blocked": mb_blocked, "note": mb_note},
+        "fmp": {"note": fmp_note, "events": events},
+        "finnhub": {"note": finnhub_note, "ok": finnhub_ok, "used": False},
+        "tickers_count": len(tickers),
+    }
 
-    _log(f"DONE events={len(events)} wrote={args.out_md}")
+    _write_text(args.out_md, md)
+    _write_json(args.out_json, out_json_obj)
+    _write_json(args.seen_path, seen_db)
+    _write_json(args.last_success_path, {"generated_utc": now.isoformat(), "events": len(events)})
+
+    if degraded:
+        print("ANALYST_EXIT=1")
+    else:
+        print("ANALYST_EXIT=0")
+    _log(f"DONE events={len(events)} out_md={args.out_md} out_json={args.out_json}")
     return 0
 
 
