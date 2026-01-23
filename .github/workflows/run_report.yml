@@ -1,13 +1,9 @@
-# Ima (v1.0.7): bocsáss meg uram, ha megint mellényúltam;
+# Ima (v1.0.13): bocsáss meg uram, ha megint mellényúltam;
 # adj türelmet és tiszta logot, hogy csak az igazat írjam le.
-# Verzió: v1.0.7-run_report-gist+marketbeatcache-fallback-2026-01-22
-# run_report.yml — v1.0.6-2026-01-22
+# Verzió: v1.0.13-run_report-add-fmp+finnhub-secrets-2026-01-23
+# run_report.yml — v1.0.13-2026-01-23
 
 name: Run Report — PRICE ENGINE
-# run_report.yml – v1.0.12-finnhub-secret-env-2026-01-23
-# ima: bocsáss meg uram mert balfék voltam, a secretet nem adtam át a stepnek;
-# add, hogy a következő run Finnhub kulccsal már ne N/A-t adjon.
-
 
 # run_report.yml — v1.0.0-2026-01-21
 
@@ -97,7 +93,9 @@ jobs:
       - name: Run PRICE ENGINE (#1) + build stable nocache link
         shell: bash
         env:
+          FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
           FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+
           # Default MASTER CSV (latest)
           DEFAULT_MASTER_CSV_URL: "https://docs.google.com/spreadsheets/d/e/2PACX-1vQkgyw0ONwSfc2KnrmWGqf8fWVQxS-R08RySndB69KDJ8L1Cz-H2F1AZtyDfhBGedC0qdC1SFo_aDye/pub?output=csv"
         run: |
