@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-# Ima (v0.3.36): bocsáss meg uram, ha megint mellényúltam;
-# add, hogy a robotvédelem ellenére is legyen tiszta fallback és korrekt üzenet.
-# Version: v0.3.37-marketbeat-fmp-stable-grades-historical-2026-01-23
+# Ima (v0.3.38): bocsáss meg uram, ha megint elcsúszott az időzóna-kezelés;
+# add, hogy mostantól minden dátum UTC-ben összehasonlítható legyen, hiba nélkül.
+# Version: v0.3.38-marketbeat-fmp-stable-grades-historical-tzfix-2026-01-23
 """
 analyst_marketbeat.py
 
@@ -208,17 +208,22 @@ def _validate_fmp_key(api_key: str) -> Tuple[bool, str]:
     if status == 0:
         return False, "FMP API ellenőrzés: hálózati hiba / timeout"
     return False, f"FMP API ellenőrzés: ismeretlen válasz (HTTP {status})"
+
 def _parse_iso_dt(s: str) -> Optional[datetime]:
+    """Parse ISO datetime string and return a timezone-aware UTC datetime when possible."""
     if not s:
         return None
     try:
         # Example: 2025-02-04T19:18:04.000Z
         if s.endswith("Z"):
             s = s[:-1] + "+00:00"
-        return datetime.fromisoformat(s)
+        d = datetime.fromisoformat(s)
+        # Ensure offset-aware; treat naive timestamps as UTC.
+        if d.tzinfo is None:
+            d = d.replace(tzinfo=timezone.utc)
+        return d.astimezone(timezone.utc)
     except Exception:
         return None
-
 
 def _event_key(e: Dict[str, Any]) -> str:
     """
