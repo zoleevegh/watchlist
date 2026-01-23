@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# Ima (v0.3.25): bocsáss meg uram, ha megint mellényúltam;
-# adj józan cache‑igazságot és tiszta logot, hogy ne írjak olyat, ami nincs.
+# Ima (v0.3.26): bocsáss meg uram, ha megint mellényúltam;
+# adj stabil fallback‑ot, ha a Cloudflare csuklózik, és legyen adat, ne N/A.
 """
 analyst_marketbeat.py — MarketBeat (FREE) "ratings pages" scraper (Solution #2)
 - No per-ticker search (avoids mass HTTP 403)
@@ -32,12 +32,19 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 
-VERSION="v0.3.25-marketbeat-cache-truth-2026-01-23"
+VERSION="v0.3.26-marketbeat-fmp-fallback-2026-01-23"
 
 BASE = "https://www.marketbeat.com"
 DEFAULT_SEEN_FILE = "reports/marketbeat_seen.json"
 LAST_SUCCESS_JSON = "reports/marketbeat_last_success.json"
 LAST_SUCCESS_MD = "reports/marketbeat_last_success.md"
+
+# FMP fallback (official API) for upgrades/downgrades feed
+# Uses RSS-feed endpoint and filters to MASTER tickers and last N calendar days.
+# Docs: https://site.financialmodelingprep.com/developer/docs/upgrades-and-downgrades-rss-feed-api
+FMP_RSS_ENDPOINT = "https://financialmodelingprep.com/api/v4/upgrades-downgrades-rss-feed?page={page}&apikey={key}"
+FMP_PAGES_DEFAULT = 2
+
 
 # Central free pages (fast + low risk of 403 compared to per-ticker search)
 RATINGS_SOURCES: List[Tuple[str, str]] = [
@@ -370,6 +377,117 @@ class AnalystEvent:
     currency: str
     source_url: str
 
+def _http_get_json(url: str, timeout: int) -> Tuple[str, Optional[object]]:
+    """Simple JSON GET using urllib. Returns status string and parsed json (list/dict) or None."""
+    req = urllib.request.Request(url, headers={"Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            status = f"HTTP {getattr(r, 'status', 200)}"
+            data = r.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as e:
+        return f"HTTP {e.code}", None
+    except Exception as e:
+        return f"ERR {type(e).__name__}", None
+
+    try:
+        return status, json.loads(data)
+    except Exception:
+        return status + " (bad json)", None
+
+
+def fetch_events_from_fmp_rss(
+    master_tickers: List[str],
+    days: int,
+    api_key: str,
+    timeout: int,
+    pages: int = FMP_PAGES_DEFAULT,
+) -> Tuple[List[AnalystEvent], Dict[str, str]]:
+    """Fallback: pull FMP upgrades/downgrades RSS feed pages and filter to MASTER tickers + last N days.
+    Returns (events, statuses)."""
+    today = datetime.utcnow().date()
+    cutoff = today - timedelta(days=days - 1)
+    master_set = {t.upper() for t in master_tickers}
+
+    events: List[AnalystEvent] = []
+    statuses: Dict[str, str] = {}
+
+    if not api_key:
+        statuses["_fmp"] = "no_api_key"
+        return [], statuses
+
+    # Fetch a couple of pages (most recent first)
+    raw_items: List[dict] = []
+    for page in range(max(pages, 1)):
+        url = FMP_RSS_ENDPOINT.format(page=page, key=api_key)
+        st, js = _http_get_json(url, timeout=timeout)
+        statuses[f"fmp_page_{page}"] = st
+        if not js:
+            continue
+        if isinstance(js, list):
+            raw_items.extend([x for x in js if isinstance(x, dict)])
+        else:
+            # unexpected payload
+            continue
+
+    if not raw_items:
+        return [], statuses
+
+    def _parse_iso_date(s: str) -> Optional[date]:
+        if not s:
+            return None
+        # common fields: 'publishedDate' 'date'
+        # accept 'YYYY-MM-DD' or 'YYYY-MM-DD HH:MM:SS'
+        m = re.match(r"^(\d{4}-\d{2}-\d{2})", str(s))
+        if not m:
+            return None
+        try:
+            return datetime.strptime(m.group(1), "%Y-%m-%d").date()
+        except Exception:
+            return None
+
+    for it in raw_items:
+        sym = str(it.get("symbol") or it.get("ticker") or "").upper().strip()
+        if not sym or sym not in master_set:
+            continue
+
+        d0 = _parse_iso_date(it.get("publishedDate") or it.get("date") or it.get("dateTime"))
+        if not d0 or d0 < cutoff:
+            continue
+
+        firm = str(it.get("gradingCompany") or it.get("company") or it.get("firm") or "FMP").strip()
+        # FMP usually provides newGrade/previousGrade (or similar)
+        rf = (it.get("previousGrade") or it.get("ratingPrevious") or it.get("fromGrade") or it.get("oldGrade"))
+        rt = (it.get("newGrade") or it.get("ratingNew") or it.get("toGrade") or it.get("newRating"))
+        rating_from = str(rf).strip() if rf is not None else None
+        rating_to = str(rt).strip() if rt is not None else None
+
+        action = str(it.get("action") or it.get("type") or "Rating change").strip()
+        # Some payloads use 'gradingCompany' and 'gradingAction'
+        if action.lower() in ("", "none"):
+            action = "Rating change"
+
+        url = str(it.get("url") or it.get("newsURL") or it.get("link") or "").strip()
+        if not url:
+            # Best-effort: provide a stable reference to the API docs
+            url = "https://site.financialmodelingprep.com/developer/docs/upgrades-and-downgrades-rss-feed-api"
+
+        events.append(
+            AnalystEvent(
+                ticker=sym,
+                date=d0.isoformat(),
+                firm=firm,
+                action=action,
+                rating_from=rating_from,
+                rating_to=rating_to,
+                pt_from=None,
+                pt_to=None,
+                currency="USD",
+                source_url=url,
+            )
+        )
+
+    return events, statuses
+
 
 def fetch_events_from_ratings_pages(
     master_tickers: List[str],
@@ -686,6 +804,29 @@ def main() -> int:
     # Default output: from seen-db window (first_seen-based)
     events_out = _fresh_events_from_seen(seen_db, cutoff_iso)
 
+    # FMP fallback: if MarketBeat is blocked/challenged and we have no events in the seen-window,
+    # try pulling an official upgrades/downgrades feed and filter to our MASTER.
+    fmp_key = (args.fmp_api_key or "").strip()
+    blocked_hint = " ".join(statuses.values()).lower()
+    if (not events_out) and fmp_key and ("blocked" in blocked_hint or "challenge" in blocked_hint or not fetch_ok):
+        _log("INFO: MarketBeat blocked/challenge -> trying FMP upgrades/downgrades RSS fallback")
+        fmp_events, fmp_statuses = fetch_events_from_fmp_rss(
+            master_tickers=tickers,
+            days=args.days,
+            api_key=fmp_key,
+            timeout=args.timeout,
+            pages=FMP_PAGES_DEFAULT,
+        )
+        # Merge statuses for transparency
+        for k, v in fmp_statuses.items():
+            statuses[f"_{k}"] = v
+        if fmp_events:
+            events_out = fmp_events
+            note = (note or "Megjegyzés: MarketBeat blokkolás / robotvédelem (a feed nem megbízhatóan elérhető).") + " FMP fallback használva."
+        else:
+            _log("INFO: FMP fallback returned 0 events (or not reachable)")
+
+
     # If the source is not OK and the seen-db window is empty, fallback to last successful payload.
     if (not fetch_ok or statuses.get("_note") == "parse_issue") and not events_out:
         last_payload = _load_last_success(Path(LAST_SUCCESS_JSON))
@@ -778,4 +919,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    parser.add_argument("--fmp_api_key", default=os.environ.get("FMP_API_KEY",""), help="FMP API key (optional) for analyst feed fallback when MarketBeat is blocked")
+
     raise SystemExit(main())
