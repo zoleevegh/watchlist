@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-# Ima (v0.3.38): bocsáss meg uram, ha megint elcsúszott az időzóna-kezelés;
-# add, hogy mostantól minden dátum UTC-ben összehasonlítható legyen, hiba nélkül.
-# Version: v0.3.38-marketbeat-fmp-stable-grades-historical-tzfix-2026-01-23
+# Ima (v0.3.39): bocsáss meg uram, hogy megint fölösleges endpointokra futottunk;
+# add, hogy a fallback mindig találjon működő forrást és ne dőljön el a riport.
+# Version: v0.3.39-marketbeat-fmp-news-fallback-no402-2026-01-23
 """
 analyst_marketbeat.py
 
@@ -41,7 +41,7 @@ import urllib.parse
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
-VERSION = "v0.3.37-marketbeat-fmp-stable-grades-historical-2026-01-23"
+VERSION = "v0.3.39-marketbeat-fmp-news-fallback-no402-2026-01-23"
 
 DEFAULT_OUT_MD = "reports/analyst_last2d.md"
 DEFAULT_OUT_JSON = "reports/analyst_last2d.json"
@@ -59,6 +59,8 @@ MB_PT_URL = "https://www.marketbeat.com/ratings/price-target-changes/"
 # Doc example: https://financialmodelingprep.com/stable/grades-historical?page=0&limit=10&apikey=YOUR_API_KEY
 FMP_GRADES_HIST_URL = "https://financialmodelingprep.com/stable/grades-historical"
 FMP_QUOTE_SHORT_URL = "https://financialmodelingprep.com/stable/quote-short"
+FMP_STOCK_NEWS_URL = "https://financialmodelingprep.com/stable/stock-news"
+
 
 # Finnhub (diagnostic only): validate API key via /api/v1/quote (free-tier compatible)
 FINNHUB_QUOTE_URL = "https://finnhub.io/api/v1/quote"
@@ -304,7 +306,116 @@ def _fetch_fmp_grades_historical(api_key: str, days: int, tickers_set: set, max_
 
     if events:
         return events, f"FMP fallback: grades-historical OK ({len(events)} esemény)"
-    return [], "FMP fallback: nincs friss upgrade/downgrade az időablakban"
+    ret
+def _extract_symbols_from_text(text: str, tickers_set: set) -> List[str]:
+    if not text:
+        return []
+    # Common patterns: NASDAQ: ABC, NYSE: XYZ
+    syms = set()
+    for m in re.finditer(r"\b(?:NASDAQ|NYSE|AMEX)\s*[:\-]\s*([A-Z]{1,5})\b", text):
+        syms.add(m.group(1))
+    # Generic uppercase tokens (avoid very short noise)
+    for tok in re.findall(r"\b[A-Z]{2,5}\b", text):
+        if tok in tickers_set:
+            syms.add(tok)
+    return sorted(syms)
+
+
+def _classify_analyst_action(text_l: str) -> str:
+    # Coarse classifier for analyst actions from headlines/text
+    if not text_l:
+        return ""
+    if "downgrade" in text_l or "downgraded" in text_l:
+        return "downgrade"
+    if "upgrade" in text_l or "upgraded" in text_l:
+        return "upgrade"
+    if "price target" in text_l or "pt " in text_l or "pt:" in text_l or "raises target" in text_l or "cuts target" in text_l:
+        return "pt_change"
+    if "initiated" in text_l or "initiate" in text_l:
+        return "initiated"
+    if "reiterated" in text_l or "reiterate" in text_l or "maintain" in text_l:
+        return "reiterated"
+    return ""
+
+
+def _fetch_fmp_stock_news_actions(api_key: str, days: int, tickers_set: set, limit: int = 200) -> Tuple[List[Dict[str, Any]], str]:
+    """
+    Fallback via FMP Stable Stock News API, keyword-based extraction.
+    This is less precise than dedicated grades endpoints, but works on free tiers more often.
+    """
+    if not api_key:
+        return [], "FMP fallback: FMP_API_KEY hiányzik"
+    ok, chk = _validate_fmp_key(api_key)
+    if not ok:
+        return [], f"FMP fallback: {chk}"
+
+    since = _utc_now() - timedelta(days=max(1, int(days)))
+    api_key_q = urllib.parse.quote(api_key)
+    url = f"{FMP_STOCK_NEWS_URL}?limit={int(limit)}&apikey={api_key_q}"
+    status, body = _http_get(url, timeout=25, headers={"Accept": "application/json"})
+    if status == 200:
+        try:
+            data = json.loads(body) if body else []
+        except Exception:
+            data = []
+        if not isinstance(data, list):
+            data = []
+    elif status == 429:
+        return [], "FMP fallback: rate limit (HTTP 429) – stock-news"
+    elif status in (401, 403):
+        return [], f"FMP fallback: nem engedélyezett (HTTP {status}) – stock-news"
+    elif status == 402:
+        return [], "FMP fallback: Payment Required (HTTP 402) – stock-news endpoint sem elérhető"
+    elif status == 0:
+        return [], "FMP fallback: hálózati hiba/timeout – stock-news"
+    else:
+        return [], f"FMP fallback: hibás válasz (HTTP {status}) – stock-news"
+
+    events: List[Dict[str, Any]] = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        dtv = _parse_iso_dt(item.get("publishedDate") or item.get("date") or "")
+        if not dtv or dtv < since:
+            continue
+        title = (item.get("title") or "").strip()
+        text = (item.get("text") or "").strip()
+        site = (item.get("site") or "").strip()
+        url2 = (item.get("url") or item.get("newsURL") or "").strip()
+        combined = f"{title} {text} {site}".strip()
+        combined_l = combined.lower()
+
+        action = _classify_analyst_action(combined_l)
+        if not action:
+            continue
+
+        # Find symbol(s)
+        sym = (item.get("symbol") or item.get("ticker") or "").strip().upper()
+        symbols: List[str] = []
+        if sym and sym in tickers_set:
+            symbols = [sym]
+        else:
+            symbols = _extract_symbols_from_text(combined, tickers_set)
+
+        if not symbols:
+            continue
+
+        for s in symbols[:3]:
+            events.append({
+                "source": "FMP_NEWS",
+                "symbol": s,
+                "publishedDate": item.get("publishedDate") or item.get("date") or "",
+                "gradingCompany": "",
+                "action": action,
+                "previousGrade": "",
+                "newGrade": "",
+                "newsTitle": title,
+                "newsURL": url2,
+            })
+
+    if events:
+        return events, f"FMP fallback: stock-news OK ({len(events)} esemény, kulcsszó-alapú)"
+    return [], "FMP fallback: stock-news – nincs találat az időablakban"
 
 def _render_markdown(days: int,
                      mb_blocked: bool,
@@ -444,7 +555,17 @@ def main(argv: Optional[List[str]] = None) -> int:
     if ev:
         events = ev
     else:
-        degraded = True
+        # If the dedicated grades endpoint is gated (402/403), try Stock News keyword-based extraction.
+        if "HTTP 402" in fmp_note or "Payment Required" in fmp_note or "HTTP 403" in fmp_note or "nem engedélyezett" in fmp_note:
+            ev2, note2 = _fetch_fmp_stock_news_actions(args.fmp_api_key, args.days, tickers_set)
+            if ev2:
+                events = ev2
+                fmp_note = note2
+            else:
+                fmp_note = f"{note2} (grades-historical: {fmp_note})"
+                degraded = True
+        else:
+            degraded = True
 
     md = _render_markdown(
         days=args.days,
