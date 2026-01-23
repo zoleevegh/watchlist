@@ -34,11 +34,17 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 
-VERSION="v0.3.29-marketbeat-finnhub-fallback-clean-2026-01-23"
+VERSION="v0.3.30-marketbeat-finnhub-fallback-hotfix-log-2026-01-23"
 
 # ima (2 sor) – hiba utáni kötelező kiegészítés
-# bocsáss meg uram mert balfék voltam, az API fallbackot rossz kulcsra kötöttem.
-# add, hogy a Finnhub fallback éljen, és MarketBeat challenge esetén se legyen N/A.
+# bocsáss meg uram mert balfék voltam, kifelejtettem a _log függvényt.
+# add, hogy a riport ne dőljön el, és a fallback mindig stabilan beszéljen.
+
+
+def _log(msg: str) -> None:
+    """Stdout logger with UTC timestamp (GitHub Actions friendly)."""
+    ts = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+    print(f'[{ts} UTC] {msg}', flush=True)
 
 BASE = "https://www.marketbeat.com"
 DEFAULT_SEEN_FILE = "reports/marketbeat_seen.json"
