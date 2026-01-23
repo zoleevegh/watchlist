@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-analyst_marketbeat.py – v0.3.32-marketbeat-finnhub-fallback-stable-ua-apicheck-2026-01-23
+analyst_marketbeat.py – v0.3.33-marketbeat-finnhub-fallback-cli-alias-outjson-2026-01-23
 
 Cél:
 - MarketBeat ratings pages (upgrade/downgrade/PT change) – ha Cloudflare "HTTP 200 blocked/challenge", akkor skip.
@@ -13,6 +13,11 @@ IMA (kötelező, 2 sor):
 bocsáss meg uram mert balfék voltam…
 adj erőt, hogy a következő run végre hibátlan legyen…
 """
+
+# ima
+# bocsáss meg uram, mert balfék voltam;
+# ígérem, hogy több NameError nem csúszik át.
+
 from __future__ import annotations
 
 import argparse
@@ -27,7 +32,7 @@ import urllib.request
 import urllib.error
 
 
-VERSION = "v0.3.32-marketbeat-finnhub-fallback-stable-ua-apicheck-2026-01-23"
+VERSION = "v0.3.33-marketbeat-finnhub-fallback-cli-alias-outjson-2026-01-23"
 
 # ---- constants ----
 USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123 Safari/537.36"
@@ -242,12 +247,29 @@ def write_markdown(out_path: str, lines: List[str], note_lines: List[str]) -> No
             f.write(f"_{nl}_\n")
 
 
+
+def write_json(path: str, source: str, days: int, events_raw: List[Dict[str, Any]], notes: List[str]) -> None:
+    os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
+    payload = {
+        'generated_utc': _dt.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
+        'days': int(days),
+        'source': source,
+        'events': events_raw,
+        'notes': notes,
+        'version': VERSION,
+    }
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--days", type=int, default=2)
     ap.add_argument("--master", required=True, help="Path to reports/master.csv")
     ap.add_argument("--mode", default="ratings_pages")
     ap.add_argument("--out_md", default="reports/analyst_last2d.md")
+    ap.add_argument("--out-md", dest="out_md", help="Legacy alias for --out_md")
+    ap.add_argument("--out_json", default="reports/analyst_last2d.json")
+    ap.add_argument("--out-json", dest="out_json", help="Legacy alias for --out_json")
     ap.add_argument("--seen_path", default="reports/marketbeat_seen.json")
     ap.add_argument("--last_success_path", default="reports/marketbeat_last_success.json")
     ap.add_argument("--finnhub_api_key", default=os.environ.get("FINNHUB_API_KEY", ""), help="Finnhub API key (fallback)")
@@ -267,6 +289,8 @@ def main() -> int:
     blocked = True
     note_lines: List[str] = ["Megjegyzés: MarketBeat blokkolás / robotvédelem (a feed nem megbízhatóan elérhető)."]
     events: List[str] = []
+    events_raw: List[Dict[str, Any]] = []
+    source = 'marketbeat'
 
     # ---- Finnhub fallback ----
     if blocked:
@@ -304,6 +328,8 @@ def main() -> int:
                             continue
                         seen_keys.add(k)
                         events.append(_format_event_line(r))
+                        events_raw.append(r)
+                        source = 'finnhub'
 
                     if events:
                         note_lines.insert(0, "Finnhub fallback: sikeres (MarketBeat blokkolt).")
@@ -318,8 +344,14 @@ def main() -> int:
         clear = "MarketBeat blokkolás mellett jelenleg nincs megjeleníthető elemzői esemény (Finnhub fallback üres vagy nem elérhető)."
         # We write it as a single italic line in the body (instead of N/A)
         events = [clear]
+        events_raw = []
+        source = 'none'
 
     write_markdown(args.out_md, events, note_lines)
+    try:
+        write_json(args.out_json, source, args.days, events_raw, note_lines)
+    except Exception as e:
+        _log(f'WARN: JSON write failed: {e}')
     _log(f"DONE events={0 if (events and 'nincs megjeleníthető' in events[0]) else len(events)} wrote={args.out_md}")
     return 0
 
