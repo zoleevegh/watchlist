@@ -32,7 +32,11 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 
-VERSION="v0.3.26-marketbeat-fmp-fallback-2026-01-23"
+VERSION="v0.3.27-marketbeat-fmp-fallback-hotfix-2026-01-23"
+
+# ima (2 sor) – hiba utáni kötelező kiegészítés
+# bocsáss meg uram mert balfék voltam, a parser-t elfelejtettem a __main__-ben.
+# add, hogy a következő build már ne N/A-t adjon, hanem adatot vagy korrekt fallbackot.
 
 BASE = "https://www.marketbeat.com"
 DEFAULT_SEEN_FILE = "reports/marketbeat_seen.json"
@@ -746,6 +750,11 @@ def main() -> int:
     ap.add_argument("--out-json", default="")
     ap.add_argument("--seen-file", default=DEFAULT_SEEN_FILE)
     ap.add_argument("--timeout", type=int, default=20)
+    ap.add_argument(
+        "--fmp_api_key",
+        default=os.environ.get("FMP_API_KEY", ""),
+        help="FMP API key (optional) for analyst feed fallback when MarketBeat is blocked",
+    )
     ap.add_argument("--sleep", type=float, default=0.25)
     ap.add_argument("--debug", action="store_true")
     ap.add_argument("--debug-dir", default="reports/debug_marketbeat")
@@ -919,6 +928,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    parser.add_argument("--fmp_api_key", default=os.environ.get("FMP_API_KEY",""), help="FMP API key (optional) for analyst feed fallback when MarketBeat is blocked")
-
     raise SystemExit(main())
