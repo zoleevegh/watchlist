@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# Ima (v0.3.24): bocsáss meg uram, ha megint mellényúltam;
-# adj józan cache-t és tiszta logot, hogy blokkoláskor se maradjunk vakon.
+# Ima (v0.3.25): bocsáss meg uram, ha megint mellényúltam;
+# adj józan cache‑igazságot és tiszta logot, hogy ne írjak olyat, ami nincs.
 """
 analyst_marketbeat.py — MarketBeat (FREE) "ratings pages" scraper (Solution #2)
 - No per-ticker search (avoids mass HTTP 403)
@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 
-VERSION="v0.3.24-marketbeat-cache-mode-2026-01-22"
+VERSION="v0.3.25-marketbeat-cache-truth-2026-01-23"
 
 BASE = "https://www.marketbeat.com"
 DEFAULT_SEEN_FILE = "reports/marketbeat_seen.json"
@@ -522,6 +522,8 @@ def write_outputs(
     days: int,
     fetch_ok: bool = True,
     cache_based: bool = False,
+    cache_has_history: bool = False,
+    cache_is_empty: bool = False,
     statuses: Optional[Dict[str, str]] = None,
     note: Optional[str] = None,
 ) -> str:
@@ -543,7 +545,10 @@ def write_outputs(
         else:
             # Blocked/error: if we have any previously-seen/cache state, show a cache-based "no events" line.
             if cache_based:
-                lines.append(f"_Nincs friss fel/leminősítés vagy célár‑változás az elmúlt {days} naptári napban (utolsó ismert cache alapján)._")
+                if cache_is_empty and (not cache_has_history):
+                    lines.append(f"_Nincs friss fel/leminősítés vagy célár‑változás az elmúlt {days} naptári napban (cache még üres / még nem volt sikeres lekérés)._")
+                else:
+                    lines.append(f"_Nincs friss fel/leminősítés vagy célár‑változás az elmúlt {days} naptári napban (utolsó ismert cache alapján)._")
             else:
                 lines.append("_N/A._")
     else:
@@ -731,9 +736,33 @@ def main() -> int:
 
     fetch_ok_all = all(_clean_status(statuses.get(k, "")) for k in ("upgrade", "downgrade", "pt_change"))
 
-    cache_any = Path(args.seen_file).exists() or Path(LAST_SUCCESS_JSON).exists()
+    def _has_last_success_events(p: Path) -> bool:
+        try:
+            if not p.exists():
+                return False
+            d = json.loads(p.read_text(encoding='utf-8', errors='replace'))
+            ev = d.get('events')
+            return isinstance(ev, list) and len(ev) > 0
+        except Exception:
+            return False
 
-    md_text = write_outputs(out_md, out_json, events_out, args.days, fetch_ok=fetch_ok, cache_based=((not fetch_ok) and cache_any), statuses=statuses, note=note)
+    cache_has_history = bool(seen_db)
+    cache_has_last_success = _has_last_success_events(Path(LAST_SUCCESS_JSON))
+    cache_any = cache_has_history or cache_has_last_success
+    cache_is_empty = (not cache_has_history) and (not cache_has_last_success)
+
+    md_text = write_outputs(
+        out_md,
+        out_json,
+        events_out,
+        args.days,
+        fetch_ok=fetch_ok,
+        cache_based=((not fetch_ok) and cache_any),
+        cache_has_history=cache_has_history,
+        cache_is_empty=cache_is_empty,
+        statuses=statuses,
+        note=note,
+    )
 
     if fetch_ok_all:
         payload = {
