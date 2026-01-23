@@ -1,7 +1,7 @@
-# Ima (v1.0.9): bocsáss meg uram, ha megint mellényúltam;
+# Ima (v1.0.10): bocsáss meg uram, ha megint mellényúltam;
 # adj türelmet és tiszta logot, hogy csak az igazat írjam le.
-# Verzió: v1.0.9-run_report-checkout-retry+no-blank-analyst-2026-01-22
-# run_report.yml — v1.0.9
+# Verzió: v1.0.10-run_report-checkout-retry+keep-nincsfriss-2026-01-22
+# run_report.yml — v1.0.10
 
 name: Run Report — PRICE ENGINE
 
@@ -277,9 +277,7 @@ jobs:
           a = strip_leading_meta(a_raw)
           e = strip_leading_meta(e_raw)
           
-          # Avoid showing the old italic "no fresh" sentence; keep it clean.
-          if "Nincs friss" in a and "fel/leminősítés" in a:
-              a = ""
+          # Keep the "Nincs friss … (cache alapján)" sentence; do NOT blank it out.
           
           if not a:
               a = "N/A"
