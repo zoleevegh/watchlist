@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Ima (v0.3.36): bocsáss meg uram, ha megint mellényúltam;
 # add, hogy a robotvédelem ellenére is legyen tiszta fallback és korrekt üzenet.
-# Version: v0.3.36-marketbeat-fmp-grades-latest-news-no-premium-2026-01-23
+# Version: v0.3.37-marketbeat-fmp-stable-grades-historical-2026-01-23
 """
 analyst_marketbeat.py
 
@@ -12,7 +12,7 @@ Purpose (PRICE ENGINE #1):
 Reality check:
 - MarketBeat frequently returns HTTP 200 with a bot-challenge page. That is treated as "blocked/challenge".
   We DO NOT try to bypass robot protection.
-- Fallback: Financial Modeling Prep (FMP) "Stock Grade Latest News API" (grades-latest-news).
+- Fallback: Financial Modeling Prep (FMP) "Historical Stock Grades API" (grades-historical).
   This yields upgrades/downgrades/reiterations (grades) but typically does NOT include explicit price-target changes.
 
 Outputs:
@@ -37,10 +37,11 @@ import sys
 import time
 import urllib.request
 import urllib.error
+import urllib.parse
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
-VERSION = "v0.3.36-marketbeat-fmp-grades-latest-news-no-premium-2026-01-23"
+VERSION = "v0.3.37-marketbeat-fmp-stable-grades-historical-2026-01-23"
 
 DEFAULT_OUT_MD = "reports/analyst_last2d.md"
 DEFAULT_OUT_JSON = "reports/analyst_last2d.json"
@@ -54,9 +55,10 @@ MB_UPGRADE_URL = "https://www.marketbeat.com/ratings/upgrades/"
 MB_DOWNGRADE_URL = "https://www.marketbeat.com/ratings/downgrades/"
 MB_PT_URL = "https://www.marketbeat.com/ratings/price-target-changes/"
 
-# FMP stable "Stock Grade Latest News API"
-# Doc example: https://financialmodelingprep.com/stable/grades-latest-news?page=0&limit=10&apikey=YOUR_API_KEY
-FMP_GRADES_LATEST_NEWS_URL = "https://financialmodelingprep.com/stable/grades-latest-news"
+# FMP stable "Historical Stock Grades API"
+# Doc example: https://financialmodelingprep.com/stable/grades-historical?page=0&limit=10&apikey=YOUR_API_KEY
+FMP_GRADES_HIST_URL = "https://financialmodelingprep.com/stable/grades-historical"
+FMP_QUOTE_SHORT_URL = "https://financialmodelingprep.com/stable/quote-short"
 
 # Finnhub (diagnostic only): validate API key via /api/v1/quote (free-tier compatible)
 FINNHUB_QUOTE_URL = "https://finnhub.io/api/v1/quote"
@@ -190,6 +192,22 @@ def _validate_finnhub_key(api_key: str) -> Tuple[bool, str]:
     return False, f"Finnhub API ellenőrzés: ismeretlen válasz (HTTP {status})"
 
 
+
+def _validate_fmp_key(api_key: str) -> Tuple[bool, str]:
+    """Minimal key check against FMP stable quote-short."""
+    if not api_key:
+        return False, "FMP API key hiányzik"
+    url = f"{FMP_QUOTE_SHORT_URL}?symbol=AAPL&apikey={urllib.parse.quote(api_key)}"
+    status, body = _http_get(url, timeout=15, headers={"Accept": "application/json"})
+    if status == 200 and body.strip().startswith("["):
+        return True, "FMP API ellenőrzés: sikeres (OK)"
+    if status in (401, 403):
+        return False, f"FMP API ellenőrzés: sikertelen (HTTP {status})"
+    if status == 402:
+        return False, "FMP API ellenőrzés: Payment Required (HTTP 402) – a csomagod/hozzáférés nem engedi ezt az endpointot"
+    if status == 0:
+        return False, "FMP API ellenőrzés: hálózati hiba / timeout"
+    return False, f"FMP API ellenőrzés: ismeretlen válasz (HTTP {status})"
 def _parse_iso_dt(s: str) -> Optional[datetime]:
     if not s:
         return None
@@ -218,82 +236,70 @@ def _event_key(e: Dict[str, Any]) -> str:
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
 
-def _fetch_fmp_grades_latest_news(api_key: str, days: int, tickers_set: set) -> Tuple[List[Dict[str, Any]], str]:
+def _fetch_fmp_grades_historical(api_key: str, days: int, tickers_set: set, max_symbols: int = 200) -> Tuple[List[Dict[str, Any]], str]:
     """
-    Pull recent grade events via FMP stable API.
-    Returns (events, status_note).
+    Fallback analyst feed via FMP Stable 'Historical Stock Grades' per-symbol endpoint.
+    Filters for the last `days` calendar days; keeps upgrade/downgrade actions only.
     """
     if not api_key:
         return [], "FMP fallback: FMP_API_KEY hiányzik"
-    since = _utc_now() - timedelta(days=max(1, days))
+
+    ok, chk = _validate_fmp_key(api_key)
+    if not ok:
+        return [], f"FMP fallback: {chk}"
+
+    since = _utc_now() - timedelta(days=max(1, int(days)))
+    api_key_q = urllib.parse.quote(api_key)
     events: List[Dict[str, Any]] = []
 
-    # Pagination: keep small to reduce rate/size; stop when oldest record is older than since.
-    page = 0
-    limit = 200  # keeps calls low; adjust if needed
-    max_pages = 10  # hard safety
-
-    while page < max_pages:
-        url = f"{FMP_GRADES_LATEST_NEWS_URL}?page={page}&limit={limit}&apikey={urllib.parse.quote(api_key)}"
+    symbols = sorted([s for s in tickers_set if isinstance(s, str) and s.strip()])[:max_symbols]
+    for sym in symbols:
+        sym_q = urllib.parse.quote(sym)
+        url = f"{FMP_GRADES_HIST_URL}?symbol={sym_q}&apikey={api_key_q}"
         status, body = _http_get(url, timeout=20, headers={"Accept": "application/json"})
-        if status == 403:
-            return [], "FMP fallback: hozzáférés megtagadva (HTTP 403) – ellenőrizd az API key-t / free limitet / endpoint elérhetőséget"
-        if status != 200 or not body.strip().startswith("["):
-            return [], f"FMP fallback: hibás válasz (HTTP {status})"
-        try:
-            rows = json.loads(body)
-            if not isinstance(rows, list):
-                return [], "FMP fallback: JSON nem lista"
-        except Exception:
-            return [], "FMP fallback: JSON parse hiba"
 
-        if not rows:
-            break
-
-        oldest_dt: Optional[datetime] = None
-        for r in rows:
-            if not isinstance(r, dict):
+        if status == 200:
+            try:
+                data = json.loads(body) if body else []
+            except Exception:
+                data = []
+            if not isinstance(data, list):
                 continue
-            sym = (r.get("symbol") or "").upper()
-            if sym and sym not in tickers_set:
-                continue
+            for r in data:
+                if not isinstance(r, dict):
+                    continue
+                dt = _parse_iso_dt(r.get("date") or r.get("publishedDate") or "")
+                if not dt or dt < since:
+                    continue
+                action = (r.get("action") or "").lower().strip()
+                if action not in ("upgrade", "downgrade"):
+                    continue
+                events.append({
+                    "source": "FMP",
+                    "symbol": sym,
+                    "publishedDate": r.get("date") or r.get("publishedDate") or "",
+                    "gradingCompany": r.get("gradingCompany") or r.get("firm") or "",
+                    "action": action,
+                    "previousGrade": r.get("previousGrade") or "",
+                    "newGrade": r.get("newGrade") or "",
+                    "newsTitle": r.get("newsTitle") or r.get("title") or "",
+                    "newsURL": r.get("newsURL") or r.get("url") or "",
+                })
+            continue
 
-            dt = _parse_iso_dt(r.get("publishedDate") or "")
-            if not dt:
-                continue
-            if dt < since:
-                # We'll still track oldest_dt for stop condition
-                oldest_dt = dt if oldest_dt is None else min(oldest_dt, dt)
-                continue
+        if status == 429:
+            return events, "FMP fallback: rate limit (HTTP 429) – részleges eredmény"
+        if status == 402:
+            return [], "FMP fallback: Payment Required (HTTP 402) – a csomagod/hozzáférés nem engedi az analyst/grades endpointot"
+        if status in (401, 403):
+            return [], f"FMP fallback: nem engedélyezett (HTTP {status})"
+        if status == 0:
+            return events, "FMP fallback: hálózati hiba/timeout – részleges eredmény"
+        # otherwise continue
 
-            action = (r.get("action") or "").lower().strip()
-            # Keep only meaningful "upgrade/downgrade" actions; skip holds/reiterations by default
-            if action not in ("upgrade", "downgrade"):
-                continue
-
-            e = {
-                "source": "FMP",
-                "symbol": sym,
-                "publishedDate": r.get("publishedDate"),
-                "gradingCompany": r.get("gradingCompany") or "",
-                "action": action,
-                "previousGrade": r.get("previousGrade") or "",
-                "newGrade": r.get("newGrade") or "",
-                "newsTitle": r.get("newsTitle") or "",
-                "newsURL": r.get("newsURL") or "",
-                "priceWhenPosted": r.get("priceWhenPosted"),
-            }
-            events.append(e)
-            oldest_dt = dt if oldest_dt is None else min(oldest_dt, dt)
-
-        # Stop if the oldest record on this page is already older than since.
-        # (This implies later pages will be even older.)
-        if oldest_dt is not None and oldest_dt < since:
-            break
-        page += 1
-
-    return events, "FMP fallback: grades-latest-news OK"
-
+    if events:
+        return events, f"FMP fallback: grades-historical OK ({len(events)} esemény)"
+    return [], "FMP fallback: nincs friss upgrade/downgrade az időablakban"
 
 def _render_markdown(days: int,
                      mb_blocked: bool,
@@ -429,7 +435,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     # FMP fallback
     events: List[Dict[str, Any]] = []
     fmp_note = ""
-    ev, fmp_note = _fetch_fmp_grades_latest_news(args.fmp_api_key, args.days, tickers_set)
+    ev, fmp_note = _fetch_fmp_grades_historical(args.fmp_api_key, args.days, tickers_set)
     if ev:
         events = ev
     else:
