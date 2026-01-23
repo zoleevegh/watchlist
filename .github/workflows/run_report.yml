@@ -1,7 +1,7 @@
-# Ima (v1.0.13): bocsáss meg uram, ha megint mellényúltam;
+# Ima (v1.0.14): bocsáss meg uram, ha megint mellényúltam;
 # adj türelmet és tiszta logot, hogy csak az igazat írjam le.
-# Verzió: v1.0.13-run_report-add-fmp+finnhub-secrets-2026-01-23
-# run_report.yml — v1.0.13-2026-01-23
+# Verzió: v1.0.14-run_report-pin-gist-revision-2026-01-23
+# run_report.yml — v1.0.14-2026-01-23
 
 name: Run Report — PRICE ENGINE
 
@@ -283,10 +283,8 @@ jobs:
 
           # Build one single clickable nocache URL (run id + attempt + sha)
           NOCACHE="${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}"
-          RAW_URL="https://gist.githubusercontent.com/${GITHUB_REPOSITORY_OWNER}/${GIST_ID}/raw/$(basename "${OUT_MD}")?nocache=${NOCACHE}"
+          echo "NOCACHE=${NOCACHE}" >> $GITHUB_ENV
 
-          # Save raw url to artifact-friendly file too
-          echo "${RAW_URL}" > "reports/raw_url_${REPORT}.txt"
 
           # (moved) Job summary link is written in the dedicated "Write run summary" step later.
           # This avoids duplicate links in the Actions UI.
@@ -363,8 +361,27 @@ jobs:
                   deletions[fn] = None
 
           payload = {"files": {**deletions, target_fn: {"content": content}}}
-          gh_patch(api_url, payload)
-          print("Gist updated.")
+          updated = gh_patch(api_url, payload)
+          # Build revision-pinned raw URL so older run links stay stable
+          owner = (updated.get("owner") or {}).get("login") or (gist.get("owner") or {}).get("login") or ""
+          ver = None
+          try:
+              hist = updated.get("history") or []
+              ver = hist[0].get("version") if hist else None
+          except Exception:
+              ver = None
+          report = os.environ.get("REPORT", "") or "1"
+          nocache = os.environ.get("NOCACHE", "")
+          if owner and ver:
+              raw = f"https://gist.githubusercontent.com/{owner}/{gist_id}/raw/{ver}/{target_fn}"
+          elif owner:
+              raw = f"https://gist.githubusercontent.com/{owner}/{gist_id}/raw/{target_fn}"
+          else:
+              raw = f"https://gist.githubusercontent.com/{gist_id}/raw/{target_fn}"
+          if nocache:
+              raw = raw + f"?nocache={nocache}"
+          Path(f"reports/raw_url_{report}.txt").write_text(raw + "\n", encoding="utf-8")
+          print("Gist updated:", raw)
           PY
       - name: Write run summary (stable raw link)
         if: always()
@@ -388,7 +405,10 @@ jobs:
             RUN_ID="${GITHUB_RUN_ID}"
             RUN_ATTEMPT="${GITHUB_RUN_ATTEMPT}"
             SHA="${GITHUB_SHA}"
-            RUN_SUMMARY_URL="https://gist.githubusercontent.com/${GIST_OWNER}/${GIST_ID}/raw/${FN}?nocache=${RUN_ID}-${RUN_ATTEMPT}-${SHA}"
+            RUN_SUMMARY_URL="$(cat reports/raw_url_${REPORT}.txt 2>/dev/null || echo "")"
+            if [ -z "${RUN_SUMMARY_URL}" ]; then
+              RUN_SUMMARY_URL="https://gist.githubusercontent.com/${GIST_OWNER}/${GIST_ID}/raw/${FN}?nocache=${RUN_ID}-${RUN_ATTEMPT}-${SHA}"
+            fi
             echo "RUN_SUMMARY_URL=${RUN_SUMMARY_URL}"
             {
               echo "Job summary generated at run-time (${RUN_ID})"
