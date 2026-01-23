@@ -38,7 +38,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 
-VERSION = "v0.3.13-marketbeat-challengefix-hu-2026-01-23"
+VERSION = "v0.3.14-marketbeat-challengefix2-hu-2026-01-23"
 BASE = "https://www.marketbeat.com"
 
 # Magyar megnevezések a reporthoz
@@ -208,11 +208,12 @@ def _is_challenge_page(html_text: str) -> bool:
     h = html_text.lower()
     # Common Cloudflare / bot-defense markers
     markers = [
+        # Strong bot-defense markers (avoid generic 'captcha' which appears on normal pages as reCAPTCHA widgets)
         "cf-challenge", "cloudflare", "attention required", "checking your browser",
-        "/cdn-cgi/", "captcha", "verify you are human", "ddos protection",
-        "please enable cookies", "just a moment", "browser verification",
+        "/cdn-cgi/challenge", "/cdn-cgi/", "verify you are human",
+        "just a moment", "browser verification", "cf-turnstile", "cf_chl_",
     ]
-    return any(x in h for x in markers)
+    return any(x in h for x in markers)(x in h for x in markers)
 
 
 
