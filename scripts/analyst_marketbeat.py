@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 
-VERSION="v0.3.27-marketbeat-fmp-fallback-hotfix-2026-01-23"
+VERSION="v0.3.28-marketbeat-fmp-fallback-msgfix-2026-01-23"
 
 # ima (2 sor) – hiba utáni kötelező kiegészítés
 # bocsáss meg uram mert balfék voltam, a parser-t elfelejtettem a __main__-ben.
@@ -667,12 +667,16 @@ def write_outputs(
         else:
             # Blocked/error: if we have any previously-seen/cache state, show a cache-based "no events" line.
             if cache_based:
-                if cache_is_empty and (not cache_has_history):
+                if cache_is_empty:
                     lines.append(f"_Nincs friss fel/leminősítés vagy célár‑változás az elmúlt {days} naptári napban (cache még üres / még nem volt sikeres lekérés)._")
                 else:
                     lines.append(f"_Nincs friss fel/leminősítés vagy célár‑változás az elmúlt {days} naptári napban (utolsó ismert cache alapján)._")
             else:
-                lines.append("_N/A._")
+                # If MarketBeat is blocked and we have no cache yet, "N/A" is misleading.
+                if cache_is_empty:
+                    lines.append(f"_MarketBeat blokkolás / robotvédelem mellett a cache még üres, ezért most nincs megjeleníthető elemzői esemény (állíts be FMP_API_KEY-t a fallbackhoz, vagy várd meg az első sikeres MarketBeat lekérést)._" )
+                else:
+                    lines.append("_N/A._")
     else:
         by: Dict[str, List[AnalystEvent]] = {}
         for e in events:
@@ -834,6 +838,8 @@ def main() -> int:
             note = (note or "Megjegyzés: MarketBeat blokkolás / robotvédelem (a feed nem megbízhatóan elérhető).") + " FMP fallback használva."
         else:
             _log("INFO: FMP fallback returned 0 events (or not reachable)")
+    elif (not events_out) and ("blocked" in blocked_hint or "challenge" in blocked_hint or not fetch_ok) and (not fmp_key):
+        _log("INFO: MarketBeat blocked/challenge but FMP_API_KEY is not set -> no API fallback")
 
 
     # If the source is not OK and the seen-db window is empty, fallback to last successful payload.
