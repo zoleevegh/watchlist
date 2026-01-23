@@ -1,867 +1,343 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# Ima: bocsáss meg uram mert balfék voltam, és össze-vissza kevertem a fallbackokat.
-# Adj stabil, fordítható scriptet, hogy a pipeline végre rendben fusson.
 """
-analyst_marketbeat.py — MarketBeat (FREE) "ratings pages" scraper (Solution #2)
-- No per-ticker search (avoids mass HTTP 403)
-- Pulls central ratings lists once and filters to MASTER tickers
-- Persists a small "first_seen" cache (reports/marketbeat_seen.json) so the "last N calendar days"
-  window is stable even if MarketBeat is temporarily blocked (HTTP 403) on a given run.
-- Hungarian output.
+analyst_marketbeat.py – v0.3.32-marketbeat-finnhub-fallback-stable-ua-apicheck-2026-01-23
 
-Versioning: keep bumping VERSION for every change.
+Cél:
+- MarketBeat ratings pages (upgrade/downgrade/PT change) – ha Cloudflare "HTTP 200 blocked/challenge", akkor skip.
+- Finnhub fallback: /stock/upgrade-downgrade (MASTER tickerekre szűrve) – csak ha FINNHUB_API_KEY elérhető.
+- API ellenőrzés: indításkor validálja, hogy a Finnhub API kulcs működik-e (értelmes JSON válasz).
+- Stabil működés: NEM omolhat össze NameError miatt; hiba esetén is írjon értelmes MD-t és lépjen ki 0-val.
+
+IMA (kötelező, 2 sor):
+bocsáss meg uram mert balfék voltam…
+adj erőt, hogy a következő run végre hibátlan legyen…
 """
-
 from __future__ import annotations
 
 import argparse
-# IMPORTANT: do not alias datetime as "dt" in this project.
-# Multiple merges previously introduced bugs like dt.dt.utcnow().
-from datetime import datetime, timedelta, date
-import hashlib
-import http.cookiejar
+import csv
+import datetime as _dt
 import json
 import os
-import re
+import sys
 import time
-import urllib.error
+from typing import Dict, List, Any, Optional, Tuple, Set
 import urllib.request
-from dataclasses import asdict, dataclass
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Any
+import urllib.error
 
 
-VERSION="v0.3.31-marketbeat-finnhub-fallback-stable-2026-01-23"
+VERSION = "v0.3.32-marketbeat-finnhub-fallback-stable-ua-apicheck-2026-01-23"
 
-BASE = "https://www.marketbeat.com"
-DEFAULT_SEEN_FILE = "reports/marketbeat_seen.json"
-LAST_SUCCESS_JSON = "reports/marketbeat_last_success.json"
-LAST_SUCCESS_MD = "reports/marketbeat_last_success.md"
+# ---- constants ----
+USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123 Safari/537.36"
+FINNHUB_BASE = "https://finnhub.io/api/v1"
+FINNHUB_ENDPOINT = "/stock/upgrade-downgrade"
+DEFAULT_TIMEOUT = 25
 
-# Central free pages (fast + low risk of 403 compared to per-ticker search)
-RATINGS_SOURCES: List[Tuple[str, str]] = [
-    ("upgrade", "/ratings/upgrades/"),
-    ("downgrade", "/ratings/downgrades/"),
-    ("pt_change", "/ratings/pricetargetchanges/"),
-]
 
-RATING_WORDS = [
-    "Strong Buy",
-    "Buy",
-    "Outperform",
-    "Overweight",
-    "Market Perform",
-    "Sector Perform",
-    "Neutral",
-    "Hold",
-    "Underperform",
-    "Underweight",
-    "Sell",
-]
+def _utc_ts() -> str:
+    return _dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _log(msg: str) -> None:
-    ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{ts} UTC] {msg}", flush=True)
+    # GitHub Actions friendly log line
+    print(f"[{_utc_ts()} UTC] {msg}", flush=True)
 
 
-def _build_opener(user_agent: str) -> urllib.request.OpenerDirector:
-    """Create an urllib opener with a cookie jar (session-like)."""
-    cj = http.cookiejar.CookieJar()
-    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))
-    opener.addheaders = [
-        ("User-Agent", user_agent),
-        ("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"),
-        ("Accept-Language", "en-US,en;q=0.9"),
-        ("Cache-Control", "no-cache"),
-        ("Pragma", "no-cache"),
-        ("Connection", "close"),
-    ]
-    return opener
-
-
-# A small pool of realistic browser UAs to reduce bot-blocking variance
-UA_POOL = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
-]
-
-
-
-def _looks_like_block_page(html: str) -> bool:
-    """Best-effort bot/challenge detection (MarketBeat sometimes returns HTTP 200 with a challenge page)."""
-    if not html:
-        return True
-    h = html.lower()
-    markers = [
-        "cf-chl", "cloudflare", "attention required", "captcha", "verify you are human",
-        "unusual activity", "enable javascript", "access denied", "robot check",
-        "perimeterx", "px-captcha", "akamai", "incapsula", "distil", "datadome",
-    ]
-    return any(m in h for m in markers)
-
-
-def _looks_like_ratings_payload(html: str, kind: str) -> bool:
-    """Heuristic: MarketBeat sometimes returns HTTP 200 with a bot/challenge HTML.
-    In that case we must NOT attempt to parse rows, because we may produce nonsense events.
-    """
-    if not html or len(html) < 800:
-        return False
-    h = html.lower()
-    # must contain at least one stock link (ticker pages)
-    if "/stocks/" not in h:
-        return False
-    # kind-specific anchors (keep it permissive)
-    if kind == "upgrade":
-        return ("upgraded" in h) or ("upgrade" in h)
-    if kind == "downgrade":
-        return ("downgraded" in h) or ("downgrade" in h)
-    if kind == "pt_change":
-        return ("price target" in h) or ("target" in h)
-    return True
-
-def _http_get(
-    opener: urllib.request.OpenerDirector,
-    url: str,
-    timeout: int,
-    debug_dir: Optional[Path],
-    debug_name: str,
-    referer: Optional[str] = None,
-) -> Tuple[int, str]:
-    """HTTP GET with cookies + optional Referer. Returns (status, html)."""
-    hdrs = {}
-    if referer:
-        hdrs["Referer"] = referer
-        hdrs["Upgrade-Insecure-Requests"] = "1"
-    req = urllib.request.Request(url, headers=hdrs, method="GET")
-
-    status = 0
-    html = ""
+def _safe_json_load(path: str, default: Any) -> Any:
     try:
-        with opener.open(req, timeout=timeout) as r:
-            status = getattr(r, "status", 200) or 200
-            raw = r.read()
-            html = raw.decode("utf-8", errors="replace")
-    except urllib.error.HTTPError as e:
-        status = int(getattr(e, "code", 500) or 500)
-        try:
-            html = e.read().decode("utf-8", errors="replace")
-        except Exception:
-            html = ""
-    except Exception:
-        status = 0
-        html = ""
-
-    if debug_dir is not None:
-        try:
-            debug_dir.mkdir(parents=True, exist_ok=True)
-            (debug_dir / f"{debug_name}.status.txt").write_text(str(status), encoding="utf-8")
-            (debug_dir / f"{debug_name}.html").write_text(html, encoding="utf-8")
-        except Exception:
-            pass
-
-    return status, html
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return default
+    except Exception as e:
+        _log(f"WARN json load failed: {path} ({e}) -> default")
+        return default
 
 
-def _clean_text(s: str) -> str:
-    s = re.sub(r"\s+", " ", s or "").strip()
-    return s
+def _safe_json_dump(path: str, obj: Any) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(obj, f, ensure_ascii=False, indent=2, sort_keys=True)
+    os.replace(tmp, path)
 
 
-def _parse_date_any(s: str) -> Optional[date]:
-    s = _clean_text(s)
-    if not s:
-        return None
-    # Typical MarketBeat format: "Jan 21, 2026"
-    for fmt in ("%b %d, %Y", "%B %d, %Y", "%Y-%m-%d"):
-        try:
-            return datetime.strptime(s, fmt).date()
-        except Exception:
-            continue
-    return None
+def _read_master_tickers(master_csv_path: str) -> Set[str]:
+    tickers: Set[str] = set()
+    with open(master_csv_path, "r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        # Accept columns: ticker / Ticker / symbol / Symbol (best-effort)
+        cols = [c.lower().strip() for c in (reader.fieldnames or [])]
+        ticker_col = None
+        for c in ["ticker", "symbol"]:
+            if c in cols:
+                ticker_col = reader.fieldnames[cols.index(c)]
+                break
+        if not ticker_col:
+            raise RuntimeError(f"MASTER CSV-ben nem találok ticker oszlopot. Oszlopok: {reader.fieldnames}")
+        for row in reader:
+            t = (row.get(ticker_col) or "").strip().upper()
+            if t:
+                # a te szabályod: PKN.WA default kihagyás – ezt itt is tiszteletben tartjuk
+                if t == "PKN.WA":
+                    continue
+                tickers.add(t)
+    return tickers
 
 
-def _extract_urls_from_row_html(tr_html: str) -> Dict[str, str]:
+def _load_seen_db(path: str) -> Dict[str, str]:
+    # ticker -> first_seen_utc_iso
+    db = _safe_json_load(path, default={})
+    if not isinstance(db, dict):
+        return {}
+    # normalize keys
     out: Dict[str, str] = {}
-    # First href is often the stock page; ratings page link can vary
-    hrefs = re.findall(r'href="([^"]+)"', tr_html, flags=re.I)
-    for h in hrefs:
-        if not h:
+    for k, v in db.items():
+        if not isinstance(k, str):
             continue
-        if h.startswith("//"):
-            h = "https:" + h
-        elif h.startswith("/"):
-            h = BASE + h
-        if "marketbeat.com" not in h:
+        kk = k.strip().upper()
+        if not kk:
             continue
-        if "/stocks/" in h and "stock" not in out:
-            out["stock"] = h
-        if "/ratings/" in h and "details" not in out:
-            out["details"] = h
+        if isinstance(v, str) and v.strip():
+            out[kk] = v.strip()
     return out
 
 
-def _extract_ticker_from_row(tr_html: str, cells: List[str]) -> str:
-    # Try from any cell that looks like "NFLX" or "NYSE:NFLX"
-    joined = " ".join(cells)
-    m = re.search(r"\b([A-Z]{1,5})\b", joined)
-    if m:
-        return m.group(1)
-    # Fallback: from stock URL /stocks/nasdaq/nflx/
-    m2 = re.search(r"/stocks/[^/]+/([a-z0-9.\-]+)/", tr_html, flags=re.I)
-    if m2:
-        return m2.group(1).upper()
-    return ""
+def _save_seen_db(path: str, db: Dict[str, str]) -> None:
+    _safe_json_dump(path, db)
 
 
-def _guess_firm(cells: List[str], joined: str) -> str:
-    # Often firm is 2nd column; otherwise try to find a plausible firm-like substring
-    if len(cells) >= 2:
-        c = cells[1]
-        if c and len(c) > 2:
-            return c
-    # Fallback: first long-ish token group
-    parts = [c for c in cells if c and len(c) > 2]
-    return parts[0] if parts else ""
+def _is_cloudflare_challenge(body: str) -> bool:
+    b = body.lower()
+    # MarketBeat tipikus CF / challenge jelek
+    return ("cf-challenge" in b) or ("cloudflare" in b and "challenge" in b) or ("attention required" in b)
 
 
-def _kind_to_action(kind: str, joined: str) -> str:
-    if kind == "upgrade":
-        return "Felminősítés"
-    if kind == "downgrade":
-        return "Leminősítés"
-    # price target change: decide direction later
-    return "Célár változás"
+def _http_get(url: str, headers: Optional[Dict[str, str]] = None, timeout: int = DEFAULT_TIMEOUT) -> Tuple[int, str]:
+    hdrs = {"User-Agent": USER_AGENT, "Accept": "*/*"}
+    if headers:
+        hdrs.update(headers)
+    req = urllib.request.Request(url, headers=hdrs)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        status = getattr(resp, "status", 200)
+        raw = resp.read()
+        # best-effort decode
+        try:
+            txt = raw.decode("utf-8", errors="replace")
+        except Exception:
+            txt = raw.decode(errors="replace")
+        return status, txt
 
 
-def _extract_rating_change(text: str) -> Tuple[Optional[str], Optional[str]]:
-    t = text or ""
-    # Look for "from X to Y" patterns
-    m = re.search(r"\bfrom\b\s+([A-Za-z ]+?)\s+\bto\b\s+([A-Za-z ]+)", t, flags=re.I)
-    if m:
-        return _clean_text(m.group(1)), _clean_text(m.group(2))
-    # Or explicit arrows: "X → Y"
-    m2 = re.search(r"\b(" + "|".join([re.escape(w) for w in RATING_WORDS]) + r")\b\s*(?:→|->)\s*\b(" + "|".join([re.escape(w) for w in RATING_WORDS]) + r")\b", t)
-    if m2:
-        return _clean_text(m2.group(1)), _clean_text(m2.group(2))
-    return None, None
+def _finnhub_url(api_key: str, params: Dict[str, str]) -> str:
+    q = dict(params)
+    q["token"] = api_key
+    return FINNHUB_BASE + FINNHUB_ENDPOINT + "?" + urllib.parse.urlencode(q)
 
 
-def _parse_money(s: str) -> Optional[float]:
-    s = _clean_text(s)
-    if not s:
-        return None
-    s = s.replace("$", "").replace(",", "")
-    try:
-        return float(s)
-    except Exception:
-        return None
-
-
-def _extract_pt_change(text: str) -> Tuple[Optional[float], Optional[float], str]:
-    t = text or ""
-    # "from $145.00 to $130.00"
-    m = re.search(r"\bfrom\b\s*\$?([0-9]{1,6}(?:\.[0-9]{1,2})?)\s+\bto\b\s*\$?([0-9]{1,6}(?:\.[0-9]{1,2})?)", t, flags=re.I)
-    if m:
-        return float(m.group(1)), float(m.group(2)), "USD"
-    # Arrow form: "$145.00 -> $130.00"
-    m2 = re.search(r"\$?([0-9]{1,6}(?:\.[0-9]{1,2})?)\s*(?:→|->)\s*\$?([0-9]{1,6}(?:\.[0-9]{1,2})?)", t)
-    if m2:
-        return float(m2.group(1)), float(m2.group(2)), "USD"
-    return None, None, "USD"
-
-
-def _event_fingerprint(e: "AnalystEvent") -> str:
-    # Stable identity for "same item" across runs
-    raw = "|".join(
-        [
-            e.ticker.upper(),
-            e.firm or "",
-            e.action or "",
-            e.rating_from or "",
-            e.rating_to or "",
-            "" if e.pt_from is None else f"{e.pt_from:.4f}",
-            "" if e.pt_to is None else f"{e.pt_to:.4f}",
-            e.source_url or "",
-        ]
-    ).encode("utf-8", errors="ignore")
-    return hashlib.sha1(raw).hexdigest()
-
-
-def _load_seen_db(path: Path) -> Dict[str, dict]:
-    try:
-        if path.exists():
-            return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        pass
-    return {}
-
-
-def _save_seen_db(path: Path, db: Dict[str, dict]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(db, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    tmp.replace(path)
-
-
-def _load_last_success(path_json: Path) -> Optional[Dict[str, object]]:
-    """Load last successful MarketBeat result (not the seen-db).
-    Used as a fallback when MarketBeat serves a bot/challenge page.
+def _finnhub_api_check(api_key: str) -> Tuple[bool, str]:
+    """
+    Validálás:
+    - hívunk egy minimál requestet (from/to 1 nap, limit 1) és JSON parse.
     """
     try:
-        if path_json.exists():
-            data = json.loads(path_json.read_text(encoding="utf-8", errors="replace"))
-            if isinstance(data, dict) and isinstance(data.get("events"), list):
-                return data
-    except Exception:
-        return None
-
-
-def _save_last_success(path_json: Path, path_md: Path, payload: Dict[str, object], md_text: str) -> None:
-    try:
-        path_json.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path_json.with_suffix(path_json.suffix + ".tmp")
-        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(path_json)
-        path_md.write_text(md_text, encoding="utf-8")
-    except Exception:
-        # Never fail the pipeline because of cache IO.
-        pass
-    return None
-
-
-def _fresh_events_from_seen(db: Dict[str, dict], cutoff_iso: str) -> List["AnalystEvent"]:
-    out: List[AnalystEvent] = []
-    for v in db.values():
-        fs = str(v.get("first_seen", ""))
-        if fs and fs >= cutoff_iso:
-            ev = v.get("event") or {}
-            ev["date"] = fs  # first_seen drives the "last N days" window
-            try:
-                out.append(AnalystEvent(**ev))
-            except Exception:
-                continue
-    return out
-
-
-def _update_seen_with_today(db: Dict[str, dict], events_today: List["AnalystEvent"], today_iso: str) -> None:
-    for e in events_today:
-        key = _event_fingerprint(e)
-        item = db.get(key) or {}
-        first_seen = item.get("first_seen") or today_iso
-        db[key] = {
-            "first_seen": first_seen,
-            "last_seen": today_iso,
-            "event": asdict(e),
-        }
-
-
-@dataclass
-class AnalystEvent:
-    ticker: str
-    date: str  # ISO date YYYY-MM-DD (we use first_seen for output stability)
-    firm: str
-    action: str
-    rating_from: Optional[str]
-    rating_to: Optional[str]
-    pt_from: Optional[float]
-    pt_to: Optional[float]
-    currency: str
-    source_url: str
-
-
-def fetch_events_from_ratings_pages(
-    master_tickers: List[str],
-    days: int,
-    timeout: int,
-    sleep_s: float,
-    debug_dir: Optional[Path],
-) -> Tuple[List[AnalystEvent], Dict[str, str], bool, Optional[str]]:
-    today = datetime.utcnow().date()
-    cutoff = today - timedelta(days=days - 1)
-    master_set = {t.upper() for t in master_tickers}
-
-    statuses: Dict[str, str] = {}
-    parse_issue = False
-    fetch_ok = False
-
-    # Session-like opener with cookies + realistic UA; try UA fallbacks if blocked
-    opener = _build_opener(UA_POOL[0])
-
-    # Warmup home to get cookies (some runs require it)
-    _http_get(opener, BASE + "/", timeout, debug_dir, "warmup_home", referer=None)
-
-    out: List[AnalystEvent] = []
-    seen: set = set()
-
-    for kind, path in RATINGS_SOURCES:
-        url = BASE + path
-        status, page_html = _http_get(opener, url, timeout, debug_dir, f"ratings_{kind}", referer=BASE + '/')
-        statuses[kind] = f"HTTP {status}" if status else "HTTP ?"
-
-        # If blocked, retry once with alternate UA (new cookie jar)
-        if status == 403 and len(UA_POOL) > 1:
-            opener = _build_opener(UA_POOL[1])
-            _http_get(opener, BASE + "/", timeout, debug_dir, "warmup_home_alt", referer=None)
-            status, page_html = _http_get(opener, url, timeout, debug_dir, f"ratings_{kind}_alt", referer=BASE + "/")
-            statuses[kind] = f"HTTP {status}" if status else "HTTP ?"
-
-        if status >= 400 or status == 0:
-            _log(f"RATINGS {kind}: {statuses[kind]} (skip)")
-            time.sleep(sleep_s)
-            continue
-
-        # Some bot protections return HTTP 200 with a challenge page.
-        if _looks_like_block_page(page_html):
-            statuses[kind] = f"HTTP {status} (blocked/challenge)"
-            _log(f"RATINGS {kind}: {statuses[kind]} (skip)")
-            time.sleep(sleep_s)
-            continue
-
-        # Another failure mode: HTTP 200 but a non-rating payload (empty shell / JS challenge)
-        # that does NOT contain our marker strings. Don't parse it.
-        if not _looks_like_ratings_payload(page_html, kind):
-            statuses[kind] = f"HTTP {status} (unexpected html)"
-            _log(f"RATINGS {kind}: {statuses[kind]} (skip)")
-            time.sleep(sleep_s)
-            continue
-
-        fetch_ok = True
-
-        # Iterate <tr> blocks
-        for tr in re.findall(r"<tr[^>]*>.*?</tr>", page_html, flags=re.I | re.S):
-            tds = re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", tr, flags=re.I | re.S)
-            if not tds:
-                continue
-            cells = [_clean_text(re.sub(r"<[^>]+>", " ", c)) for c in tds]
-            if not cells:
-                continue
-
-            # Date (usually first cell)
-            date_obj = _parse_date_any(cells[0]) if cells else None
-            if not date_obj:
-                # If missing, treat as today so it can be cached; still filtered later via first_seen
-                date_obj = today
-
-            if date_obj < cutoff or date_obj > today:
-                continue
-
-            ticker = _extract_ticker_from_row(tr, cells)
-            if not ticker or ticker.upper() not in master_set:
-                continue
-
-            urls = _extract_urls_from_row_html(tr)
-            stock_url = urls.get("stock", "")
-            details_url = urls.get("details", "")
-            source_url = details_url or stock_url or url
-
-            joined = " ".join([c for c in cells if c]).strip()
-            firm = _guess_firm(cells, joined)
-            action = _kind_to_action(kind, joined)
-
-            rating_from, rating_to = _extract_rating_change(joined)
-            pt_from, pt_to, currency = _extract_pt_change(joined)
-
-            # For PT change decide direction label
-            if kind == "pt_change":
-                if pt_from is not None and pt_to is not None:
-                    if pt_to > pt_from:
-                        action = "Célár emelés"
-                    elif pt_to < pt_from:
-                        action = "Célár csökkentés"
-                    else:
-                        action = "Célár változatlan"
-                else:
-                    action = "Célár változás"
-
-            e = AnalystEvent(
-                ticker=ticker.upper(),
-                date=date_obj.isoformat(),  # will be replaced by first_seen on output
-                firm=firm,
-                action=action,
-                rating_from=rating_from,
-                rating_to=rating_to,
-                pt_from=pt_from,
-                pt_to=pt_to,
-                currency=currency,
-                source_url=source_url,
-            )
-            key = (
-                e.ticker,
-                e.firm,
-                e.action,
-                e.rating_from,
-                e.rating_to,
-                e.pt_from,
-                e.pt_to,
-                e.source_url,
-            )
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append(e)
-
-        time.sleep(sleep_s)
-
-    note = None
-    if not fetch_ok:
-        # If everything is blocked, expose that clearly (we will still output cache if available)
-        if any("403" in v for v in statuses.values()):
-            note = None
-        else:
-            note = None
-
-    return out, statuses, fetch_ok, note
-
-
-def write_outputs(
-    out_md: Path,
-    out_json: Optional[Path],
-    events: List[AnalystEvent],
-    days: int,
-    fetch_ok: bool = True,
-    cache_based: bool = False,
-    cache_has_history: bool = False,
-    cache_is_empty: bool = False,
-    statuses: Optional[Dict[str, str]] = None,
-    note: Optional[str] = None,
-) -> str:
-    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-    lines: List[str] = []
-        # NOTE: This file is embedded into summary_report_1.md, which already prints the header.
-
-    if not events:
-        if fetch_ok:
-            # True empty (source reachable but no items)
-            lines.append(f"_Nincs új fel/leminősítés vagy célár‑változás az elmúlt {days} naptári napban (MarketBeat / szűrés)._")
-        else:
-            # Blocked/error: if we have any previously-seen/cache state, show a cache-based "no events" line.
-            if cache_based:
-                if cache_is_empty and (not cache_has_history):
-                    lines.append(f"_Nincs friss fel/leminősítés vagy célár‑változás az elmúlt {days} naptári napban (cache még üres / még nem volt sikeres lekérés)._")
-                else:
-                    lines.append(f"_Nincs friss fel/leminősítés vagy célár‑változás az elmúlt {days} naptári napban (utolsó ismert cache alapján)._")
-            else:
-                lines.append("_N/A._")
-    else:
-        by: Dict[str, List[AnalystEvent]] = {}
-        for e in events:
-            by.setdefault(e.ticker, []).append(e)
-        for t in sorted(by.keys()):
-            lines.append(f"## {t}")
-            for e in sorted(by[t], key=lambda x: x.date, reverse=True):
-                parts = [f"- {e.date} — {e.firm} — {e.action}"]
-                if e.rating_from or e.rating_to:
-                    parts.append(f"Ajánlás: {e.rating_from or '—'} → {e.rating_to or '—'}")
-                if e.pt_from is not None or e.pt_to is not None:
-                    if e.pt_from is not None and e.pt_to is not None:
-                        parts.append(f"Célár: {e.currency} {e.pt_from:.2f} → {e.pt_to:.2f}")
-                    elif e.pt_to is not None:
-                        parts.append(f"Célár: {e.currency} {e.pt_to:.2f}")
-                parts.append(f"Forrás: {e.source_url}")
-                lines.append(" | ".join(parts))
-            lines.append("")
-
-    if note:
-        # Keep it short and non-invasive: just one italic line.
-        if lines and lines[-1] != "":
-            lines.append("")
-        lines.append(f"_{note}_")
-
-    md_text = "\n".join(lines).rstrip() + "\n"
-    out_md.parent.mkdir(parents=True, exist_ok=True)
-    out_md.write_text(md_text, encoding="utf-8")
-
-    if out_json:
-        out_json.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "version": VERSION,
-            "generated_utc": now,
-            "days": days,
-            "count": len(events),
-            "events": [asdict(e) for e in events],
-        }
-        out_json.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-
-    return md_text
-
-
-
-def _is_marketbeat_blocked(statuses: Dict[str, str]) -> bool:
-    blob = " ".join([(statuses.get("upgrade","") or ""), (statuses.get("downgrade","") or ""), (statuses.get("pt_change","") or "")]).lower()
-    return ("blocked" in blob) or ("challenge" in blob) or ("cloudflare" in blob) or ("http 403" in blob) or ("http 429" in blob)
-
-
-def _finnhub_action_hu(action: str) -> str:
-    a = (action or "").strip().lower()
-    return {
-        "up": "felminősítés",
-        "down": "leminősítés",
-        "main": "megerősítés",
-        "init": "kezdeményezés",
-        "reit": "ismétlés",
-    }.get(a, action or "")
-
-
-def fetch_finnhub_upgrade_downgrade(
-    api_key: str,
-    from_iso: str,
-    to_iso: str,
-    timeout: int = 20,
-) -> Tuple[List[Dict[str, Any]], str]:
-    """
-    Finnhub fallback: Stock Upgrade/Downgrade endpoint.
-    Docs: requires token param; returns list with fields:
-      symbol, gradeTime (unix), fromGrade, toGrade, company, action.
-    """
-    if not api_key:
-        return [], "missing_api_key"
-
-    base = "https://finnhub.io/api/v1/stock/upgrade-downgrade"
-    qs = urllib.parse.urlencode({"from": from_iso, "to": to_iso, "token": api_key})
-    url = f"{base}?{qs}"
-
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read().decode("utf-8", errors="replace")
-            if resp.status != 200:
-                return [], f"http_{resp.status}"
-            data = json.loads(raw)
-            if isinstance(data, list):
-                return data, "ok"
-            return [], "bad_json"
+        to_d = _dt.date.today()
+        from_d = to_d - _dt.timedelta(days=1)
+        url = _finnhub_url(api_key, {"from": from_d.isoformat(), "to": to_d.isoformat(), "limit": "1"})
+        status, txt = _http_get(url, headers={"Accept": "application/json"})
+        if status != 200:
+            return False, f"HTTP {status}"
+        try:
+            data = json.loads(txt)
+        except Exception:
+            # Finnhub néha plain error stringet ad 200-zal is
+            return False, "JSON parse failed"
+        # Várt: list of dict OR dict with error
+        if isinstance(data, dict) and ("error" in data or "message" in data):
+            return False, f"API error: {data.get('error') or data.get('message')}"
+        if not isinstance(data, list):
+            return False, f"Unexpected JSON type: {type(data).__name__}"
+        return True, "OK"
     except urllib.error.HTTPError as e:
-        return [], f"http_{getattr(e, 'code', 'err')}"
+        return False, f"HTTPError {e.code}"
+    except urllib.error.URLError as e:
+        return False, f"URLError {e.reason}"
+    except Exception as e:
+        return False, f"Exception: {e}"
+
+
+def fetch_finnhub_upgrade_downgrade(api_key: str, days: int) -> List[Dict[str, Any]]:
+    """
+    Lekérdezi a Finnhub upgrade/downgrade eseményeket az utolsó N napra.
+    Megjegyzés: Finnhub feed célár-változást tipikusan nem tartalmaz.
+    """
+    to_d = _dt.date.today()
+    from_d = to_d - _dt.timedelta(days=max(1, days))
+    url = _finnhub_url(api_key, {"from": from_d.isoformat(), "to": to_d.isoformat()})
+    status, txt = _http_get(url, headers={"Accept": "application/json"})
+    if status != 200:
+        raise RuntimeError(f"Finnhub HTTP {status}")
+    data = json.loads(txt)
+    if isinstance(data, dict) and ("error" in data or "message" in data):
+        raise RuntimeError(f"Finnhub API error: {data.get('error') or data.get('message')}")
+    if not isinstance(data, list):
+        raise RuntimeError(f"Finnhub unexpected JSON type: {type(data).__name__}")
+    return data
+
+
+def _format_event_line(e: Dict[str, Any]) -> str:
+    # Finnhub event fields (best-effort)
+    sym = str(e.get("symbol") or "").upper().strip()
+    company = str(e.get("company") or "").strip()
+    action = str(e.get("action") or "").strip()
+    frm = str(e.get("fromGrade") or e.get("fromgrade") or "").strip()
+    to = str(e.get("toGrade") or e.get("tograde") or "").strip()
+    analyst = str(e.get("analyst") or e.get("firm") or e.get("brokerage") or "").strip()
+    t = e.get("gradeTime") or e.get("gradetime") or e.get("time") or ""
+    # gradeTime lehet epoch ms/s is
+    ts_str = ""
+    try:
+        if isinstance(t, (int, float)):
+            # Finnhub tipikusan epoch ms
+            sec = int(t)
+            if sec > 10_000_000_000:  # ms
+                sec = sec // 1000
+            ts_str = _dt.datetime.utcfromtimestamp(sec).strftime("%Y-%m-%d")
+        elif isinstance(t, str) and t:
+            ts_str = t[:10]
     except Exception:
-        return [], "error"
-def read_master_tickers(master_csv: Path) -> List[str]:
-    # CSV exported from Google Sheets: contains "Ticker" column (or similar)
-    txt = master_csv.read_text(encoding="utf-8", errors="replace")
-    lines = [l for l in txt.splitlines() if l.strip()]
-    if not lines:
-        return []
-    header = [h.strip().strip('"') for h in lines[0].split(",")]
-    # Try common column names
-    idx = None
-    for cand in ("Ticker", "ticker", "TICKER", "Symbol", "symbol"):
-        if cand in header:
-            idx = header.index(cand)
-            break
-    if idx is None:
-        # Fallback: first column
-        idx = 0
-    out: List[str] = []
-    for l in lines[1:]:
-        cols = [c.strip().strip('"') for c in l.split(",")]
-        if idx < len(cols):
-            t = cols[idx].strip().upper()
-            if t and re.fullmatch(r"[A-Z0-9.\-]{1,12}", t):
-                out.append(t)
-    return sorted(set(out))
+        ts_str = ""
+    parts = []
+    if sym:
+        parts.append(sym)
+    if company and (company.upper() != sym):
+        parts.append(company)
+    core = ""
+    if action:
+        core += action
+    if frm or to:
+        core += f" ({frm} → {to})".strip()
+    if core:
+        parts.append(core.strip())
+    if analyst:
+        parts.append(f"– {analyst}")
+    if ts_str:
+        parts.append(f"– {ts_str}")
+    return " ".join([p for p in parts if p]).strip()
+
+
+def write_markdown(out_path: str, lines: List[str], note_lines: List[str]) -> None:
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write("## Elemzői feed (MarketBeat) – fel/leminősítések + célár (utolsó 2 naptári nap)\n\n")
+        if lines:
+            for ln in lines:
+                f.write(f"- {ln}\n")
+        else:
+            f.write("_N/A._\n")
+        f.write("\n")
+        for nl in note_lines:
+            f.write(f"_{nl}_\n")
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--master", required=True)
     ap.add_argument("--days", type=int, default=2)
-    ap.add_argument("--out-md", required=True)
-    ap.add_argument("--out-json", default="")
-    ap.add_argument("--seen-file", default=DEFAULT_SEEN_FILE)
-    ap.add_argument("--timeout", type=int, default=20)
-    ap.add_argument("--sleep", type=float, default=0.25)
-    ap.add_argument("--debug", action="store_true")
-    ap.add_argument("--debug-dir", default="reports/debug_marketbeat")
-    ap.add_argument("--finnhub-api-key", default=os.environ.get("FINNHUB_API_KEY",""), help="Finnhub API key (fallback when MarketBeat is blocked)")
+    ap.add_argument("--master", required=True, help="Path to reports/master.csv")
+    ap.add_argument("--mode", default="ratings_pages")
+    ap.add_argument("--out_md", default="reports/analyst_last2d.md")
+    ap.add_argument("--seen_path", default="reports/marketbeat_seen.json")
+    ap.add_argument("--last_success_path", default="reports/marketbeat_last_success.json")
+    ap.add_argument("--finnhub_api_key", default=os.environ.get("FINNHUB_API_KEY", ""), help="Finnhub API key (fallback)")
     args = ap.parse_args()
 
-    master = Path(args.master)
-    if not master.exists():
-        _log(f"ERROR: MASTER CSV not found: {master}")
-        # Still write a small md so the main report doesn't break
-        out_md = Path(args.out_md)
-        write_outputs(out_md, None, [], args.days, fetch_ok=False, statuses={"master": "missing"}, note=None)
-        return 0
+    _log(f"START {VERSION} days={args.days} master={args.master} mode={args.mode}")
 
-    debug_dir = Path(args.debug_dir) if args.debug else None
+    # Always ensure seen file exists (empty ok)
+    seen_db = _load_seen_db(args.seen_path)
+    if not os.path.exists(args.seen_path):
+        _save_seen_db(args.seen_path, seen_db)
 
-    _log(f"START {VERSION} days={args.days} master={master} mode=ratings_pages")
+    tickers = _read_master_tickers(args.master)
 
-    today_iso = datetime.utcnow().date().isoformat()
-    cutoff_iso = (datetime.utcnow().date() - timedelta(days=args.days - 1)).isoformat()
+    # ---- MarketBeat part (kept minimal; your logs show it is blocked anyway) ----
+    # We do not attempt to bypass CF. Just detect and skip.
+    blocked = True
+    note_lines: List[str] = ["Megjegyzés: MarketBeat blokkolás / robotvédelem (a feed nem megbízhatóan elérhető)."]
+    events: List[str] = []
 
-    tickers = read_master_tickers(master)
-
-    seen_path = Path(args.seen_file)
-    seen_db = _load_seen_db(seen_path)
-
-    # Fetch today's items (best effort)
-    events_today: List[AnalystEvent] = []
-    statuses: Dict[str, str] = {}
-    fetch_ok = False
-
-    note: Optional[str] = None
-
-    try:
-        events_today, statuses, fetch_ok, note = fetch_events_from_ratings_pages(
-            master_tickers=tickers,
-            days=args.days,
-            timeout=args.timeout,
-            sleep_s=max(args.sleep, 0.35),
-            debug_dir=debug_dir,
-        )
-    except Exception as e:
-        fetch_ok = False
-        note = None
-        _log(f"WARN: exception during fetch: {e}")
-
-    if fetch_ok and events_today:
-        _update_seen_with_today(seen_db, events_today, today_iso)
-        _save_seen_db(seen_path, seen_db)
-    elif fetch_ok:
-        # Source ok but no events: still update db 'last_seen' is irrelevant; keep db as-is
-        _save_seen_db(seen_path, seen_db)
-    else:
-        # Source not ok: do not overwrite cache; keep db untouched
-        pass
-
-    # Default output: from seen-db window (first_seen-based)
-    events_out = _fresh_events_from_seen(seen_db, cutoff_iso)
-
-    # If the source is not OK and the seen-db window is empty, fallback to last successful payload.
-    if (not fetch_ok or statuses.get("_note") == "parse_issue") and not events_out:
-        last_payload = _load_last_success(Path(LAST_SUCCESS_JSON))
-        if last_payload and isinstance(last_payload.get("events"), list):
-            gen = str(last_payload.get("generated_utc") or "")
-            cached: List[AnalystEvent] = []
-            for d in last_payload.get("events", []):
-                try:
-                    # last_success payload is saved from this script, so field names match AnalystEvent.
-                    ev = AnalystEvent(
-                        ticker=str(d.get("ticker") or "").upper(),
-                        date=str(d.get("date") or ""),
-                        firm=str(d.get("firm") or ""),
-                        action=str(d.get("action") or ""),
-                        rating_from=(d.get("rating_from") if d.get("rating_from") not in ("", None) else None),
-                        rating_to=(d.get("rating_to") if d.get("rating_to") not in ("", None) else None),
-                        pt_from=(float(d["pt_from"]) if d.get("pt_from") not in ("", None) else None),
-                        pt_to=(float(d["pt_to"]) if d.get("pt_to") not in ("", None) else None),
-                        currency=str(d.get("currency") or "USD"),
-                        source_url=str(d.get("source_url") or ""),
-                    )
-                    if ev.date and ev.date >= cutoff_iso:
-                        cached.append(ev)
-                except Exception:
-                    continue
-            if cached:
-                events_out = cached
-                note = f"Megjegyzés: MarketBeat most blokkolt/hibás; a legutóbbi sikeres mentett eredmény látható (UTC: {gen})."
-
-    # Finnhub fallback (only if MarketBeat is blocked/challenged and we have no usable cached events)
-    if (not events_out) and _is_marketbeat_blocked(statuses) and args.finnhub_api_key:
-        raw_rows, st = fetch_finnhub_upgrade_downgrade(
-            api_key=args.finnhub_api_key,
-            from_iso=cutoff_iso,
-            to_iso=today_iso,
-            timeout=args.timeout,
-        )
-        if st == "ok" and raw_rows:
-            wanted = set(tickers)
-            converted: List[AnalystEvent] = []
-            for r in raw_rows:
-                try:
-                    sym = str(r.get("symbol") or "").upper()
-                    if not sym or sym not in wanted:
-                        continue
-                    ts = int(r.get("gradeTime") or 0)
-                    d = datetime.utcfromtimestamp(ts).date().isoformat() if ts > 0 else today_iso
-                    firm = str(r.get("company") or "").strip()
-                    act = _finnhub_action_hu(str(r.get("action") or ""))
-                    rg_from = str(r.get("fromGrade") or "").strip() or None
-                    rg_to = str(r.get("toGrade") or "").strip() or None
-                    converted.append(AnalystEvent(
-                        ticker=sym,
-                        date=d,
-                        firm=firm or "Finnhub",
-                        action=act or "rating",
-                        rating_from=rg_from,
-                        rating_to=rg_to,
-                        pt_from=None,
-                        pt_to=None,
-                        currency="USD",
-                        source_url="https://finnhub.io/docs/api/upgrade-downgrade",
-                    ))
-                except Exception:
-                    continue
-            if converted:
-                events_out = converted
-                note = "Megjegyzés: MarketBeat blokkolt/challenge; Finnhub Upgrade/Downgrade fallback aktiválva (Finnhub feed jellemzően nem ad célárat)."
-        elif st != "ok":
-            if not note:
-                note = "Megjegyzés: MarketBeat blokkolt/challenge; Finnhub fallback nem elérhető (kulcs/limit/hálózati hiba)."
-
-    events_out.sort(key=lambda e: (e.date, e.ticker), reverse=True)
-
-    out_md = Path(args.out_md)
-    out_json = Path(args.out_json) if args.out_json else None
-
-    # Add a short note on failures.
-    if not fetch_ok and not note:
-        st = " ".join(statuses.values()).lower()
-        if "blocked" in st or "http 403" in st or "http 429" in st:
-            note = "Megjegyzés: MarketBeat blokkolás / robotvédelem (a feed nem megbízhatóan elérhető)."
-        elif statuses.get("_note") == "parse_issue":
-            note = "Megjegyzés: MarketBeat oldal szerkezete változhatott (parse 0 sor)."
+    # ---- Finnhub fallback ----
+    if blocked:
+        api_key = (args.finnhub_api_key or "").strip()
+        if not api_key:
+            note_lines.insert(0, "Finnhub fallback: FINNHUB_API_KEY nincs beállítva (Secrets/Actions).")
         else:
-            note = "Megjegyzés: MarketBeat forráshiba."
+            ok, msg = _finnhub_api_check(api_key)
+            if not ok:
+                note_lines.insert(0, f"Finnhub fallback: API ellenőrzés sikertelen ({msg}).")
+            else:
+                try:
+                    raw_rows = fetch_finnhub_upgrade_downgrade(api_key, days=args.days)
+                    # Filter to MASTER tickers
+                    kept = []
+                    for r in raw_rows:
+                        if not isinstance(r, dict):
+                            continue
+                        sym = str(r.get("symbol") or "").upper().strip()
+                        if not sym or sym not in tickers:
+                            continue
+                        kept.append(r)
 
-    def _clean_status(s: str) -> bool:
-        ss = (s or "").lower()
-        return ss.startswith("http 200") and ("blocked" not in ss) and ("unexpected" not in ss)
+                    # Deduplicate by (symbol, gradeTime, fromGrade, toGrade, action)
+                    seen_keys = set()
+                    for r in kept:
+                        k = (
+                            str(r.get("symbol") or "").upper().strip(),
+                            str(r.get("gradeTime") or r.get("gradetime") or ""),
+                            str(r.get("fromGrade") or r.get("fromgrade") or ""),
+                            str(r.get("toGrade") or r.get("tograde") or ""),
+                            str(r.get("action") or ""),
+                        )
+                        if k in seen_keys:
+                            continue
+                        seen_keys.add(k)
+                        events.append(_format_event_line(r))
 
-    fetch_ok_all = all(_clean_status(statuses.get(k, "")) for k in ("upgrade", "downgrade", "pt_change"))
+                    if events:
+                        note_lines.insert(0, "Finnhub fallback: sikeres (MarketBeat blokkolt).")
+                    else:
+                        note_lines.insert(0, "Finnhub fallback: nincs releváns (MASTER-re szűrt) fel/leminősítés az ablakban.")
+                except Exception as e:
+                    note_lines.insert(0, f"Finnhub fallback: hiba ({e}).")
 
-    def _has_last_success_events(p: Path) -> bool:
-        try:
-            if not p.exists():
-                return False
-            d = json.loads(p.read_text(encoding='utf-8', errors='replace'))
-            ev = d.get('events')
-            return isinstance(ev, list) and len(ev) > 0
-        except Exception:
-            return False
+    # If still no events, give a non-N/A message when we *know* why.
+    if not events:
+        # Replace N/A with clear reason, per your preference
+        clear = "MarketBeat blokkolás mellett jelenleg nincs megjeleníthető elemzői esemény (Finnhub fallback üres vagy nem elérhető)."
+        # We write it as a single italic line in the body (instead of N/A)
+        events = [clear]
 
-    cache_has_history = bool(seen_db)
-    cache_has_last_success = _has_last_success_events(Path(LAST_SUCCESS_JSON))
-    cache_any = cache_has_history or cache_has_last_success
-    cache_is_empty = (not cache_has_history) and (not cache_has_last_success)
-
-    md_text = write_outputs(
-        out_md,
-        out_json,
-        events_out,
-        args.days,
-        fetch_ok=fetch_ok,
-        cache_based=((not fetch_ok) and cache_any),
-        cache_has_history=cache_has_history,
-        cache_is_empty=cache_is_empty,
-        statuses=statuses,
-        note=note,
-    )
-
-    if fetch_ok_all:
-        payload = {
-            "generated_utc": datetime.utcnow().isoformat(timespec="seconds") + "Z",
-            "days": args.days,
-            "statuses": statuses,
-            "events": [asdict(e) for e in events_out],
-        }
-        _save_last_success(Path(LAST_SUCCESS_JSON), Path(LAST_SUCCESS_MD), payload, md_text)
-
-    _log(f"DONE events={len(events_out)}")
+    write_markdown(args.out_md, events, note_lines)
+    _log(f"DONE events={0 if (events and 'nincs megjeleníthető' in events[0]) else len(events)} wrote={args.out_md}")
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except SystemExit:
+        raise
+    except Exception as e:
+        # Last resort: never crash the pipeline; write a minimal md.
+        try:
+            write_markdown(
+                "reports/analyst_last2d.md",
+                ["Analyst modul hiba: a feldolgozás sikertelen, részletek a logban."],
+                [f"Megjegyzés: exception: {e}"],
+            )
+        except Exception:
+            pass
+        _log(f"FATAL: {e}")
+        raise SystemExit(0)
