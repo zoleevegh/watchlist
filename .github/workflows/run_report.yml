@@ -1,7 +1,7 @@
-# Ima (v1.0.10): bocsáss meg uram, ha megint mellényúltam;
-# adj türelmet és tiszta logot, hogy csak az igazat írjam le.
-# Verzió: v1.0.10-run_report-checkout-retry+keep-nincsfriss-2026-01-22
-# run_report.yml — v1.0.10
+# Ima (v1.0.11): bocsáss meg uram, ha botfalba futottam;
+# adj kulcsot és fallback‑ot, hogy legyen elemzői feed és ne csak üres N/A.
+# Verzió: v1.0.11-run_report-fmp-secret+marketbeat-fallback-2026-01-23
+# run_report.yml — v1.0.11
 
 name: Run Report — PRICE ENGINE
 
@@ -118,6 +118,8 @@ jobs:
         env:
           # Default MASTER CSV (latest)
           DEFAULT_MASTER_CSV_URL: "https://docs.google.com/spreadsheets/d/e/2PACX-1vQkgyw0ONwSfc2KnrmWGqf8fWVQxS-R08RySndB69KDJ8L1Cz-H2F1AZtyDfhBGedC0qdC1SFo_aDye/pub?output=csv"
+          # Optional: FMP key for analyst fallback (MarketBeat blocked/challenge)
+          FMP_API_KEY: "${{ secrets.FMP_API_KEY }}"
         run: |
           set -euo pipefail
           mkdir -p reports
