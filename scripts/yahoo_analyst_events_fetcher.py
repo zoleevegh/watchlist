@@ -1,328 +1,189 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
-yahoo_analyst_events_fetcher.py – v4.0.0 (A: MarketBeat analyst ratings tracker)
+Yahoo Live probe + backoff retry (v1.0.1)
 
-Kimenet:
-  - reports/yahoo_analyst_{report}.json
+Fix:
+- v1.0.1: import Path from pathlib (NameError fix)
 
-Mit csinál:
-  - MarketBeat \"ratings\" tracker oldaláról kiolvassa a friss broker-akciókat
-    (upgrade/downgrade/initiations/price target változások), és csak a report univerzum tickereire szűr.
-  - Targets snapshot: MarketBeat forecast oldalról (consensus / hi / low) best-effort.
+Purpose:
+- Deterministically test Yahoo Finance "Live" page fetch reliability.
+- Implements retries with exponential backoff (1s, 3s, 9s) + jitter.
+- Produces a small markdown report (yahoo_live_probe_report.md) summarizing:
+  - final HTTP status
+  - whether blocked/challenged
+  - extracted <title> when available
+  - a short "macro" fallback note (stub) when blocked
 
-Miért:
-  - A Yahoo root.App.main / QuoteSummaryStore szerkezet folyamatosan változik,
-    ezért az eddigi Yahoo-s parserek gyakran 0 itemet adtak és tele voltak hibával.
-
-Időablak:
-  - lookbackDays (default 14) – ez illeszkedik a high-conv logikához is.
+Inputs (env):
+- YAHOO_LIVE_URL (optional): defaults to a known Yahoo Live URL
+- MAX_ATTEMPTS (optional): default 4
+- TIMEOUT_SECS (optional): default 20
 """
 
 from __future__ import annotations
 
-import argparse
-import csv
-import json
+import os
+import random
 import re
-import sys
 import time
-from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
-from urllib.parse import quote
-from urllib.request import Request, urlopen
+from typing import Optional
 
-VERSION = "4.0.0"
+import requests
 
-UA = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/120.0 Safari/537.36"
+
+DEFAULT_URL = (
+    "https://finance.yahoo.com/news/live/"
+    "stock-market-today-dow-sp-500-nasdaq-falter-with-big-week-of-big-tech-earnings-fed-meeting-ahead-110341565.html"
 )
 
-EXCHANGES = ["NASDAQ", "NYSE", "AMEX", "OTCMKTS", "TSX", "TSXV"]
-
-MB_RATINGS_URL = "https://www.marketbeat.com/ratings/us/"
-
-def _http_get(url: str, timeout: int = 25) -> str:
-    req = Request(url, headers={"User-Agent": UA, "Accept": "text/html,*/*"})
-    with urlopen(req, timeout=timeout) as r:
-        raw = r.read()
-    for enc in ("utf-8", "latin-1"):
-        try:
-            return raw.decode(enc)
-        except Exception:
-            continue
-    return raw.decode("utf-8", errors="replace")
+VERSION = "v1.0.1"
 
 
-def _load_universe(report: str) -> List[str]:
-    latest = Path("reports") / f"latest_{report}.json"
-    if latest.exists():
-        try:
-            data = json.loads(latest.read_text(encoding="utf-8"))
-            if isinstance(data, dict) and isinstance(data.get("tickers"), list):
-                return [str(x).strip().upper() for x in data["tickers"] if str(x).strip()]
-            if isinstance(data, list):
-                out = []
-                for row in data:
-                    if isinstance(row, dict):
-                        t = row.get("ticker") or row.get("Ticker") or row.get("symbol")
-                        if t:
-                            out.append(str(t).strip().upper())
-                    elif isinstance(row, str):
-                        out.append(row.strip().upper())
-                return [t for t in out if t]
-        except Exception:
-            pass
-
-    master = Path("reports") / "master.csv"
-    if master.exists():
-        out = []
-        with master.open("r", encoding="utf-8-sig", newline="") as f:
-            reader = csv.reader(f)
-            rows = list(reader)
-        if not rows:
-            return []
-        header = [h.strip().lower() for h in rows[0]]
-        ticker_idx = 0
-        for i, h in enumerate(header):
-            if h in ("ticker", "symbol"):
-                ticker_idx = i
-                break
-        for r in rows[1:]:
-            if len(r) > ticker_idx:
-                t = r[ticker_idx].strip().upper()
-                if t:
-                    out.append(t)
-        return out
-
-    return []
+@dataclass
+class FetchResult:
+    ok: bool
+    status: Optional[int]
+    attempts: int
+    reason: str
+    title: Optional[str] = None
 
 
-def _parse_mb_date(s: str, now_utc: datetime) -> Optional[datetime]:
-    """
-    MarketBeat ratings tracker tipikusan 'Dec 18, 2025' vagy '12/18/2025' formátumokkal jön.
-    """
-    s = (s or "").strip()
-    if not s:
-        return None
-    for fmt in ("%b %d, %Y", "%B %d, %Y", "%m/%d/%Y", "%Y-%m-%d"):
-        try:
-            return datetime.strptime(s, fmt).replace(tzinfo=timezone.utc)
-        except Exception:
-            pass
-    # sometimes 'Dec. 18, 2025'
-    s2 = s.replace(".", "")
-    for fmt in ("%b %d, %Y",):
-        try:
-            return datetime.strptime(s2, fmt).replace(tzinfo=timezone.utc)
-        except Exception:
-            pass
-    return None
+def _clean_title(raw: str) -> str:
+    raw = re.sub(r"\s+", " ", raw or "").strip()
+    return raw[:200] if raw else ""
 
 
-def _strip_tags(html: str) -> str:
-    html = re.sub(r"<script[\\s\\S]*?</script>", " ", html, flags=re.I)
-    html = re.sub(r"<style[\\s\\S]*?</style>", " ", html, flags=re.I)
-    html = re.sub(r"<[^>]+>", " ", html)
-    html = re.sub(r"\\s+", " ", html).strip()
-    return html
+def fetch_with_backoff(url: str, max_attempts: int = 4, timeout_secs: int = 20) -> FetchResult:
+    # 1s, 3s, 9s (+15 as last fallback) with jitter
+    delays = [1, 3, 9, 15]
 
-
-def _extract_ticker_from_cell(cell_html: str) -> Optional[str]:
-    """
-    ratings trackerben a ticker sokszor zárójelben szerepel: 'Apple (AAPL)'
-    """
-    txt = _strip_tags(cell_html)
-    m = re.search(r"\\((?P<t>[A-Z0-9\\.\\-]{1,10})\\)", txt)
-    if m:
-        return m.group("t").upper()
-    # fallback: data-ticker attr
-    m2 = re.search(r'data-ticker\\s*=\\s*\"([^\"]+)\"', cell_html, flags=re.I)
-    if m2:
-        return m2.group(1).upper()
-    return None
-
-
-def _parse_ratings_table(html: str) -> List[Dict]:
-    """
-    Best-effort HTML table parser: a ratings/us oldalon a fő táblázat sorait kivesszük.
-    """
-    rows = []
-    # find table rows
-    for m in re.finditer(r"<tr[^>]*>(?P<tr>[\\s\\S]*?)</tr>", html, flags=re.I):
-        tr = m.group("tr")
-        cells = re.findall(r"<t[dh][^>]*>([\\s\\S]*?)</t[dh]>", tr, flags=re.I)
-        if len(cells) < 4:
-            continue
-        # Heurisztika a tipikus oszlopokra: Date | Company | Action | Firm | Rating | PT (nem mindig ugyanaz)
-        date_txt = _strip_tags(cells[0])
-        ticker = _extract_ticker_from_cell(cells[1]) or _extract_ticker_from_cell(tr)
-        action_txt = _strip_tags(cells[2])
-        firm_txt = _strip_tags(cells[3]) if len(cells) > 3 else ""
-        rating_txt = _strip_tags(cells[4]) if len(cells) > 4 else ""
-        pt_txt = _strip_tags(cells[5]) if len(cells) > 5 else ""
-
-        if not date_txt or not ticker:
-            continue
-
-        rows.append(
-            {
-                "date": date_txt,
-                "ticker": ticker,
-                "action": action_txt,
-                "firm": firm_txt,
-                "rating": rating_txt,
-                "priceTargetRaw": pt_txt,
-            }
-        )
-    return rows
-
-
-def _mb_forecast_url(ticker: str, exch: str) -> str:
-    return f"https://www.marketbeat.com/stocks/{exch}/{quote(ticker)}/forecast/"
-
-
-def _extract_targets_snapshot(html: str) -> Dict:
-    """
-    A forecast oldalon tipikusan szerepel:
-      - Consensus Price Target
-      - highest / lowest price target
-    """
-    txt = _strip_tags(html)
-    snap = {}
-
-    # consensus price target: often like '$283.92'
-    m = re.search(r"Consensus Price Target\\s+\\$?([0-9]+(?:\\.[0-9]+)?)", txt, flags=re.I)
-    if m:
-        snap["consensus"] = float(m.group(1))
-
-    m = re.search(r"highest price target\\s+is\\s+\\$?([0-9]+(?:\\.[0-9]+)?)", txt, flags=re.I)
-    if m:
-        snap["high"] = float(m.group(1))
-
-    m = re.search(r"lowest price target\\s+is\\s+\\$?([0-9]+(?:\\.[0-9]+)?)", txt, flags=re.I)
-    if m:
-        snap["low"] = float(m.group(1))
-
-    # consensus rating label (Moderate Buy etc.)
-    m = re.search(r"Consensus Rating\\s+([A-Za-z ]{3,25})", txt, flags=re.I)
-    if m:
-        snap["consensusRating"] = m.group(1).strip()
-
-    return snap
-
-
-def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--report", default="1")
-    ap.add_argument("--lookback-days", type=int, default=14)
-    ap.add_argument("--sleep", type=float, default=0.6)
-    args = ap.parse_args()
-
-    report = str(args.report)
-    now_utc = datetime.now(timezone.utc)
-    start_utc = now_utc - timedelta(days=int(args.lookback_days))
-
-    universe = set([t for t in _load_universe(report) if t and "." not in t and "/" not in t])
-
-    items: List[Dict] = []
-    errors_ratings: List[str] = []
-    errors_targets: List[str] = []
-    targets_snapshot: Dict[str, Dict] = {}
-
-    # --- 1) Ratings tracker ---
-    try:
-        html = _http_get(MB_RATINGS_URL)
-        rows = _parse_ratings_table(html)
-        for r in rows:
-            t = r["ticker"]
-            if t not in universe:
-                continue
-            dt = _parse_mb_date(r["date"], now_utc)
-            if not dt:
-                continue
-            if not (start_utc <= dt <= now_utc):
-                continue
-
-            # try parse PT number if present
-            pt = None
-            if r.get("priceTargetRaw"):
-                m = re.search(r"\\$?([0-9]+(?:\\.[0-9]+)?)", r["priceTargetRaw"])
-                if m:
-                    try:
-                        pt = float(m.group(1))
-                    except Exception:
-                        pt = None
-
-            items.append(
-                {
-                    "ticker": t,
-                    "dateUtc": dt.isoformat(),
-                    "source": "marketbeat_ratings_tracker",
-                    "action": r.get("action") or "",
-                    "firm": r.get("firm") or "",
-                    "rating": r.get("rating") or "",
-                    "priceTarget": pt,
-                    "priceTargetRaw": r.get("priceTargetRaw") or "",
-                }
-            )
-    except Exception as e:
-        errors_ratings.append(f"ratings-tracker: {type(e).__name__}: {e}")
-
-    # --- 2) Targets snapshot (per ticker, best-effort) ---
-    for t in sorted(universe):
-        got = False
-        last_err = None
-        for exch in EXCHANGES:
-            url = _mb_forecast_url(t, exch)
-            try:
-                html = _http_get(url)
-                snap = _extract_targets_snapshot(html)
-                if snap:
-                    targets_snapshot[t] = {"source": "marketbeat_forecast", "exchange": exch, **snap}
-                    got = True
-                    break
-                last_err = f"{t}: snapshot-empty ({exch})"
-            except Exception as e:
-                last_err = f"{t}: fetch-error ({exch}): {type(e).__name__}: {e}"
-            finally:
-                if args.sleep:
-                    time.sleep(float(args.sleep))
-        if not got and last_err:
-            errors_targets.append(last_err)
-
-    payload = {
-        "ok": True,
-        "type": "yahoo_analyst_events",
-        "version": VERSION,
-        "report": report,
-        "generatedAt": now_utc.isoformat(),
-        "window": {"lookbackDays": int(args.lookback_days)},
-        "count": len(items),
-        "items": sorted(items, key=lambda x: (x.get("dateUtc", ""), x.get("ticker", ""))),
-        "targetsSnapshot": targets_snapshot,
-        "sources": {
-            "marketbeat_ratings_tracker": {
-                "ok": len(errors_ratings) == 0,
-                "count": len([i for i in items if i.get("source") == "marketbeat_ratings_tracker"]),
-                "errors": errors_ratings[:50],
-                "url": MB_RATINGS_URL,
-            },
-            "marketbeat_forecast_targets_snapshot": {
-                "ok": len(targets_snapshot) > 0,
-                "count": len(targets_snapshot),
-                "errors": errors_targets[:200],
-            },
-        },
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/121.0.0.0 Safari/537.36"
+        ),
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Connection": "keep-alive",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
     }
 
-    out_path = Path("reports") / f"yahoo_analyst_{report}.json"
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    last_status: Optional[int] = None
+    last_reason = "unknown"
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            print(f"[{VERSION}] Attempt {attempt}/{max_attempts}: GET {url}", flush=True)
+            r = requests.get(url, headers=headers, timeout=timeout_secs, allow_redirects=True)
+            last_status = r.status_code
+
+            if r.status_code in (429, 403):
+                last_reason = "blocked_or_ratelimited"
+                print(f"[{VERSION}] -> HTTP {r.status_code} (blocked/rate-limited)", flush=True)
+                if attempt < max_attempts:
+                    base = delays[min(attempt - 1, len(delays) - 1)]
+                    sleep_s = base + random.uniform(0.0, 0.7)
+                    print(f"[{VERSION}] Backoff sleep: {sleep_s:.2f}s", flush=True)
+                    time.sleep(sleep_s)
+                    continue
+                return FetchResult(ok=False, status=r.status_code, attempts=attempt, reason=last_reason)
+
+            if r.status_code != 200:
+                last_reason = "non_200"
+                print(f"[{VERSION}] -> HTTP {r.status_code} (non-200)", flush=True)
+                if attempt < max_attempts:
+                    sleep_s = 0.7 + random.uniform(0.0, 0.5)
+                    print(f"[{VERSION}] Short sleep: {sleep_s:.2f}s", flush=True)
+                    time.sleep(sleep_s)
+                    continue
+                return FetchResult(ok=False, status=r.status_code, attempts=attempt, reason=last_reason)
+
+            html = r.text or ""
+            if len(html) < 2000:
+                last_reason = "too_short_html"
+                print(f"[{VERSION}] -> HTTP 200 but suspiciously short HTML ({len(html)} chars)", flush=True)
+                if attempt < max_attempts:
+                    base = delays[min(attempt - 1, len(delays) - 1)]
+                    sleep_s = base + random.uniform(0.0, 0.7)
+                    print(f"[{VERSION}] Backoff sleep: {sleep_s:.2f}s", flush=True)
+                    time.sleep(sleep_s)
+                    continue
+                return FetchResult(ok=False, status=200, attempts=attempt, reason=last_reason)
+
+            m = re.search(r"<title[^>]*>(.*?)</title>", html, flags=re.IGNORECASE | re.DOTALL)
+            title = _clean_title(m.group(1)) if m else None
+
+            print(f"[{VERSION}] -> HTTP 200 OK", flush=True)
+            if title:
+                print(f"[{VERSION}] Title: {title}", flush=True)
+
+            return FetchResult(ok=True, status=200, attempts=attempt, reason="ok", title=title)
+
+        except requests.RequestException as e:
+            last_reason = f"network_error: {type(e).__name__}"
+            print(f"[{VERSION}] -> Network error: {e}", flush=True)
+            if attempt < max_attempts:
+                base = delays[min(attempt - 1, len(delays) - 1)]
+                sleep_s = base + random.uniform(0.0, 0.7)
+                print(f"[{VERSION}] Backoff sleep: {sleep_s:.2f}s", flush=True)
+                time.sleep(sleep_s)
+                continue
+            return FetchResult(ok=False, status=last_status, attempts=attempt, reason=last_reason)
+
+    return FetchResult(ok=False, status=last_status, attempts=max_attempts, reason=last_reason)
+
+
+def write_report(url: str, res: FetchResult, path: str = "yahoo_live_probe_report.md") -> None:
+    ts = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
+    lines = []
+    lines.append(f"# Yahoo Live Probe Report ({VERSION})")
+    lines.append("")
+    lines.append(f"- **UTC time:** {ts}")
+    lines.append(f"- **URL:** {url}")
+    lines.append(f"- **Final status:** {res.status}")
+    lines.append(f"- **Attempts:** {res.attempts}")
+    lines.append(f"- **Result:** {'OK' if res.ok else 'FAILED'}")
+    lines.append(f"- **Reason:** {res.reason}")
+    if res.title:
+        lines.append(f"- **Title:** {res.title}")
+    lines.append("")
+    lines.append("## Interpretation for #1 report macro block")
+    if res.reason == "blocked_or_ratelimited":
+        lines.append("- Yahoo Live: **forrás nem elérhető (429/403 / challenge / rate limit)**")
+        lines.append("- Kötelező fallback: Reuters/MarketWatch/AP összefoglaló (külön modulból).")
+    elif res.ok:
+        lines.append("- Yahoo Live: **elérve**, a macro blokk megírható a live stream összefoglalójából.")
+    else:
+        lines.append("- Yahoo Live: **nem elérhető** (nem 200 / hálózati hiba).")
+        lines.append("- Kötelező fallback: Reuters/MarketWatch/AP összefoglaló (külön modulból).")
+    lines.append("")
+
+    Path(path).write_text("\n".join(lines), encoding="utf-8")
+    print(f"[{VERSION}] Wrote report: {path}", flush=True)
+
+
+def main() -> int:
+    url = os.getenv("YAHOO_LIVE_URL", DEFAULT_URL).strip()
+    max_attempts = int(os.getenv("MAX_ATTEMPTS", "4"))
+    timeout_secs = int(os.getenv("TIMEOUT_SECS", "20"))
+
+    res = fetch_with_backoff(url, max_attempts=max_attempts, timeout_secs=timeout_secs)
+    write_report(url, res)
+
+    # Exit code for CI visibility:
+    # - 0 if OK
+    # - 2 if blocked/rate-limited
+    # - 1 otherwise
+    if res.ok:
+        return 0
+    if res.reason == "blocked_or_ratelimited":
+        return 2
+    return 1
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
