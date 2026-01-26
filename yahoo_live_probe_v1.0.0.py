@@ -1,20 +1,19 @@
 #!/usr/bin/env python3
 """
-Yahoo Live probe + backoff retry (v1.0.0)
+Yahoo Live probe + backoff retry (v1.0.2)
+
+Changes:
+- v1.0.2: no functional change vs v1.0.1; version bump for continuity.
 
 Purpose:
 - Deterministically test Yahoo Finance "Live" page fetch reliability.
-- Implements 2–3 retries with exponential backoff (1s, 3s, 9s) + jitter.
-- Produces a small markdown report (yahoo_live_probe_report.md) summarizing:
-  - final HTTP status
-  - whether blocked/challenged
-  - extracted <title> when available
-  - a short "macro" fallback note (stub) when blocked
+- Implements retries with exponential backoff (1s, 3s, 9s) + jitter.
+- Produces a small markdown report (yahoo_live_probe_report.md).
 
-Inputs (env):
-- YAHOO_LIVE_URL (optional): defaults to a known Yahoo Live URL
-- MAX_ATTEMPTS (optional): default 4
-- TIMEOUT_SECS (optional): default 20
+Env:
+- YAHOO_LIVE_URL (optional)
+- MAX_ATTEMPTS (default 4)
+- TIMEOUT_SECS (default 20)
 """
 
 from __future__ import annotations
@@ -24,17 +23,16 @@ import random
 import re
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 import requests
-
 
 DEFAULT_URL = (
     "https://finance.yahoo.com/news/live/"
     "stock-market-today-dow-sp-500-nasdaq-falter-with-big-week-of-big-tech-earnings-fed-meeting-ahead-110341565.html"
 )
-
-VERSION = "v1.0.0"
+VERSION = "v1.0.2"
 
 
 @dataclass
@@ -52,7 +50,6 @@ def _clean_title(raw: str) -> str:
 
 
 def fetch_with_backoff(url: str, max_attempts: int = 4, timeout_secs: int = 20) -> FetchResult:
-    # 1s, 3s, 9s (+15 as last fallback) with jitter
     delays = [1, 3, 9, 15]
 
     headers = {
