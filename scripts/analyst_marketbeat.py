@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# analyst_marketbeat.py — v0.3.23-marketbeat-allratings-source-hu-2026-01-26
+# analyst_marketbeat.py — v0.3.24-marketbeat-allratings-source-hu-2026-01-26
 # MarketBeat FREE analyst feed collector (CI-friendly).
 #
 # Ima (v0.3.15): bocsáss meg Uram, hogy megint bool-t hívtam függvényként.
@@ -94,6 +94,7 @@ class AnalystEvent:
     date: str  # ISO date YYYY-MM-DD (first seen date, cache-based)
     firm: str
     action: str
+    current_price: Optional[float]
     rating_from: Optional[str]
     rating_to: Optional[str]
     pt_from: Optional[float]
@@ -456,6 +457,9 @@ def _extract_events_from_ratings_page(
         brokerage_cell = _strip_tags(tds[2]) if len(tds) > 2 else ""
         firm = _clean_firm(_clean_text(brokerage_cell) or "—")
 
+        cp_cell = _strip_tags(tds[4]) if len(tds) > 4 else ""
+        current_price = _parse_money(cp_cell) if cp_cell else None
+
         pt_cell = _strip_tags(tds[5]) if len(tds) >= 6 else ""
         rating_cell = _strip_tags(tds[6]) if len(tds) >= 7 else ""
 
@@ -495,6 +499,7 @@ def _extract_events_from_ratings_page(
                 date=asof_date,
                 firm=firm,
                 action=_action_hu(kind, pt_from, pt_to),
+                current_price=current_price,
                 rating_from=rating_from,
                 rating_to=rating_to,
                 pt_from=pt_from,
@@ -627,6 +632,8 @@ def write_outputs(
             lines.append(f"## {t}")
             for e in sorted(by[t], key=lambda x: x.date, reverse=True):
                 parts = [f"- {e.date} — {e.firm} — {e.action}"]
+                if e.current_price is not None:
+                    parts.append(f"Ár: {e.currency} {e.current_price:.2f}")
                 if e.rating_from or e.rating_to:
                     rf = RATING_HU.get(e.rating_from, e.rating_from) if e.rating_from else "—"
                     rt = RATING_HU.get(e.rating_to, e.rating_to) if e.rating_to else "—"
