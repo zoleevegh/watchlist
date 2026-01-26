@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
-# analyst_marketbeat.py — v0.3.19-marketbeat-challenge-detectorfix-hu-2026-01-26
+# analyst_marketbeat.py — v0.3.13-marketbeat-challengefix-hu-2026-01-23
 # MarketBeat FREE analyst feed collector (CI-friendly).
 #
-# Ima (v0.3.19): bocsáss meg Uram, hogy a "cloudflare" szót challenge-nek vettem.
-# Ima (v0.3.19): adj erőt, hogy csak valódi cdn-cgi/chl jelek alapján ítéljek.
 # Changelog (v0.3.6):
 # - FIX: ratings pages have no explicit date column; previous logic dropped all rows.
 # - Parse tickers from ratings table (data-clean / stock URL) and treat event date as "run day (UTC)".
@@ -16,10 +14,6 @@
 # Ima (2 sor):
 # Bocsáss meg Uram, mert balfék voltam, és 200-as challenget sikernek hittem.
 # Adj nekünk tiszta HTML-t, hogy a riport ne legyen N/A. Ámen.
-# Ima (v0.3.17): bocsáss meg Uram, hogy a MASTER CSV-t túl naivan olvastam be, és üres lett a tickerlista.
-# Ima (v0.3.17): adj nekem Sniffert és BOM-mentes fejléceket, hogy végre legyen adat. Ámen.
-# Ima (v0.3.18): bocsáss meg Uram, hogy homályos N/A üzenetet írtam, és nem a MASTER hibát mondtam ki.
-# Ima (v0.3.18): adj egyértelmű logot és státuszt, hogy Zoli ne tépje le a fejem. Ámen.
 #
 # Verzió-szabály: bármely fájl módosításakor a verziószámot folytatólagosan kell növelni, kihagyás nélkül.
 
@@ -44,7 +38,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 
-VERSION = "v0.3.19-marketbeat-challenge-detectorfix-hu-2026-01-26"
+VERSION = "v0.3.13-marketbeat-challengefix-hu-2026-01-23"
 BASE = "https://www.marketbeat.com"
 
 # Magyar megnevezések a reporthoz
@@ -214,10 +208,9 @@ def _is_challenge_page(html_text: str) -> bool:
     h = html_text.lower()
     # Common Cloudflare / bot-defense markers
     markers = [
-        # Strong bot-defense markers (avoid generic 'captcha' which appears on normal pages as reCAPTCHA widgets)
-        "cf-challenge", "attention required", "checking your browser",
-        "/cdn-cgi/challenge", "/cdn-cgi/", "verify you are human",
-        "just a moment", "browser verification", "cf-turnstile", "cf_chl_",
+        "cf-challenge", "cloudflare", "attention required", "checking your browser",
+        "/cdn-cgi/", "captcha", "verify you are human", "ddos protection",
+        "please enable cookies", "just a moment", "browser verification",
     ]
     return any(x in h for x in markers)
 
@@ -562,63 +555,36 @@ def fetch_events_from_ratings_pages(
 
 
 def read_master_tickers(master_csv: Path) -> List[str]:
-    """Read MASTER CSV and return unique tickers.
-
-    Robustness:
-    - Handles UTF-8 BOM in header.
-    - Auto-detects delimiter (comma/semicolon) via csv.Sniffer on sample.
-    - Column lookup is case-insensitive for 'ticker'/'symbol'.
-    """
-    try:
-        raw_text = master_csv.read_text(encoding="utf-8", errors="replace")
-    except FileNotFoundError:
-        return []
-
-    lines = [ln for ln in raw_text.splitlines() if ln is not None]
-
-    # Sniff delimiter on a small sample
-    sample = "\n".join(lines[:50])
-    delim = ","
-    try:
-        dialect = csv.Sniffer().sniff(sample, delimiters=[",", ";", "\t"])
-        delim = dialect.delimiter
-    except Exception:
-        delim = ","
-
-    reader = csv.DictReader(lines, delimiter=delim)
+    # Read CSV and return unique tickers (best-effort on column name).
+    raw = master_csv.read_text(encoding="utf-8", errors="replace").splitlines()
+    reader = csv.DictReader(raw)
     if not reader.fieldnames:
         return []
-
-    # Normalize headers (strip whitespace + BOM) and build mapping
-    def _norm(h: str) -> str:
-        return (h or "").replace("\ufeff", "").strip().lower()
-
-    header_map = {_norm(h): h for h in reader.fieldnames if h}
-
+    # find likely ticker column
+    cols = [c.strip() for c in reader.fieldnames if c]
     key = None
-    for cand in ("ticker", "symbol"):
-        if cand in header_map:
-            key = header_map[cand]
+    for cand in ["ticker", "symbol", "TICKER", "Symbol", "Ticker"]:
+        if cand in cols:
+            key = cand
             break
     if key is None:
-        # fallback: first column (original name)
-        key = reader.fieldnames[0]
-
+        # fallback: first column
+        key = cols[0]
     tickers: List[str] = []
     for row in reader:
         t = (row.get(key) or "").strip().upper()
-        # allow dots/dashes (e.g., BRK.B, PKN.WA)
+        # allow "PKN.WA" etc but you later filter out elsewhere if needed
         if t and re.fullmatch(r"[A-Z0-9\.\-]+", t):
             tickers.append(t)
-
     # uniq preserve order
-    seen: set[str] = set()
-    out: List[str] = []
+    seen=set()
+    out=[]
     for t in tickers:
         if t not in seen:
-            seen.add(t)
-            out.append(t)
+            seen.add(t); out.append(t)
     return out
+
+
 def write_outputs(
     out_md: Path,
     out_json: Optional[Path],
@@ -633,14 +599,6 @@ def write_outputs(
     lines.append(f"Verzió: {VERSION}")
     lines.append(f"Generálva (UTC): {now}")
     lines.append("")
-
-    # Special case: MASTER parsing failed / empty ticker list
-    if source_status.get("master", 1) == 0:
-        lines.append("_MASTER ticker lista üres vagy nem olvasható (reports/master.csv). Ellenőrizd: van-e Ticker/Symbol oszlop, BOM nélküli fejléc, és a megfelelő elválasztó (comma/semicolon). A MarketBeat lekérés ettől még lehet OK, de nincs mire szűrni._")
-        out_md.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
-        if out_json:
-            out_json.write_text(json.dumps([], ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        return
 
     any_fail = any((k.startswith("ratings_") and (v >= 400 or v == 0)) for k, v in source_status.items())
     if not events:
@@ -719,13 +677,6 @@ def main() -> int:
     _log(f"START {VERSION} days={args.days} master={master} mode=ratings_pages")
 
     tickers = read_master_tickers(master)
-    _log(f"MASTER tickers loaded: {len(tickers)}")
-    if not tickers:
-        # Write a minimal output with clear diagnostics and exit.
-        note = "MASTER ticker lista üres vagy nem olvasható. Ellenőrizd a reports/master.csv fejlécét és elválasztóját (várt: Ticker/Symbol oszlop)."
-        write_outputs(args.out_md, args.out_json, [], args.days, {"master": 0})
-        _log(note)
-        return 2
 
     events, status_map = fetch_events_from_ratings_pages(
         tickers,
