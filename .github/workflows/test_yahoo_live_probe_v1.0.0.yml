@@ -1,4 +1,4 @@
-name: Yahoo Live Probe (test backoff) v1.0.0
+name: Yahoo Live Probe (test backoff) v1.0.1
 
 on:
   workflow_dispatch:
@@ -39,7 +39,7 @@ jobs:
           MAX_ATTEMPTS: ${{ inputs.max_attempts }}
           TIMEOUT_SECS: ${{ inputs.timeout_secs }}
         run: |
-          python yahoo_live_probe_v1.0.0.py || true
+          python yahoo_live_probe_v1.0.1.py || true
 
       - name: Upload report artifact
         uses: actions/upload-artifact@v4
