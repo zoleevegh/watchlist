@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# analyst_marketbeat.py — v0.3.24-marketbeat-allratings-source-hu-2026-01-26
+# analyst_marketbeat.py — v0.3.25-marketbeat-allratings-currentprice-tickerline-hu-2026-01-26
 # MarketBeat FREE analyst feed collector (CI-friendly).
 #
 # Ima (v0.3.15): bocsáss meg Uram, hogy megint bool-t hívtam függvényként.
@@ -631,7 +631,7 @@ def write_outputs(
         for t in sorted(by.keys()):
             lines.append(f"## {t}")
             for e in sorted(by[t], key=lambda x: x.date, reverse=True):
-                parts = [f"- {e.date} — {e.firm} — {e.action}"]
+                parts = [f"- {t} — {e.date} — {e.firm} — {e.action}"]
                 if e.current_price is not None:
                     parts.append(f"Ár: {e.currency} {e.current_price:.2f}")
                 if e.rating_from or e.rating_to:
