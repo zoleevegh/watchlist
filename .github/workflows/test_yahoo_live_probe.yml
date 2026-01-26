@@ -1,20 +1,20 @@
-name: Yahoo Live Probe (self-contained) v1.0.2
+name: Yahoo Live Probe (self-contained) v1.0.3
 
 on:
   workflow_dispatch:
     inputs:
       yahoo_live_url:
-        description: 'Yahoo Live URL to probe'
+        description: "Yahoo Live URL to probe"
         required: false
-        default: 'https://finance.yahoo.com/news/live/stock-market-today-dow-sp-500-nasdaq-falter-with-big-week-of-big-tech-earnings-fed-meeting-ahead-110341565.html'
+        default: "https://finance.yahoo.com/news/live/stock-market-today-dow-sp-500-nasdaq-falter-with-big-week-of-big-tech-earnings-fed-meeting-ahead-110341565.html"
       max_attempts:
-        description: 'Max attempts (includes first try)'
+        description: "Max attempts (includes first try)"
         required: false
-        default: '4'
+        default: "4"
       timeout_secs:
-        description: 'HTTP timeout seconds'
+        description: "HTTP timeout seconds"
         required: false
-        default: '20'
+        default: "20"
 
 jobs:
   probe:
@@ -26,29 +26,24 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
           pip install requests
 
-      - name: Ensure probe script exists
-        shell: bash
+      - name: Write probe script (generated)
         run: |
-          if [ ! -f "yahoo_live_probe.py" ]; then
-            cat > yahoo_live_probe.py <<'PY'
-          #!/usr/bin/env python3
+          cat > yahoo_live_probe.py <<'PY'
+#!/usr/bin/env python3
 """
-Yahoo Live probe + backoff retry (v1.0.2)
-
-Changes:
-- v1.0.2: no functional change vs v1.0.1; version bump for continuity.
+Yahoo Live probe + backoff retry (v1.0.3)
 
 Purpose:
-- Deterministically test Yahoo Finance "Live" page fetch reliability.
-- Implements retries with exponential backoff (1s, 3s, 9s) + jitter.
-- Produces a small markdown report (yahoo_live_probe_report.md).
+- Test Yahoo Finance "Live" page fetch reliability.
+- Retries with exponential backoff (1s, 3s, 9s) + jitter on 429/403.
+- Writes yahoo_live_probe_report.md (always, even on failure).
 
 Env:
 - YAHOO_LIVE_URL (optional)
@@ -72,7 +67,7 @@ DEFAULT_URL = (
     "https://finance.yahoo.com/news/live/"
     "stock-market-today-dow-sp-500-nasdaq-falter-with-big-week-of-big-tech-earnings-fed-meeting-ahead-110341565.html"
 )
-VERSION = "v1.0.2"
+VERSION = "v1.0.3"
 
 
 @dataclass
@@ -138,7 +133,7 @@ def fetch_with_backoff(url: str, max_attempts: int = 4, timeout_secs: int = 20) 
             html = r.text or ""
             if len(html) < 2000:
                 last_reason = "too_short_html"
-                print(f"[{VERSION}] -> HTTP 200 but suspiciously short HTML ({len(html)} chars)", flush=True)
+                print(f"[{VERSION}] -> HTTP 200 but short HTML ({len(html)} chars)", flush=True)
                 if attempt < max_attempts:
                     base = delays[min(attempt - 1, len(delays) - 1)]
                     sleep_s = base + random.uniform(0.0, 0.7)
@@ -218,7 +213,6 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 PY
-          fi
           python -m py_compile yahoo_live_probe.py
 
       - name: Run probe
@@ -229,6 +223,7 @@ PY
         run: |
           python yahoo_live_probe.py || true
           ls -la
+          test -f yahoo_live_probe_report.md
 
       - name: Upload report artifact
         uses: actions/upload-artifact@v4
