@@ -47,7 +47,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 
-VERSION = "v0.3.21-marketbeat-events-cache-hu-2026-01-26"
+VERSION = "v0.3.22-marketbeat-events-cache-windowfix-hu-2026-01-26"
 BASE = "https://www.marketbeat.com"
 
 # Magyar megnevezések a reporthoz
@@ -94,7 +94,9 @@ UA = (
 @dataclass
 class AnalystEvent:
     ticker: str
+    kind: str  # upgrade/downgrade/pt_change/other
     date: str  # ISO date YYYY-MM-DD (first seen date, cache-based)
+    last_seen: Optional[str]  # ISO date YYYY-MM-DD (last time seen on source)
     firm: str
     action: str
     rating_from: Optional[str]
@@ -103,6 +105,7 @@ class AnalystEvent:
     pt_to: Optional[float]
     currency: str
     source: str
+
 def _event_key(e: "AnalystEvent") -> str:
     """
     Stable key for de-dup across runs.
@@ -186,6 +189,7 @@ def _serialize_event(e: "AnalystEvent") -> Dict[str, Any]:
         "ticker": e.ticker,
         "kind": e.kind,
         "date": e.date,
+        "last_seen": e.last_seen,
         "firm": e.firm,
         "action": e.action,
         "rating_from": e.rating_from,
@@ -202,6 +206,7 @@ def _deserialize_event(d: Dict[str, Any]) -> "AnalystEvent":
         ticker=str(d.get("ticker") or ""),
         kind=str(d.get("kind") or ""),
         date=str(d.get("date") or ""),
+        last_seen=(str(d.get("last_seen") or d.get("date") or "") or None),
         firm=str(d.get("firm") or ""),
         action=str(d.get("action") or ""),
         rating_from=d.get("rating_from"),
@@ -617,7 +622,9 @@ def _extract_events_from_ratings_page(
         events.append(
             AnalystEvent(
                 ticker=ticker,
+                kind=kind,
                 date=asof_date,
+                last_seen=asof_date,
                 firm=firm,
                 action=_action_hu(kind, pt_from, pt_to),
                 rating_from=rating_from,
