@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
-# analyst_marketbeat.py — v0.3.15-marketbeat-challengefix3-hu-2026-01-23
+# analyst_marketbeat.py — v0.3.13-marketbeat-challengefix-hu-2026-01-23
 # MarketBeat FREE analyst feed collector (CI-friendly).
 #
-# Ima (v0.3.15): bocsáss meg Uram, hogy megint bool-t hívtam függvényként.
-# Ima (v0.3.15): adj erőt, hogy egyetlen zárójelet se tegyek oda, ahová nem kell.
 # Changelog (v0.3.6):
 # - FIX: ratings pages have no explicit date column; previous logic dropped all rows.
 # - Parse tickers from ratings table (data-clean / stock URL) and treat event date as "run day (UTC)".
@@ -40,7 +38,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 
-VERSION = "v0.3.16-marketbeat-challengefix2-hu-2026-01-23"
+VERSION = "v0.3.14-marketbeat-challengefix2-hu-2026-01-23"
 BASE = "https://www.marketbeat.com"
 
 # Magyar megnevezések a reporthoz
@@ -215,7 +213,7 @@ def _is_challenge_page(html_text: str) -> bool:
         "/cdn-cgi/challenge", "/cdn-cgi/", "verify you are human",
         "just a moment", "browser verification", "cf-turnstile", "cf_chl_",
     ]
-    return any(x in h for x in markers)
+    return any(x in h for x in markers)(x in h for x in markers)
 
 
 
