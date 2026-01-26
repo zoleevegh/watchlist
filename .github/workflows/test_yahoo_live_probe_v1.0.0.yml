@@ -1,0 +1,48 @@
+name: Yahoo Live Probe (test backoff) v1.0.0
+
+on:
+  workflow_dispatch:
+    inputs:
+      yahoo_live_url:
+        description: 'Yahoo Live URL to probe'
+        required: false
+        default: 'https://finance.yahoo.com/news/live/stock-market-today-dow-sp-500-nasdaq-falter-with-big-week-of-big-tech-earnings-fed-meeting-ahead-110341565.html'
+      max_attempts:
+        description: 'Max attempts (includes first try)'
+        required: false
+        default: '4'
+      timeout_secs:
+        description: 'HTTP timeout seconds'
+        required: false
+        default: '20'
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
+
+      - name: Run probe
+        env:
+          YAHOO_LIVE_URL: ${{ inputs.yahoo_live_url }}
+          MAX_ATTEMPTS: ${{ inputs.max_attempts }}
+          TIMEOUT_SECS: ${{ inputs.timeout_secs }}
+        run: |
+          python yahoo_live_probe_v1.0.0.py || true
+
+      - name: Upload report artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: yahoo-live-probe-report
+          path: yahoo_live_probe_report.md
