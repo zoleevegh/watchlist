@@ -1,12 +1,9 @@
 #!/usr/bin/env python3
-# analyst_marketbeat.py — v0.3.21-marketbeat-events-cache-hu-2026-01-26
+# analyst_marketbeat.py — v0.3.23-marketbeat-allratings-source-hu-2026-01-26
 # MarketBeat FREE analyst feed collector (CI-friendly).
 #
-# Ima (v0.3.20): bocsáss meg Uram, hogy két napig a challenge-detektort kergettem, miközben a megoldás a cache-ben volt.
-# Ima (v0.3.20): adj türelmet és egy tiszta logot, hogy legközelebb elsőre betaláljak.
-
-# Ima (v0.3.19): bocsáss meg Uram, hogy a "cloudflare" szót challenge-nek vettem.
-# Ima (v0.3.19): adj erőt, hogy csak valódi cdn-cgi/chl jelek alapján ítéljek.
+# Ima (v0.3.15): bocsáss meg Uram, hogy megint bool-t hívtam függvényként.
+# Ima (v0.3.15): adj erőt, hogy egyetlen zárójelet se tegyek oda, ahová nem kell.
 # Changelog (v0.3.6):
 # - FIX: ratings pages have no explicit date column; previous logic dropped all rows.
 # - Parse tickers from ratings table (data-clean / stock URL) and treat event date as "run day (UTC)".
@@ -19,10 +16,9 @@
 # Ima (2 sor):
 # Bocsáss meg Uram, mert balfék voltam, és 200-as challenget sikernek hittem.
 # Adj nekünk tiszta HTML-t, hogy a riport ne legyen N/A. Ámen.
-# Ima (v0.3.17): bocsáss meg Uram, hogy a MASTER CSV-t túl naivan olvastam be, és üres lett a tickerlista.
-# Ima (v0.3.17): adj nekem Sniffert és BOM-mentes fejléceket, hogy végre legyen adat. Ámen.
-# Ima (v0.3.18): bocsáss meg Uram, hogy homályos N/A üzenetet írtam, és nem a MASTER hibát mondtam ki.
-# Ima (v0.3.18): adj egyértelmű logot és státuszt, hogy Zoli ne tépje le a fejem. Ámen.
+#
+# Ima (v0.3.23): bocsáss meg Uram, hogy a MASTER tickert az 'All Ratings' oldalon hagytam, miközben csak upgrade/downgrade-ot néztem.
+# Ima (v0.3.23): adj egy extra forrást (ratings/us), hogy a QCOM se tűnjön el. Ámen.
 #
 # Verzió-szabály: bármely fájl módosításakor a verziószámot folytatólagosan kell növelni, kihagyás nélkül.
 
@@ -47,7 +43,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 
-VERSION = "v0.3.22-marketbeat-events-cache-windowfix-hu-2026-01-26"
+VERSION = "v0.3.16-marketbeat-challengefix2-hu-2026-01-23"
 BASE = "https://www.marketbeat.com"
 
 # Magyar megnevezések a reporthoz
@@ -80,6 +76,7 @@ RATING_HU = {
 
 # MarketBeat "Today's" ratings lists (FREE).
 RATINGS_SOURCES: List[Tuple[str, str]] = [
+    ("all", "/ratings/us/"),
     ("upgrade", "/ratings/upgrades/"),
     ("downgrade", "/ratings/downgrades/"),
     ("pt_change", "/ratings/pricetargetchanges/"),
@@ -94,9 +91,7 @@ UA = (
 @dataclass
 class AnalystEvent:
     ticker: str
-    kind: str  # upgrade/downgrade/pt_change/other
     date: str  # ISO date YYYY-MM-DD (first seen date, cache-based)
-    last_seen: Optional[str]  # ISO date YYYY-MM-DD (last time seen on source)
     firm: str
     action: str
     rating_from: Optional[str]
@@ -105,7 +100,6 @@ class AnalystEvent:
     pt_to: Optional[float]
     currency: str
     source: str
-
 def _event_key(e: "AnalystEvent") -> str:
     """
     Stable key for de-dup across runs.
@@ -147,130 +141,6 @@ def load_seen_cache(path: Path) -> Dict[str, str]:
     except Exception:
         pass
     return {}
-
-
-
-def load_events_cache(path: Path) -> Dict[str, Dict[str, Any]]:
-    """
-    Returns mapping: event_key -> stored event dict.
-    Stored event dict contains:
-      - first_seen (YYYY-MM-DD)
-      - last_seen  (YYYY-MM-DD)
-      - event      (serialized AnalystEvent fields)
-    """
-    try:
-        if path.exists():
-            obj = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(obj, dict):
-                out: Dict[str, Dict[str, Any]] = {}
-                for k, v in obj.items():
-                    if not isinstance(v, dict):
-                        continue
-                    fs = v.get("first_seen")
-                    ls = v.get("last_seen")
-                    ev = v.get("event")
-                    if isinstance(fs, str) and isinstance(ls, str) and isinstance(ev, dict):
-                        out[k] = {"first_seen": fs, "last_seen": ls, "event": ev}
-                return out
-    except Exception:
-        pass
-    return {}
-
-
-def save_events_cache(path: Path, cache: Dict[str, Dict[str, Any]]) -> None:
-    try:
-        path.write_text(json.dumps(cache, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
-    except Exception:
-        pass
-
-
-def _serialize_event(e: "AnalystEvent") -> Dict[str, Any]:
-    return {
-        "ticker": e.ticker,
-        "kind": e.kind,
-        "date": e.date,
-        "last_seen": e.last_seen,
-        "firm": e.firm,
-        "action": e.action,
-        "rating_from": e.rating_from,
-        "rating_to": e.rating_to,
-        "pt_from": e.pt_from,
-        "pt_to": e.pt_to,
-        "currency": e.currency,
-        "source": e.source,
-    }
-
-
-def _deserialize_event(d: Dict[str, Any]) -> "AnalystEvent":
-    return AnalystEvent(
-        ticker=str(d.get("ticker") or ""),
-        kind=str(d.get("kind") or ""),
-        date=str(d.get("date") or ""),
-        last_seen=(str(d.get("last_seen") or d.get("date") or "") or None),
-        firm=str(d.get("firm") or ""),
-        action=str(d.get("action") or ""),
-        rating_from=d.get("rating_from"),
-        rating_to=d.get("rating_to"),
-        pt_from=d.get("pt_from"),
-        pt_to=d.get("pt_to"),
-        currency=str(d.get("currency") or ""),
-        source=str(d.get("source") or ""),
-    )
-
-
-def prune_events_cache(cache: Dict[str, Dict[str, Any]], keep_days: int, today: dt.date) -> None:
-    """Prune events whose first_seen is older than keep_days."""
-    drop = []
-    for k, v in cache.items():
-        fs = v.get("first_seen")
-        try:
-            d = dt.date.fromisoformat(fs)
-        except Exception:
-            drop.append(k)
-            continue
-        if (today - d).days > keep_days:
-            drop.append(k)
-    for k in drop:
-        cache.pop(k, None)
-
-
-def update_events_cache_from_current(
-    current_events: List["AnalystEvent"],
-    seen_cache: Dict[str, str],
-    events_cache: Dict[str, Dict[str, Any]],
-    today_iso: str,
-) -> None:
-    """
-    Update first-seen cache and persistent events cache using events observed in the CURRENT run.
-    Note: current_events should already be filtered to MASTER tickers.
-    """
-    for e in current_events:
-        k = _event_key(e)
-        first = seen_cache.get(k)
-        if not first:
-            seen_cache[k] = today_iso
-            first = today_iso
-
-        # persist full event snapshot for later reporting even if it disappears from MarketBeat pages
-        payload = events_cache.get(k)
-        if not payload:
-            e.date = first
-            events_cache[k] = {
-                "first_seen": first,
-                "last_seen": today_iso,
-                "event": _serialize_event(e),
-            }
-        else:
-            payload["last_seen"] = today_iso
-            # keep the earliest first_seen (safety)
-            fs = payload.get("first_seen") or first
-            if isinstance(fs, str):
-                try:
-                    if dt.date.fromisoformat(first) < dt.date.fromisoformat(fs):
-                        payload["first_seen"] = first
-                except Exception:
-                    payload["first_seen"] = fs
-            # do not overwrite event fields; the first snapshot is fine
 
 
 def save_seen_cache(path: Path, cache: Dict[str, str]) -> None:
@@ -345,7 +215,7 @@ def _is_challenge_page(html_text: str) -> bool:
     # Common Cloudflare / bot-defense markers
     markers = [
         # Strong bot-defense markers (avoid generic 'captcha' which appears on normal pages as reCAPTCHA widgets)
-        "cf-challenge", "attention required", "checking your browser",
+        "cf-challenge", "cloudflare", "attention required", "checking your browser",
         "/cdn-cgi/challenge", "/cdn-cgi/", "verify you are human",
         "just a moment", "browser verification", "cf-turnstile", "cf_chl_",
     ]
@@ -622,9 +492,7 @@ def _extract_events_from_ratings_page(
         events.append(
             AnalystEvent(
                 ticker=ticker,
-                kind=kind,
                 date=asof_date,
-                last_seen=asof_date,
                 firm=firm,
                 action=_action_hu(kind, pt_from, pt_to),
                 rating_from=rating_from,
@@ -639,48 +507,6 @@ def _extract_events_from_ratings_page(
     return events
 
 
-
-
-def _extract_source_tickers_from_ratings_page(html_text: str) -> List[str]:
-    """Extract tickers from the main ratings table (without MASTER filtering).
-
-    We intentionally scope extraction to the sortable ratings table to avoid picking up
-    tickers from navigation bars, ads, or generic site links.
-    """
-    if not html_text:
-        return []
-    m = re.search(r'<table[^>]*class="[^"]*scroll-table[^"]*"[^>]*>.*?</table>', html_text, flags=re.IGNORECASE | re.DOTALL)
-    if not m:
-        return []
-    table = m.group(0)
-    rows = re.findall(r"<tr[^>]*>(.*?)</tr>", table, flags=re.IGNORECASE | re.DOTALL)
-    if len(rows) <= 1:
-        return []
-    out: List[str] = []
-    for row_html in rows[1:]:
-        # Prefer explicit ticker-area div
-        m1 = re.search(r'class="ticker-area">\s*([A-Z0-9\.\-]+)\s*<', row_html, flags=re.IGNORECASE)
-        if m1:
-            out.append(m1.group(1).upper().strip())
-            continue
-        # Fallback to data-clean
-        tds = re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", row_html, flags=re.IGNORECASE | re.DOTALL)
-        if tds:
-            m2 = re.search(r'data-clean="(?P<t>[A-Z0-9\.\-]+)\|', tds[0], flags=re.IGNORECASE)
-            if m2:
-                out.append(m2.group("t").upper().strip())
-                continue
-        # Fallback to stock URL
-        m3 = re.search(r"/stocks/[A-Z0-9]+/(?P<t>[A-Z0-9\.\-]+)/", row_html, flags=re.IGNORECASE)
-        if m3:
-            out.append(m3.group("t").upper().strip())
-    # de-dup preserve order
-    seen=set()
-    uniq=[]
-    for t in out:
-        if t and t not in seen:
-            uniq.append(t); seen.add(t)
-    return uniq
 
 def fetch_events_from_ratings_pages(
     master_tickers: List[str],
@@ -708,13 +534,6 @@ def fetch_events_from_ratings_pages(
         url = BASE + path
         status, page_html = _http_get(opener, url, timeout, debug_dir, f"ratings_{kind}", allow_jina_fallback=True, max_tries=3)
         statuses[f"ratings_{kind}"] = status
-        # Collect source tickers (unfiltered) for diagnostics
-        if page_html:
-            src_ticks = _extract_source_tickers_from_ratings_page(page_html)
-            statuses[f"ratings_{kind}_rows"] = len(src_ticks)
-            if src_ticks:
-                statuses[f"ratings_{kind}_sample"] = ",".join(src_ticks[:10])
-        
         if status >= 400 or status == 0:
             _log(f"RATINGS {kind}: HTTP {status} (skip)")
             time.sleep(sleep_s)
@@ -743,63 +562,36 @@ def fetch_events_from_ratings_pages(
 
 
 def read_master_tickers(master_csv: Path) -> List[str]:
-    """Read MASTER CSV and return unique tickers.
-
-    Robustness:
-    - Handles UTF-8 BOM in header.
-    - Auto-detects delimiter (comma/semicolon) via csv.Sniffer on sample.
-    - Column lookup is case-insensitive for 'ticker'/'symbol'.
-    """
-    try:
-        raw_text = master_csv.read_text(encoding="utf-8", errors="replace")
-    except FileNotFoundError:
-        return []
-
-    lines = [ln for ln in raw_text.splitlines() if ln is not None]
-
-    # Sniff delimiter on a small sample
-    sample = "\n".join(lines[:50])
-    delim = ","
-    try:
-        dialect = csv.Sniffer().sniff(sample, delimiters=[",", ";", "\t"])
-        delim = dialect.delimiter
-    except Exception:
-        delim = ","
-
-    reader = csv.DictReader(lines, delimiter=delim)
+    # Read CSV and return unique tickers (best-effort on column name).
+    raw = master_csv.read_text(encoding="utf-8", errors="replace").splitlines()
+    reader = csv.DictReader(raw)
     if not reader.fieldnames:
         return []
-
-    # Normalize headers (strip whitespace + BOM) and build mapping
-    def _norm(h: str) -> str:
-        return (h or "").replace("\ufeff", "").strip().lower()
-
-    header_map = {_norm(h): h for h in reader.fieldnames if h}
-
+    # find likely ticker column
+    cols = [c.strip() for c in reader.fieldnames if c]
     key = None
-    for cand in ("ticker", "symbol"):
-        if cand in header_map:
-            key = header_map[cand]
+    for cand in ["ticker", "symbol", "TICKER", "Symbol", "Ticker"]:
+        if cand in cols:
+            key = cand
             break
     if key is None:
-        # fallback: first column (original name)
-        key = reader.fieldnames[0]
-
+        # fallback: first column
+        key = cols[0]
     tickers: List[str] = []
     for row in reader:
         t = (row.get(key) or "").strip().upper()
-        # allow dots/dashes (e.g., BRK.B, PKN.WA)
+        # allow "PKN.WA" etc but you later filter out elsewhere if needed
         if t and re.fullmatch(r"[A-Z0-9\.\-]+", t):
             tickers.append(t)
-
     # uniq preserve order
-    seen: set[str] = set()
-    out: List[str] = []
+    seen=set()
+    out=[]
     for t in tickers:
         if t not in seen:
-            seen.add(t)
-            out.append(t)
+            seen.add(t); out.append(t)
     return out
+
+
 def write_outputs(
     out_md: Path,
     out_json: Optional[Path],
@@ -815,45 +607,18 @@ def write_outputs(
     lines.append(f"Generálva (UTC): {now}")
     lines.append("")
 
-    # Special case: MASTER parsing failed / empty ticker list
-    if source_status.get("master", 1) == 0:
-        lines.append("_MASTER ticker lista üres vagy nem olvasható (reports/master.csv). Ellenőrizd: van-e Ticker/Symbol oszlop, BOM nélküli fejléc, és a megfelelő elválasztó (comma/semicolon). A MarketBeat lekérés ettől még lehet OK, de nincs mire szűrni._")
-        out_md.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
-        if out_json:
-            out_json.write_text(json.dumps([], ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        return
-
-    any_fail = any((k in ("warmup_home","ratings_upgrade","ratings_downgrade","ratings_pt_change") and isinstance(v, int) and (v >= 400 or v == 0)) for k, v in source_status.items())
+    any_fail = any((k.startswith("ratings_") and (v >= 400 or v == 0)) for k, v in source_status.items())
     if not events:
         if any_fail:
             # show clear source error, not "no events"
             parts=[]
-            for k, v in sorted(source_status.items()):
-                if k in ("warmup_home","ratings_upgrade","ratings_downgrade","ratings_pt_change"):
+            for k,v in sorted(source_status.items()):
+                if k.startswith("ratings_"):
                     parts.append(f"{k.replace('ratings_','')}={v}")
             msg = ", ".join(parts) if parts else "unknown"
             lines.append(f"_MarketBeat forrás nem elérhető / blokkolva, ezért nem tudtam friss analyst eseményeket lekérni._ (HTTP: {msg})")
         else:
-            # Diagnostics: source may have rows, but none match MASTER
-            rows_u = int(source_status.get("ratings_upgrade_rows", 0) or 0)
-            rows_d = int(source_status.get("ratings_downgrade_rows", 0) or 0)
-            rows_p = int(source_status.get("ratings_pt_change_rows", 0) or 0)
-            total_rows = rows_u + rows_d + rows_p
-            if total_rows > 0:
-                su = source_status.get("ratings_upgrade_sample", "")
-                sd = source_status.get("ratings_downgrade_sample", "")
-                sp = source_status.get("ratings_pt_change_sample", "")
-                parts = []
-                if rows_u:
-                    parts.append(f"upgrades: {rows_u} (pl. {su})" if su else f"upgrades: {rows_u}")
-                if rows_d:
-                    parts.append(f"downgrades: {rows_d} (pl. {sd})" if sd else f"downgrades: {rows_d}")
-                if rows_p:
-                    parts.append(f"pt_change: {rows_p} (pl. {sp})" if sp else f"pt_change: {rows_p}")
-                extra = "; ".join(parts) if parts else f"összes sor: {total_rows}"
-                lines.append(f"_MarketBeat forrás elérhető (HTTP 200), de a mai/aktuális listákon nincs olyan ticker, ami a MASTER-ben szerepel. Forrás összegzés: {extra}._")
-            else:
-                lines.append(f"_MarketBeat forrás elérhető (HTTP 200), de a ratings listák üresek (nincs új fel/leminősítés vagy célár-változás)._\n_(Ha mégis gyanús, nézd meg a debug HTML-eket.)_")
+            lines.append(f"_Nincs friss (≤{days} naptári nap) fel/leminősítés vagy célár-frissítés a forrásban, vagy a forrás challenge-t ad (HTTP 200)._\n_(Ha challenge-re gyanakszol, nézd meg a debug HTML-eket.)_")
     else:
         by: Dict[str, List[AnalystEvent]] = {}
         for e in events:
@@ -915,21 +680,12 @@ def main() -> int:
     # Seen-cache for assigning real (first-seen) dates, because ratings pages have no per-row timestamps
     seen_path = out_md.parent / "marketbeat_seen.json"
     seen_cache = load_seen_cache(seen_path)
-    events_path = out_md.parent / "marketbeat_events.json"
-    events_cache = load_events_cache(events_path)
 
     _log(f"START {VERSION} days={args.days} master={master} mode=ratings_pages")
 
     tickers = read_master_tickers(master)
-    _log(f"MASTER tickers loaded: {len(tickers)}")
-    if not tickers:
-        # Write a minimal output with clear diagnostics and exit.
-        note = "MASTER ticker lista üres vagy nem olvasható. Ellenőrizd a reports/master.csv fejlécét és elválasztóját (várt: Ticker/Symbol oszlop)."
-        write_outputs(args.out_md, args.out_json, [], args.days, {"master": 0})
-        _log(note)
-        return 2
 
-    events_current, status_map = fetch_events_from_ratings_pages(
+    events, status_map = fetch_events_from_ratings_pages(
         tickers,
         days=args.days,
         timeout=args.timeout,
@@ -937,32 +693,9 @@ def main() -> int:
         debug_dir=debug_dir,
     )
 
-    today = dt.datetime.utcnow().date()
-    today_iso = today.isoformat()
-
-    # Persist: store full event snapshots so we can report them later even if they disappear from MarketBeat pages.
-    update_events_cache_from_current(events_current, seen_cache, events_cache, today_iso)
-    prune_events_cache(events_cache, keep_days=max(60, int(args.days) + 7), today=today)
-
+    today_iso = dt.datetime.utcnow().date().isoformat()
+    events = apply_seen_dates_and_filter(events, args.days, seen_cache, today_iso)
     save_seen_cache(seen_path, seen_cache)
-    save_events_cache(events_path, events_cache)
-
-    # Build report window from persistent cache (not only today's visible list).
-    events: List[AnalystEvent] = []
-    for _, payload in events_cache.items():
-        fs = payload.get("first_seen")
-        evd = payload.get("event")
-        if not isinstance(fs, str) or not isinstance(evd, dict):
-            continue
-        try:
-            d = dt.date.fromisoformat(fs)
-        except Exception:
-            continue
-        delta = (today - d).days
-        if 0 <= delta <= (int(args.days) - 1):
-            e = _deserialize_event(evd)
-            e.date = fs
-            events.append(e)
 
     write_outputs(out_md, out_json, events, args.days, status_map)
 
