@@ -40,7 +40,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 
-VERSION = "v0.3.14-marketbeat-challengefix2-hu-2026-01-23"
+VERSION = "v0.3.16-marketbeat-challengefix2-hu-2026-01-23"
 BASE = "https://www.marketbeat.com"
 
 # Magyar megnevezések a reporthoz
