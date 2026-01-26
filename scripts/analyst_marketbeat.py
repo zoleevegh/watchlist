@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
-# analyst_marketbeat.py — v0.3.20-marketbeat-master-match-diagnostics-hu-2026-01-26
+# analyst_marketbeat.py — v0.3.21-marketbeat-events-cache-hu-2026-01-26
 # MarketBeat FREE analyst feed collector (CI-friendly).
 #
+# Ima (v0.3.20): bocsáss meg Uram, hogy két napig a challenge-detektort kergettem, miközben a megoldás a cache-ben volt.
+# Ima (v0.3.20): adj türelmet és egy tiszta logot, hogy legközelebb elsőre betaláljak.
+
 # Ima (v0.3.19): bocsáss meg Uram, hogy a "cloudflare" szót challenge-nek vettem.
 # Ima (v0.3.19): adj erőt, hogy csak valódi cdn-cgi/chl jelek alapján ítéljek.
 # Changelog (v0.3.6):
@@ -44,7 +47,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 
-VERSION = "v0.3.20-marketbeat-master-match-diagnostics-hu-2026-01-26"
+VERSION = "v0.3.21-marketbeat-events-cache-hu-2026-01-26"
 BASE = "https://www.marketbeat.com"
 
 # Magyar megnevezések a reporthoz
@@ -141,6 +144,128 @@ def load_seen_cache(path: Path) -> Dict[str, str]:
     except Exception:
         pass
     return {}
+
+
+
+def load_events_cache(path: Path) -> Dict[str, Dict[str, Any]]:
+    """
+    Returns mapping: event_key -> stored event dict.
+    Stored event dict contains:
+      - first_seen (YYYY-MM-DD)
+      - last_seen  (YYYY-MM-DD)
+      - event      (serialized AnalystEvent fields)
+    """
+    try:
+        if path.exists():
+            obj = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(obj, dict):
+                out: Dict[str, Dict[str, Any]] = {}
+                for k, v in obj.items():
+                    if not isinstance(v, dict):
+                        continue
+                    fs = v.get("first_seen")
+                    ls = v.get("last_seen")
+                    ev = v.get("event")
+                    if isinstance(fs, str) and isinstance(ls, str) and isinstance(ev, dict):
+                        out[k] = {"first_seen": fs, "last_seen": ls, "event": ev}
+                return out
+    except Exception:
+        pass
+    return {}
+
+
+def save_events_cache(path: Path, cache: Dict[str, Dict[str, Any]]) -> None:
+    try:
+        path.write_text(json.dumps(cache, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _serialize_event(e: "AnalystEvent") -> Dict[str, Any]:
+    return {
+        "ticker": e.ticker,
+        "kind": e.kind,
+        "date": e.date,
+        "firm": e.firm,
+        "action": e.action,
+        "rating_from": e.rating_from,
+        "rating_to": e.rating_to,
+        "pt_from": e.pt_from,
+        "pt_to": e.pt_to,
+        "currency": e.currency,
+        "source": e.source,
+    }
+
+
+def _deserialize_event(d: Dict[str, Any]) -> "AnalystEvent":
+    return AnalystEvent(
+        ticker=str(d.get("ticker") or ""),
+        kind=str(d.get("kind") or ""),
+        date=str(d.get("date") or ""),
+        firm=str(d.get("firm") or ""),
+        action=str(d.get("action") or ""),
+        rating_from=d.get("rating_from"),
+        rating_to=d.get("rating_to"),
+        pt_from=d.get("pt_from"),
+        pt_to=d.get("pt_to"),
+        currency=str(d.get("currency") or ""),
+        source=str(d.get("source") or ""),
+    )
+
+
+def prune_events_cache(cache: Dict[str, Dict[str, Any]], keep_days: int, today: dt.date) -> None:
+    """Prune events whose first_seen is older than keep_days."""
+    drop = []
+    for k, v in cache.items():
+        fs = v.get("first_seen")
+        try:
+            d = dt.date.fromisoformat(fs)
+        except Exception:
+            drop.append(k)
+            continue
+        if (today - d).days > keep_days:
+            drop.append(k)
+    for k in drop:
+        cache.pop(k, None)
+
+
+def update_events_cache_from_current(
+    current_events: List["AnalystEvent"],
+    seen_cache: Dict[str, str],
+    events_cache: Dict[str, Dict[str, Any]],
+    today_iso: str,
+) -> None:
+    """
+    Update first-seen cache and persistent events cache using events observed in the CURRENT run.
+    Note: current_events should already be filtered to MASTER tickers.
+    """
+    for e in current_events:
+        k = _event_key(e)
+        first = seen_cache.get(k)
+        if not first:
+            seen_cache[k] = today_iso
+            first = today_iso
+
+        # persist full event snapshot for later reporting even if it disappears from MarketBeat pages
+        payload = events_cache.get(k)
+        if not payload:
+            e.date = first
+            events_cache[k] = {
+                "first_seen": first,
+                "last_seen": today_iso,
+                "event": _serialize_event(e),
+            }
+        else:
+            payload["last_seen"] = today_iso
+            # keep the earliest first_seen (safety)
+            fs = payload.get("first_seen") or first
+            if isinstance(fs, str):
+                try:
+                    if dt.date.fromisoformat(first) < dt.date.fromisoformat(fs):
+                        payload["first_seen"] = first
+                except Exception:
+                    payload["first_seen"] = fs
+            # do not overwrite event fields; the first snapshot is fine
 
 
 def save_seen_cache(path: Path, cache: Dict[str, str]) -> None:
@@ -783,6 +908,8 @@ def main() -> int:
     # Seen-cache for assigning real (first-seen) dates, because ratings pages have no per-row timestamps
     seen_path = out_md.parent / "marketbeat_seen.json"
     seen_cache = load_seen_cache(seen_path)
+    events_path = out_md.parent / "marketbeat_events.json"
+    events_cache = load_events_cache(events_path)
 
     _log(f"START {VERSION} days={args.days} master={master} mode=ratings_pages")
 
@@ -795,7 +922,7 @@ def main() -> int:
         _log(note)
         return 2
 
-    events, status_map = fetch_events_from_ratings_pages(
+    events_current, status_map = fetch_events_from_ratings_pages(
         tickers,
         days=args.days,
         timeout=args.timeout,
@@ -803,9 +930,32 @@ def main() -> int:
         debug_dir=debug_dir,
     )
 
-    today_iso = dt.datetime.utcnow().date().isoformat()
-    events = apply_seen_dates_and_filter(events, args.days, seen_cache, today_iso)
+    today = dt.datetime.utcnow().date()
+    today_iso = today.isoformat()
+
+    # Persist: store full event snapshots so we can report them later even if they disappear from MarketBeat pages.
+    update_events_cache_from_current(events_current, seen_cache, events_cache, today_iso)
+    prune_events_cache(events_cache, keep_days=max(60, int(args.days) + 7), today=today)
+
     save_seen_cache(seen_path, seen_cache)
+    save_events_cache(events_path, events_cache)
+
+    # Build report window from persistent cache (not only today's visible list).
+    events: List[AnalystEvent] = []
+    for _, payload in events_cache.items():
+        fs = payload.get("first_seen")
+        evd = payload.get("event")
+        if not isinstance(fs, str) or not isinstance(evd, dict):
+            continue
+        try:
+            d = dt.date.fromisoformat(fs)
+        except Exception:
+            continue
+        delta = (today - d).days
+        if 0 <= delta <= (int(args.days) - 1):
+            e = _deserialize_event(evd)
+            e.date = fs
+            events.append(e)
 
     write_outputs(out_md, out_json, events, args.days, status_map)
 
