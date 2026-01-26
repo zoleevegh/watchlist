@@ -1,17 +1,12 @@
 #!/usr/bin/env python3
 """
-scripts/test_yahoo_live_probe.py — Yahoo Live probe + backoff retry (v1.0.6)
+scripts/test_yahoo_live_probe.py — Yahoo Live probe + backoff retry (v1.0.7)
 
 Követelmény:
 - Yahoo Live mindig próbálkozás (kötelező)
-- 429/challenge esetén 2–3 retry exponenciális backoff-fal (1s, 3s, 9s) + jitter
+- 429/403 (challenge/rate-limit) esetén 2–3 retry exponenciális backoff-fal (1s, 3s, 9s) + jitter
 - Mindig készítsen reportot: test_yahoo_live_probe_report.md
 - Verziófegyelem: minden módosításnál verziószámot folytatólagosan növelni kell.
-
-Env:
-- YAHOO_LIVE_URL (optional)
-- MAX_ATTEMPTS (default 4)
-- TIMEOUT_SECS (default 20)
 """
 
 from __future__ import annotations
@@ -26,7 +21,7 @@ from typing import Optional
 
 import requests
 
-VERSION = "v1.0.6"
+VERSION = "v1.0.7"
 
 DEFAULT_URL = (
     "https://finance.yahoo.com/news/live/"
@@ -51,7 +46,6 @@ def _clean_title(raw: str) -> str:
 
 
 def fetch_with_backoff(url: str, max_attempts: int = 4, timeout_secs: int = 20) -> FetchResult:
-    # Exponential-ish schedule + jitter
     delays = [1, 3, 9, 15]
 
     headers = {
@@ -76,7 +70,6 @@ def fetch_with_backoff(url: str, max_attempts: int = 4, timeout_secs: int = 20) 
             r = requests.get(url, headers=headers, timeout=timeout_secs, allow_redirects=True)
             last_status = r.status_code
 
-            # Yahoo often rate-limits / challenges automated requests
             if r.status_code in (429, 403):
                 last_reason = "blocked_or_ratelimited"
                 print(f"[{VERSION}] -> HTTP {r.status_code} (blocked/rate-limited)", flush=True)
@@ -135,27 +128,34 @@ def fetch_with_backoff(url: str, max_attempts: int = 4, timeout_secs: int = 20) 
 
 def write_report(url: str, res: FetchResult, path: str = REPORT_PATH) -> None:
     ts = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
-    lines: list[str] = []
-    lines.append(f"# Yahoo Live Probe Report ({VERSION})")
-    lines.append("")
-    lines.append(f"- **UTC time:** {ts}")
-    lines.append(f"- **URL:** {url}")
-    lines.append(f"- **Final status:** {res.status}")
-    lines.append(f"- **Attempts:** {res.attempts}")
-    lines.append(f"- **Result:** {'OK' if res.ok else 'FAILED'}")
-    lines.append(f"- **Reason:** {res.reason}")
+    lines: list[str] = [
+        f"# Yahoo Live Probe Report ({VERSION})",
+        "",
+        f"- **UTC time:** {ts}",
+        f"- **URL:** {url}",
+        f"- **Final status:** {res.status}",
+        f"- **Attempts:** {res.attempts}",
+        f"- **Result:** {'OK' if res.ok else 'FAILED'}",
+        f"- **Reason:** {res.reason}",
+    ]
     if res.title:
         lines.append(f"- **Title:** {res.title}")
-    lines.append("")
-    lines.append("## Interpretation for #1 report macro block")
+    lines += [
+        "",
+        "## Interpretation for #1 report macro block",
+    ]
     if res.reason == "blocked_or_ratelimited":
-        lines.append("- Yahoo Live: **forrás nem elérhető (429/403 / challenge / rate limit)**")
-        lines.append("- Kötelező fallback: Reuters/MarketWatch/AP összefoglaló (külön modulból).")
+        lines += [
+            "- Yahoo Live: **forrás nem elérhető (429/403 / challenge / rate limit)**",
+            "- Kötelező fallback: Reuters/MarketWatch/AP összefoglaló (külön modulból).",
+        ]
     elif res.ok:
         lines.append("- Yahoo Live: **elérve**, a macro blokk megírható a live stream összefoglalójából.")
     else:
-        lines.append("- Yahoo Live: **nem elérhető** (nem 200 / hálózati hiba).")
-        lines.append("- Kötelező fallback: Reuters/MarketWatch/AP összefoglaló (külön modulból).")
+        lines += [
+            "- Yahoo Live: **nem elérhető** (nem 200 / hálózati hiba).",
+            "- Kötelező fallback: Reuters/MarketWatch/AP összefoglaló (külön modulból).",
+        ]
     lines.append("")
 
     Path(path).write_text("\n".join(lines), encoding="utf-8")
@@ -169,9 +169,7 @@ def main() -> int:
 
     res = fetch_with_backoff(url, max_attempts=max_attempts, timeout_secs=timeout_secs)
     write_report(url, res, REPORT_PATH)
-
-    # Keep workflow green; we care about the report content + artifact.
-    return 0
+    return 0  # keep workflow green
 
 
 if __name__ == "__main__":
