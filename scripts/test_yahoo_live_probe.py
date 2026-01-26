@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-scripts/test_yahoo_live_probe.py — Yahoo Live probe + backoff retry (v1.0.8)
+scripts/test_yahoo_live_probe.py — Yahoo Live probe + backoff retry (v1.0.9)
 
 Követelmény:
 - Yahoo Live mindig próbálkozás (kötelező)
@@ -21,7 +21,7 @@ from typing import Optional
 
 import requests
 
-VERSION = "v1.0.8"
+VERSION = "v1.0.9"
 
 DEFAULT_URL = (
     "https://finance.yahoo.com/news/live/"
@@ -140,10 +140,7 @@ def write_report(url: str, res: FetchResult, path: str = REPORT_PATH) -> None:
     ]
     if res.title:
         lines.append(f"- **Title:** {res.title}")
-    lines += [
-        "",
-        "## Interpretation for #1 report macro block",
-    ]
+    lines += ["", "## Interpretation for #1 report macro block"]
     if res.reason == "blocked_or_ratelimited":
         lines += [
             "- Yahoo Live: **forrás nem elérhető (429/403 / challenge / rate limit)**",
@@ -157,7 +154,6 @@ def write_report(url: str, res: FetchResult, path: str = REPORT_PATH) -> None:
             "- Kötelező fallback: Reuters/MarketWatch/AP összefoglaló (külön modulból).",
         ]
     lines.append("")
-
     Path(path).write_text("\n".join(lines), encoding="utf-8")
     print(f"[{VERSION}] Wrote report: {path}", flush=True)
 
@@ -166,7 +162,6 @@ def main() -> int:
     url = os.getenv("YAHOO_LIVE_URL", DEFAULT_URL).strip()
     max_attempts = int(os.getenv("MAX_ATTEMPTS", "4"))
     timeout_secs = int(os.getenv("TIMEOUT_SECS", "20"))
-
     res = fetch_with_backoff(url, max_attempts=max_attempts, timeout_secs=timeout_secs)
     write_report(url, res, REPORT_PATH)
     return 0  # keep workflow green
