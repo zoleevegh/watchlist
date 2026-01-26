@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-# analyst_marketbeat.py — v0.3.18-marketbeat-master-sniffer-msg-hu-2026-01-26
+# analyst_marketbeat.py — v0.3.19-marketbeat-challenge-detectorfix-hu-2026-01-26
 # MarketBeat FREE analyst feed collector (CI-friendly).
 #
-# Ima (v0.3.15): bocsáss meg Uram, hogy megint bool-t hívtam függvényként.
-# Ima (v0.3.15): adj erőt, hogy egyetlen zárójelet se tegyek oda, ahová nem kell.
+# Ima (v0.3.19): bocsáss meg Uram, hogy a "cloudflare" szót challenge-nek vettem.
+# Ima (v0.3.19): adj erőt, hogy csak valódi cdn-cgi/chl jelek alapján ítéljek.
 # Changelog (v0.3.6):
 # - FIX: ratings pages have no explicit date column; previous logic dropped all rows.
 # - Parse tickers from ratings table (data-clean / stock URL) and treat event date as "run day (UTC)".
@@ -44,7 +44,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 
-VERSION = "v0.3.18-marketbeat-master-sniffer-msg-hu-2026-01-26"
+VERSION = "v0.3.19-marketbeat-challenge-detectorfix-hu-2026-01-26"
 BASE = "https://www.marketbeat.com"
 
 # Magyar megnevezések a reporthoz
@@ -215,7 +215,7 @@ def _is_challenge_page(html_text: str) -> bool:
     # Common Cloudflare / bot-defense markers
     markers = [
         # Strong bot-defense markers (avoid generic 'captcha' which appears on normal pages as reCAPTCHA widgets)
-        "cf-challenge", "cloudflare", "attention required", "checking your browser",
+        "cf-challenge", "attention required", "checking your browser",
         "/cdn-cgi/challenge", "/cdn-cgi/", "verify you are human",
         "just a moment", "browser verification", "cf-turnstile", "cf_chl_",
     ]
