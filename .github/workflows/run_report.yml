@@ -1,7 +1,7 @@
-# Ima (v1.0.16): bocsáss meg uram, ha megint mellényúltam;
+# Ima (v1.0.17): bocsáss meg uram, ha megint mellényúltam;
 # adj türelmet és tiszta logot, hogy csak az igazat írjam le.
-# Verzió: v1.0.16-run_report-onefile-archive-by-revision-2026-01-26
-# run_report.yml — v1.0.16-2026-01-26
+# Verzió: v1.0.17-run_report-onefile-archive-by-revision-2026-01-26
+# run_report.yml — v1.0.17-2026-01-26
 
 name: Run Report — PRICE ENGINE
 
@@ -23,6 +23,11 @@ name: Run Report — PRICE ENGINE
         description: "MASTER CSV URL (optional). Leave empty to use default."
         required: false
         default: ""
+      analyst_days:
+        description: "Analyst feed lookback window in calendar days (only report #1)."
+        required: false
+        default: "2"
+        type: string
 
 jobs:
   run:
@@ -47,6 +52,9 @@ jobs:
           echo "REPORT=${REPORT}" >> $GITHUB_ENV
           echo "OUT_MD=${OUT_MD}" >> $GITHUB_ENV
           echo "GIST_ID=${GIST_ID}" >> $GITHUB_ENV
+          ANALYST_DAYS="${{ inputs.analyst_days }}"
+          if [ -z "${ANALYST_DAYS}" ]; then ANALYST_DAYS="2"; fi
+          echo "ANALYST_DAYS=${ANALYST_DAYS}" >> $GITHUB_ENV
           echo "DEBUG: REPORT=${REPORT} OUT_MD=${OUT_MD} GIST_ID=${GIST_ID}"
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -62,8 +70,8 @@ jobs:
             reports/marketbeat_events.json
             reports/marketbeat_last_success.json
             reports/marketbeat_last_success.md
-            reports/analyst_last2d.md
-            reports/analyst_last2d.json
+            reports/analyst_last*.md
+            reports/analyst_last*.json
           # Always save a fresh cache each run (unique key), but restore the latest prior one via restore-keys.
           key: marketbeat-seen-v1-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
           restore-keys: |
@@ -183,23 +191,28 @@ jobs:
             echo "RUNNER_EXIT=${RC}" | tee -a reports/runner.log
           fi
 
-          # Run analyst feed (soft) -> reports/analyst_last2d.md / reports/analyst_last2d.json
+          # Run analyst feed (soft) -> reports/analyst_last*.md / reports/analyst_last*.json
           RC_A=0
           set +e
           if [ "${REPORT}" = "1" ] && [ -n "${ANALYST}" ]; then
             if [ -f "reports/master.csv" ]; then
-              python "${ANALYST}" --master "reports/master.csv" --days 2 --out-md "reports/analyst_last2d.md" --out-json "reports/analyst_last2d.json"
+              python "${ANALYST}" --master "reports/master.csv" --days "${ANALYST_DAYS}" --out-md "reports/analyst_last${ANALYST_DAYS}d.md" --out-json "reports/analyst_last${ANALYST_DAYS}d.json"
               RC_A=$?
             else
-              python "${ANALYST}" --master "${MASTER_URL}" --days 2 --out-md "reports/analyst_last2d.md" --out-json "reports/analyst_last2d.json"
+              python "${ANALYST}" --master "${MASTER_URL}" --days "${ANALYST_DAYS}" --out-md "reports/analyst_last${ANALYST_DAYS}d.md" --out-json "reports/analyst_last${ANALYST_DAYS}d.json"
               RC_A=$?
             fi
           else
             RC_A=2
           fi
           set -e
-          if [ "${REPORT}" = "1" ] && ( [ "${RC_A}" -ne 0 ] || [ ! -f "reports/analyst_last2d.md" ] ); then
-            python -c "from pathlib import Path; Path('reports').mkdir(parents=True, exist_ok=True); Path('reports/analyst_last2d.md').write_text('# Elemzői feed (MarketBeat) – utolsó 2 naptári nap\n\n_N/A._\n', encoding='utf-8')"
+          if [ "${REPORT}" = "1" ] && ( [ "${RC_A}" -ne 0 ] || [ ! -f "reports/analyst_last${ANALYST_DAYS}d.md" ] ); then
+            mkdir -p reports
+            cat > "reports/analyst_last${ANALYST_DAYS}d.md" <<EOF
+## Elemzői feed (MarketBeat) – fel/leminősítések + célár (utolsó ${ANALYST_DAYS} naptári nap)
+
+_N/A._
+EOF
             echo "ANALYST_EXIT=${RC_A}" | tee -a reports/runner.log
           fi
 
@@ -229,7 +242,8 @@ jobs:
           from pathlib import Path
           
           out_md = Path(os.environ.get("OUT_MD", ""))
-          analyst_md = Path("reports/analyst_last2d.md")
+          analyst_days = (os.environ.get("ANALYST_DAYS","2") or "2").strip() or "2"
+          analyst_md = Path(f"reports/analyst_last{analyst_days}d.md")
           earnings_md = Path("reports/earnings_next7d.md")
           
           def strip_leading_meta(text: str) -> str:
@@ -268,7 +282,7 @@ jobs:
               e = "N/A"
           
           injected = (
-              "\n\n## Elemzői feed (MarketBeat) — fel/leminősítések + célár (utolsó 2 naptári nap)\n\n"
+              "\n\n## Elemzői feed (MarketBeat) — fel/leminősítések + célár (utolsó ${ANALYST_DAYS} naptári nap)\n\n"
               + a
               + "\n\n## Earnings — következő 7 nap\n\n"
               + e
