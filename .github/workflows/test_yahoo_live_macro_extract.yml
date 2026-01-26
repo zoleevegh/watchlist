@@ -1,4 +1,4 @@
-name: Yahoo Live Macro Extract v1.0.0
+name: Yahoo Live Macro Extract v1.0.1
 "on":
   workflow_dispatch:
     inputs:
@@ -53,3 +53,4 @@ jobs:
         with:
           name: yahoo-live-macro
           path: macro_yahoo_live.md
+
