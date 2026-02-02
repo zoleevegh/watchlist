@@ -4,14 +4,18 @@
 MarketBeat analyst feed (upgrades/downgrades/price-target changes) with persistent cache + API fallbacks.
 
 Versioning rule: whenever this file is modified, bump VERSION continuously (no gaps).
-VERSION: v0.3.27-marketbeat-cache-parsefix-2026-02-02
+VERSION: v0.3.28-marketbeat-masterurl-parsefallback-2026-02-02
 
-Key fixes vs v0.3.26:
+Key fixes vs v0.3.27:
 - Robust cache loading: 'placeholder' / invalid JSON no longer crashes (auto-resets + .bad copy).
 - Persistent event cache (marketbeat_events.json) stores full events with first_seen/last_seen so older events
   that disappear from MarketBeat's "latest" pages can still be reported within the last N calendar days.
 - Challenge / robot-protection detection: HTTP 200 with bot page is treated as blocked.
 - Output always includes ticker header; never exits non‑zero when data is simply empty.
+
+Additional fixes in v0.3.28:
+- MASTER can be a local CSV path OR an http(s) URL (workflow may pass URL when download fails).
+- If MarketBeat parsing fails due to missing lxml/pandas issues, fallbacks can still run (FMP/Finnhub).
 
 Optional fallbacks (only if API keys exist):
 - Finnhub: /quote (key validation) + /stock/upgrade-downgrade (Premium may 403).
@@ -43,7 +47,7 @@ except Exception as e:
     pd = None  # type: ignore
 
 
-VERSION = "v0.3.27-marketbeat-cache-parsefix-2026-02-02"
+VERSION = "v0.3.28-marketbeat-masterurl-parsefallback-2026-02-02"
 
 MB_BASE = "https://www.marketbeat.com"
 MB_PAGES = {
@@ -137,9 +141,33 @@ def _safe_json_dump(path: str, obj: Any) -> None:
     os.replace(tmp, path)
 
 def _read_master_tickers(master_csv_path: str) -> List[str]:
-    if not os.path.exists(master_csv_path):
-        raise FileNotFoundError(master_csv_path)
-    with open(master_csv_path, "r", encoding="utf-8", errors="ignore", newline="") as f:
+    """Read tickers from a local CSV file OR from an http(s) CSV URL.
+
+    Workflow safety: if MASTER download fails, the workflow passes the URL directly.
+    The older versions crashed in this case because they only handled local paths.
+    """
+
+    csv_text: Optional[str] = None
+    if re.match(r"^https?://", (master_csv_path or ""), flags=re.IGNORECASE):
+        # Download CSV
+        try:
+            r = requests.get(master_csv_path, timeout=25)
+            if r.status_code != 200 or not (r.text or "").strip():
+                raise FileNotFoundError(master_csv_path)
+            csv_text = r.text
+        except Exception:
+            raise FileNotFoundError(master_csv_path)
+    else:
+        if not os.path.exists(master_csv_path):
+            raise FileNotFoundError(master_csv_path)
+        with open(master_csv_path, "r", encoding="utf-8", errors="ignore") as f0:
+            csv_text = f0.read()
+
+    assert csv_text is not None
+    # Use DictReader on an in-memory stream for both cases
+    import io
+    f = io.StringIO(csv_text)
+    with f:
         # sniff header
         sample = f.read(4096)
         f.seek(0)
@@ -397,6 +425,10 @@ def _fetch_marketbeat_events(tickers: set, max_pages_each: int = 2) -> Tuple[Lis
     status: Dict[str, Any] = {}
     all_events: List[Dict[str, Any]] = []
 
+    any_table_parsed = False
+    if pd is None:
+        status["pandas_unavailable"] = True
+
     with requests.Session() as s:
         # warmup
         st, html = _http_get(s, MB_BASE + "/", timeout=15)
@@ -427,6 +459,7 @@ def _fetch_marketbeat_events(tickers: set, max_pages_each: int = 2) -> Tuple[Lis
                 tables = _pd_read_tables(hp)
                 if not tables:
                     continue
+                any_table_parsed = True
                 # find the most "ratings-like" table: has a ticker/symbol column or company column.
                 chosen = None
                 for t in tables:
@@ -440,6 +473,10 @@ def _fetch_marketbeat_events(tickers: set, max_pages_each: int = 2) -> Tuple[Lis
                 for ev in evs:
                     if ev["ticker"] in tickers:
                         all_events.append(ev)
+
+    if not any_table_parsed and not any(status.get(k + "_blocked") for k in ["ratings_upgrade", "ratings_downgrade", "ratings_pt_change"]):
+        # Common CI issue: pandas.read_html can't parse because lxml isn't installed.
+        status["parse_failed"] = True
 
     # de-dup raw events
     uniq = {}
@@ -760,9 +797,19 @@ def main(argv: Optional[List[str]] = None) -> int:
     # scrape MarketBeat
     fresh, status = _fetch_marketbeat_events(tickers=tickers, max_pages_each=args.max_pages)
 
-    # If MarketBeat yielded nothing because blocked, try fallbacks (best effort)
+    # If MarketBeat yielded nothing, try fallbacks (best effort).
+    # Reasons:
+    # - blocked/challenge (HTTP 200 bot page)
+    # - CI parsing failure (no lxml -> pandas.read_html returns nothing)
+    # - pandas missing
     fallback_status = {}
-    if (not fresh) and any(status.get(k + "_blocked") for k in ["ratings_upgrade", "ratings_downgrade", "ratings_pt_change"]):
+    need_fallback = (not fresh) and (
+        any(status.get(k + "_blocked") for k in ["ratings_upgrade", "ratings_downgrade", "ratings_pt_change"]) or
+        bool(status.get("parse_failed")) or
+        bool(status.get("pandas_unavailable"))
+    )
+
+    if need_fallback:
         # prefer FMP (if key exists), then Finnhub
         fmp_key = os.getenv("FMP_API_KEY", "").strip()
         finnhub_key = os.getenv("FINNHUB_API_KEY", "").strip()
