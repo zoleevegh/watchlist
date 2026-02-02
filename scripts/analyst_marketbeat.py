@@ -43,7 +43,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 
-VERSION = "v0.3.16-marketbeat-challengefix2-hu-2026-01-23"
+VERSION = "v0.3.26-marketbeat-dedup-current-price-ticker-2026-01-26"
 BASE = "https://www.marketbeat.com"
 
 # Magyar megnevezések a reporthoz
@@ -184,6 +184,105 @@ def apply_seen_dates_and_filter(
 
 rce_url: str
 
+
+
+def dedup_merge_events(events: List[AnalystEvent]) -> List[AnalystEvent]:
+    """De-duplicate/merge duplicates across MarketBeat lists.
+
+    The same underlying change may appear on multiple pages:
+    - /ratings/us/ (generic "Elemzői frissítés")
+    - /ratings/upgrades/ or /ratings/downgrades/
+    - /ratings/pricetargetchanges/
+
+    We keep ONE row per (ticker, date, brokerage) and, when multiple action
+    labels exist for the same key, we merge them into a single action string.
+    """
+
+    def _source_priority(url: str) -> int:
+        u = (url or '').lower()
+        if 'pricetargetchanges' in u:
+            return 3
+        if '/upgrades' in u or '/downgrades' in u or '/initiations' in u:
+            return 4
+        if '/ratings/us' in u:
+            return 1
+        return 0
+
+    merged = {}  # key -> dict
+
+    for ev in events:
+        key = (ev.ticker, ev.asof_date, ev.brokerage)
+        cur = merged.get(key)
+        if cur is None:
+            merged[key] = {
+                'ticker': ev.ticker,
+                'asof_date': ev.asof_date,
+                'brokerage': ev.brokerage,
+                'analyst': ev.analyst,
+                'actions': {ev.action} if ev.action else set(),
+                'rating_from': ev.rating_from,
+                'rating_to': ev.rating_to,
+                'pt_from': ev.pt_from,
+                'pt_to': ev.pt_to,
+                'current_price': ev.current_price,
+                'currency': ev.currency,
+                'source': ev.source,
+                'source_prio': _source_priority(ev.source),
+            }
+            continue
+
+        # merge actions
+        if ev.action:
+            cur['actions'].add(ev.action)
+
+        # keep the most informative fields
+        if not cur.get('analyst') and ev.analyst:
+            cur['analyst'] = ev.analyst
+        if cur.get('rating_from') in (None, '') and ev.rating_from:
+            cur['rating_from'] = ev.rating_from
+        if cur.get('rating_to') in (None, '') and ev.rating_to:
+            cur['rating_to'] = ev.rating_to
+        if cur.get('pt_from') is None and ev.pt_from is not None:
+            cur['pt_from'] = ev.pt_from
+        if cur.get('pt_to') is None and ev.pt_to is not None:
+            cur['pt_to'] = ev.pt_to
+        if cur.get('current_price') is None and ev.current_price is not None:
+            cur['current_price'] = ev.current_price
+        if not cur.get('currency') and ev.currency:
+            cur['currency'] = ev.currency
+
+        # keep the best source URL
+        pr = _source_priority(ev.source)
+        if pr > cur.get('source_prio', 0):
+            cur['source'] = ev.source
+            cur['source_prio'] = pr
+
+    out: List[AnalystEvent] = []
+    for key, cur in merged.items():
+        actions = set(a for a in cur['actions'] if a)
+        # If we have a specific action (upgrade/downgrade/pt change), drop the generic one.
+        if len(actions) > 1 and 'Elemzői frissítés' in actions:
+            actions.remove('Elemzői frissítés')
+        action = ' + '.join(sorted(actions)) if actions else 'Elemzői frissítés'
+
+        out.append(AnalystEvent(
+            ticker=cur['ticker'],
+            asof_date=cur['asof_date'],
+            action=action,
+            brokerage=cur['brokerage'],
+            analyst=cur['analyst'],
+            rating_from=cur['rating_from'],
+            rating_to=cur['rating_to'],
+            pt_from=cur['pt_from'],
+            pt_to=cur['pt_to'],
+            current_price=cur['current_price'],
+            currency=cur['currency'] or 'USD',
+            source=cur['source'],
+        ))
+
+    # stable order for report
+    out.sort(key=lambda e: (e.ticker, e.asof_date, e.brokerage, e.action))
+    return out
 
 def _log(msg: str) -> None:
     now = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
@@ -702,6 +801,8 @@ def main() -> int:
 
     today_iso = dt.datetime.utcnow().date().isoformat()
     events = apply_seen_dates_and_filter(events, args.days, seen_cache, today_iso)
+    # merge duplicates across different MarketBeat lists
+    events = dedup_merge_events(events)
     save_seen_cache(seen_path, seen_cache)
 
     write_outputs(out_md, out_json, events, args.days, status_map)
