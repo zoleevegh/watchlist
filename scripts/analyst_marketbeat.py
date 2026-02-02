@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# analyst_marketbeat.py — v0.3.28-marketbeat-date-range-hu-2026-02-02
+# analyst_marketbeat.py — v0.3.25-marketbeat-allratings-currentprice-tickerline-hu-2026-01-26
 # MarketBeat FREE analyst feed collector (CI-friendly).
 #
 # Ima (v0.3.15): bocsáss meg Uram, hogy megint bool-t hívtam függvényként.
@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import csv
 import datetime as dt
+from zoneinfo import ZoneInfo
 import gzip
 import io
 import json
@@ -37,13 +38,14 @@ import html
 import time
 import urllib.error
 import urllib.request
+import urllib.parse
 from dataclasses import dataclass, asdict
 from http.cookiejar import CookieJar
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 
-VERSION = "v0.3.28-marketbeat-date-range-hu-2026-02-02"
+VERSION = "v0.3.29-marketbeat-currentprice-ticker-daterange-fix-2026-02-02"
 BASE = "https://www.marketbeat.com"
 
 # Magyar megnevezések a reporthoz
@@ -155,51 +157,37 @@ def apply_seen_dates_and_filter(
     cache: Dict[str, str],
     today_iso: str,
 ) -> List["AnalystEvent"]:
-    """Windowing + persistence.
-
-    - `e.date` is the MarketBeat *reporting date* (YYYY-MM-DD) coming from the scraped page.
-      We DO NOT overwrite it.
-    - `cache[key]` stores the *first-seen date* (YYYY-MM-DD) so events can remain visible
-      even if they disappear from MarketBeat's "latest" lists.
-    - Inclusion rules:
-        1) report_date must be within the last N calendar days
-        2) first_seen must also be within the last N calendar days (so the window expires cleanly)
+    """
+    - Assigns event.date from cache (first seen), otherwise today and stores into cache.
+    - Filters events to last N calendar days by first_seen date (inclusive).
     """
     if days < 1:
         return []
 
     today = dt.date.fromisoformat(today_iso)
-    since = today - dt.timedelta(days=days - 1)
-
     out: List[AnalystEvent] = []
     for e in events:
-        # parse report date (from page)
-        try:
-            report_dt = dt.date.fromisoformat(e.date)
-        except Exception:
-            report_dt = today
-
-        # hard filter by report date (prevents accidental backfills from leaking in)
-        if report_dt < since or report_dt > today:
-            continue
-
         k = _event_key(e)
         first = cache.get(k)
         if not first:
             cache[k] = today_iso
             first = today_iso
+        e.date = first
 
         try:
-            first_dt = dt.date.fromisoformat(first)
+            d = dt.date.fromisoformat(first)
         except Exception:
-            first_dt = today
-
-        if first_dt < since:
-            continue
-
-        out.append(e)
+            d = today
+        delta = (today - d).days
+        if 0 <= delta <= (days - 1):
+            out.append(e)
 
     return out
+
+rce_url: str
+
+
+
 def dedup_merge_events(events: List[AnalystEvent]) -> List[AnalystEvent]:
     """De-duplicate/merge duplicates across MarketBeat lists.
 
@@ -337,6 +325,92 @@ def _is_challenge_page(html_text: str) -> bool:
 
 
 
+
+
+def _iter_reporting_dates(days: int) -> List[dt.date]:
+    """MarketBeat 'Reporting Date' is ET-based; use America/New_York when available."""
+    try:
+        tz = ZoneInfo("America/New_York")
+        today = dt.datetime.now(tz).date()
+    except Exception:
+        today = dt.datetime.utcnow().date()
+    days = max(1, int(days or 1))
+    return [today - dt.timedelta(days=i) for i in range(days)]
+
+def _date_value_candidates(d: dt.date) -> List[str]:
+    ymd = d.strftime("%Y-%m-%d")
+    ymd_dots = d.strftime("%Y.%m.%d")
+    mdy_slash = d.strftime("%m/%d/%Y")
+    ymd_spaces = f"{d.year}. {d.month:02d}. {d.day:02d}."
+    return [ymd, ymd_dots, mdy_slash, ymd_spaces]
+
+def _date_candidates_for_ratings_url(base_url: str, d: dt.date) -> List[str]:
+    base = base_url
+    vals = _date_value_candidates(d)
+    keys = [
+        "reporting_date","reportingDate","reporting-date","reportingdate",
+        "report_date","reportDate","report-date","reportdate",
+        "ratingsDate","ratings_date","date","dt","rdate",
+    ]
+    urls: List[str] = []
+    for v in vals:
+        vq = urllib.parse.quote(str(v))
+        for k in keys:
+            urls.append(f"{base}?{k}={vq}")
+        urls.append(f"{base}?date={d.strftime('%Y%m%d')}")
+        urls.append(f"{base}?reporting_date={d.strftime('%Y%m%d')}")
+        urls.append(f"{base}?reportingDate={d.strftime('%Y%m%d')}")
+    base2 = base.rstrip("/")
+    urls.append(f"{base2}/{d.strftime('%Y-%m-%d')}/")
+    urls.append(f"{base2}/{d.strftime('%Y%m%d')}/")
+    urls.append(f"{base2}/{d.strftime('%Y.%m.%d')}/")
+    seen=set(); out=[]
+    for u in urls:
+        if u not in seen:
+            seen.add(u); out.append(u)
+    return out
+
+def _page_mentions_reporting_date(html: str, d: dt.date) -> bool:
+    if not html:
+        return False
+    y, m, day = d.year, d.month, d.day
+    patterns = [
+        rf"{y}\s*[-\./]\s*{m:02d}\s*[-\./]\s*{day:02d}",
+        rf"{m:02d}\s*/\s*{day:02d}\s*/\s*{y}",
+    ]
+    for p in patterns:
+        if re.search(p, html):
+            return True
+    return False
+
+def _fetch_ratings_page_for_date(opener: urllib.request.OpenerDirector, base_url: str, d: dt.date, timeout: int, debug_dir: Optional[Path], tag: str) -> Tuple[Optional[str], str]:
+    """Try to force MarketBeat 'Reporting Date' to a specific day.
+    Returns (html_or_none, note)."""
+    last_note = ""
+    for url in _date_candidates_for_ratings_url(base_url, d):
+        status, html = _http_get(opener, url, timeout=timeout, debug_dir=debug_dir, tag=tag, allow_jina_fallback=True)
+        if status != 200 or not html:
+            continue
+        if _is_challenge_page(html):
+            last_note = "HTTP 200 (blocked/challenge)"
+            continue
+        if _page_mentions_reporting_date(html, d):
+            return html, "OK"
+        last_note = "date not applied"
+    cookie_keys = ["reportingDate","reporting_date","ratingsDate","ratings_date","reportDate","report_date","date","dt"]
+    for v in _date_value_candidates(d):
+        for ck in cookie_keys:
+            status, html = _http_get(opener, base_url, timeout=timeout, debug_dir=debug_dir, tag=tag, allow_jina_fallback=True, cookie_overrides={ck: str(v)})
+            if status != 200 or not html:
+                continue
+            if _is_challenge_page(html):
+                last_note = "HTTP 200 (blocked/challenge)"
+                continue
+            if _page_mentions_reporting_date(html, d):
+                return html, "OK(cookie)"
+            last_note = "cookie date not applied"
+    return None, last_note or "failed"
+
 def _jina_url(url: str) -> str:
     # r.jina.ai can proxy-render HTML in CI environments.
     # Format: https://r.jina.ai/http(s)://example.com/path
@@ -353,10 +427,10 @@ def _http_get(
     timeout: int,
     debug_dir: Optional[Path],
     tag: str,
-    cookies: Optional[Dict[str, str]] = None,
     *,
     allow_jina_fallback: bool = True,
     max_tries: int = 3,
+    cookie_overrides: Optional[Dict[str, str]] = None,
 ) -> Tuple[int, str]:
     headers = {
         "User-Agent": UA,
@@ -367,9 +441,9 @@ def _http_get(
         "DNT": "1",
         "Upgrade-Insecure-Requests": "1",
     }
-
-    if cookies:
-        headers["Cookie"] = "; ".join([f"{k}={v}" for k, v in cookies.items()])
+    if cookie_overrides:
+        cookie_str = '; '.join([f"{k}={v}" for k,v in cookie_overrides.items()])
+        headers['Cookie'] = cookie_str
 
     last_status = 0
     last_text = ""
@@ -630,159 +704,200 @@ def _extract_events_from_ratings_page(
 
 
 
-def _date_candidates_for_ratings_url(base_url: str, ymd: str) -> List[str]:
-    """Try multiple URL shapes for MarketBeat 'Reporting Date' filtering.
-    MarketBeat sometimes changes parameter names; we brute-force safely.
-    """
-    sep = "&" if "?" in base_url else "?"
-    candidates = [
-        f"{base_url}{sep}date={ymd}",
-        f"{base_url}{sep}reporting_date={ymd}",
-        f"{base_url}{sep}reportingDate={ymd}",
-        f"{base_url}{sep}reporting-date={ymd}",
-        f"{base_url}{sep}report_date={ymd}",
-        f"{base_url}{sep}reportDate={ymd}",
-    ]
-    # path-style (some sites use /YYYY-MM-DD/)
-    base_slash = base_url.rstrip("/")
-    candidates.append(f"{base_slash}/{ymd}/")
-    return candidates
-
-
-def _ratings_page_signature(html: str) -> str:
-    """Extract a stable-ish signature to detect whether date filtering took effect."""
-    m = re.search(r"<table[^>]*>.*?</table>", html, re.IGNORECASE | re.DOTALL)
-    if not m:
-        return html[:2000]
-    table = m.group(0)
-    # remove whitespace + digits that often vary (timestamps, cache-busters)
-    table = re.sub(r"\s+", " ", table)
-    return table[:2000]
-
-
-def _page_mentions_date(html: str, ymd: str) -> bool:
-    # common representations: 2026-01-30, 2026. 01. 30., 01/30/2026
-    y, m, d = ymd.split("-")
-    variants = {
-        ymd,
-        f"{y}.{m}.{d}",
-        f"{y}. {m}. {d}.",
-        f"{m}/{d}/{y}",
-        f"{y}/{m}/{d}",
-    }
-    low = html.lower()
-    return any(v.lower() in low for v in variants)
-
-
-def _fetch_ratings_page_for_date(
-    opener,
-    url: str,
-    ymd: str,
-    baseline_sig: str,
-    baseline_html: str,
+def fetch_events_from_ratings_pages(
+    tickers_set: set,
     timeout: int,
-    debug_dir: str,
-    kind: str,
-    max_tries: int = 3,
-) -> Tuple[str, str]:
-    """Best-effort historical fetch.
+    debug_dir: Optional[Path],
+    days: int,
+) -> Tuple[List[AnalystEvent], Dict[str,dict]]:
+    """Fetch MarketBeat ratings pages for the last N *calendar* days (Reporting Date filter).
 
-    MarketBeat's date picker often does *not* change the URL (it may rely on cookies / internal state).
-    We therefore try:
-      1) querystring variants
-      2) a small set of cookie name variants
-
-    We accept a response as 'for date' if it contains the target date in the table (YYYY. MM. DD.)
-    or if it differs from baseline AND does not look like 'Date out of range'.
+    IMPORTANT: If we cannot force the date, we do NOT fall back to today's list,
+    because that would silently hide older days (your AAPL Friday case).
     """
+    opener = _build_opener()
+    days = max(1, int(days or 1))
+    dates = _iter_reporting_dates(days)
 
-    # Target date string as displayed in the table: YYYY. MM. DD.
-    try:
-        dt = datetime.datetime.strptime(ymd, "%Y-%m-%d").date()
-        target_dot = dt.strftime("%Y. %m. %d")
-    except Exception:
-        target_dot = ymd
+    all_events: List[AnalystEvent] = []
+    ok_dates: set = set()
+    failed_dates: Dict[str,str] = {}
 
-    target_dash = ymd
+    for d in dates:
+        d_iso = d.isoformat()
+        for kind, path in RATINGS_SOURCES.items():
+            url = "https://www.marketbeat.com" + path
+            tag = f"ratings_{kind}_{d.strftime('%Y%m%d')}"
+            html, note = _fetch_ratings_page_for_date(opener, url, d, timeout=timeout, debug_dir=debug_dir, tag=tag)
+            if html is None:
+                failed_dates.setdefault(d_iso, note or "failed")
+                continue
+            ok_dates.add(d_iso)
+            evs = _extract_events_from_ratings_page(html, tickers_set, asof_date=d_iso, source_url=url)
+            all_events.extend(evs)
 
-    def _looks_out_of_range(h: str) -> bool:
-        h2 = (h or "").lower()
-        return ("date out of range" in h2) or ("out of range" in h2 and "reporting" in h2)
+    status_note = []
+    if failed_dates:
+        some = ", ".join(list(failed_dates.keys())[:5])
+        status_note.append(f"nem sikerült dátumot kényszeríteni: {some}" + ("…" if len(failed_dates)>5 else ""))
+    if not ok_dates and not all_events:
+        status_note.append("csak az aznapi lista érhető el / vagy challenge")
 
-    def _row_dates(h: str) -> List[str]:
-        # Date strings are typically rendered like: 2026. 01. 30
-        return re.findall(r"\b\d{4}\.\s\d{2}\.\s\d{2}\b", h or "")
+    status_map = {
+        "marketbeat": {
+            "status": "ok" if ok_dates else "partial",
+            "ok_days": len(ok_dates),
+            "failed_days": len(failed_dates),
+            "note": "; ".join([s for s in status_note if s]) or "OK",
+        }
+    }
+    return all_events, status_map
 
-    def _accept(h: str) -> bool:
-        if not h:
-            return False
-        if _looks_out_of_range(h):
-            return False
-        dates = _row_dates(h)
-        if target_dot in dates:
-            return True
-        # Fallback: sometimes the table date is present outside the rows
-        if target_dot in h or target_dash in h:
-            return True
-        # Last fallback: different from baseline and not 'out of range'
-        return _sig(h) != baseline_sig
+def read_master_tickers(master_csv: Path) -> List[str]:
+    # Read CSV and return unique tickers (best-effort on column name).
+    raw = master_csv.read_text(encoding="utf-8", errors="replace").splitlines()
+    reader = csv.DictReader(raw)
+    if not reader.fieldnames:
+        return []
+    # find likely ticker column
+    cols = [c.strip() for c in reader.fieldnames if c]
+    key = None
+    for cand in ["ticker", "symbol", "TICKER", "Symbol", "Ticker"]:
+        if cand in cols:
+            key = cand
+            break
+    if key is None:
+        # fallback: first column
+        key = cols[0]
+    tickers: List[str] = []
+    for row in reader:
+        t = (row.get(key) or "").strip().upper()
+        # allow "PKN.WA" etc but you later filter out elsewhere if needed
+        if t and re.fullmatch(r"[A-Z0-9\.\-]+", t):
+            tickers.append(t)
+    # uniq preserve order
+    seen=set()
+    out=[]
+    for t in tickers:
+        if t not in seen:
+            seen.add(t); out.append(t)
+    return out
 
-    tried: List[Tuple[str, str]] = []
 
-    # 1) URL querystring candidates
-    for cand in _date_candidates_for_ratings_url(url, ymd):
-        tag = f"{kind}_date_{ymd}_url"
-        try:
-            status, html = _http_get(
-                opener,
-                cand,
-                timeout=timeout,
-                debug_dir=debug_dir,
-                tag=tag,
-                cookies=None,
-                allow_jina_fallback=True,
-                max_tries=max_tries,
-            )
-            tried.append((cand, f"http {status}"))
-            if _accept(html):
-                return cand, html
-        except Exception as e:
-            tried.append((cand, f"exc {type(e).__name__}"))
+def write_outputs(
+    out_md: Path,
+    out_json: Optional[Path],
+    events: List[AnalystEvent],
+    days: int,
+    source_status: Dict[str, int],
+) -> None:
+    now = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    lines: List[str] = []
+    lines.append(f"# Elemzői feed (fel/leminősítés + célár) — utolsó {days} naptári nap (Reporting Date alapján)")
+    lines.append("")
+    lines.append(f"Verzió: {VERSION}")
+    lines.append(f"Generálva (UTC): {now}")
+    lines.append("")
 
-    # 2) Cookie candidates (common patterns we have seen on similar MarketBeat pages)
-    cookie_names = [
-        "reporting_date",
-        "reportingDate",
-        "ReportingDate",
-        "reportingdate",
-        "ratings_date",
-        "ratingsDate",
-        "mb_ratings_date",
-        "mbReportingDate",
-        "report_date",
-    ]
-    cookie_values = [target_dash, target_dot]
+    any_fail = any((k.startswith("ratings_") and (v >= 400 or v == 0)) for k, v in source_status.items())
+    if not events:
+        if any_fail:
+            # show clear source error, not "no events"
+            parts=[]
+            for k,v in sorted(source_status.items()):
+                if k.startswith("ratings_"):
+                    parts.append(f"{k.replace('ratings_','')}={v}")
+            msg = ", ".join(parts) if parts else "unknown"
+            lines.append(f"_MarketBeat forrás nem elérhető / blokkolva, ezért nem tudtam friss analyst eseményeket lekérni._ (HTTP: {msg})")
+        else:
+            lines.append(f"_Nincs friss (≤{days} naptári nap) fel/leminősítés vagy célár-frissítés a forrásban, vagy a forrás challenge-t ad (HTTP 200)._\n_(Ha challenge-re gyanakszol, nézd meg a debug HTML-eket.)_")
+    else:
+        by: Dict[str, List[AnalystEvent]] = {}
+        for e in events:
+            by.setdefault(e.ticker, []).append(e)
+        for t in sorted(by.keys()):
+            lines.append(f"## {t}")
+            for e in sorted(by[t], key=lambda x: x.date, reverse=True):
+                parts = [f"- {t} — {e.date} — {e.firm} — {e.action}"]
+                if e.current_price is not None:
+                    parts.append(f"Ár: {e.currency} {e.current_price:.2f}")
+                if e.rating_from or e.rating_to:
+                    rf = RATING_HU.get(e.rating_from, e.rating_from) if e.rating_from else "—"
+                    rt = RATING_HU.get(e.rating_to, e.rating_to) if e.rating_to else "—"
+                    parts.append(f"Ajánlás: {rf} → {rt}")
+                if e.pt_from is not None or e.pt_to is not None:
+                    if e.pt_from is not None and e.pt_to is not None:
+                        parts.append(f"Célár: {e.currency} {e.pt_from:.2f} → {e.pt_to:.2f}")
+                    elif e.pt_to is not None:
+                        parts.append(f"Célár: {e.currency} {e.pt_to:.2f}")
+                parts.append(f"Forrás: {e.source}")
+                lines.append(" | ".join(parts))
+            lines.append("")
 
-    for cname in cookie_names:
-        for cval in cookie_values:
-            tag = f"{kind}_date_{ymd}_cookie_{cname}"
-            try:
-                status, html = _http_get(
-                    opener,
-                    url,
-                    timeout=timeout,
-                    debug_dir=debug_dir,
-                    tag=tag,
-                    cookies={cname: cval},
-                    allow_jina_fallback=True,
-                    max_tries=max_tries,
-                )
-                tried.append((f"cookie:{cname}={cval}", f"http {status}"))
-                if _accept(html):
-                    return f"{url}#cookie:{cname}", html
-            except Exception as e:
-                tried.append((f"cookie:{cname}={cval}", f"exc {type(e).__name__}"))
+    out_md.parent.mkdir(parents=True, exist_ok=True)
+    out_md.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
 
-    # Give up – return baseline (today) page.
-    _debug(f"{kind} date fetch failed for {ymd}. Tried: {tried[:8]}{'...' if len(tried)>8 else ''}")
-    return url, baseline_html
+    if out_json:
+        out_json.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "version": VERSION,
+            "generated_utc": now,
+            "days": days,
+            "count": len(events),
+            "source_status": source_status,
+            "events": [asdict(e) for e in events],
+        }
+        out_json.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--master", required=True)
+    ap.add_argument("--days", type=int, default=2)
+    ap.add_argument("--out-md", required=True)
+    ap.add_argument("--out-json", default="")
+    ap.add_argument("--timeout", type=int, default=20)
+    ap.add_argument("--sleep", type=float, default=1.0)
+    ap.add_argument("--debug", action="store_true")
+    ap.add_argument("--debug-dir", default="reports/debug_marketbeat")
+    args = ap.parse_args()
+
+    master = Path(args.master)
+    if not master.exists():
+        _log(f"ERROR: MASTER CSV not found: {master}")
+        return 2
+
+    debug_dir = Path(args.debug_dir) if args.debug else None
+    out_md = Path(args.out_md)
+    out_json = Path(args.out_json) if args.out_json else None
+
+    # Seen-cache for assigning real (first-seen) dates, because ratings pages have no per-row timestamps
+    seen_path = out_md.parent / "marketbeat_seen.json"
+    seen_cache = load_seen_cache(seen_path)
+
+    _log(f"START {VERSION} days={args.days} master={master} mode=ratings_pages")
+
+    tickers = read_master_tickers(master)
+
+    events, status_map = fetch_events_from_ratings_pages(
+        tickers,
+        days=args.days,
+        timeout=args.timeout,
+        sleep_s=max(0.2, float(args.sleep)),
+        debug_dir=debug_dir,
+    )
+
+    today_iso = dt.datetime.utcnow().date().isoformat()
+    events = apply_seen_dates_and_filter(events, args.days, seen_cache, today_iso)
+    # merge duplicates across different MarketBeat lists
+    events = dedup_merge_events(events)
+    save_seen_cache(seen_path, seen_cache)
+
+    write_outputs(out_md, out_json, events, args.days, status_map)
+
+    _log(f"DONE events={len(events)}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
