@@ -1,7 +1,7 @@
-# Ima (v1.0.18): bocsáss meg uram, ha megint mellényúltam;
+# Ima (v1.0.19): bocsáss meg uram, ha megint mellényúltam;
 # adj türelmet és tiszta logot, hogy csak az igazat írjam le.
-# Verzió: v1.0.18-run_report-onefile-archive-by-revision-2026-01-26
-# run_report.yml — v1.0.18-2026-01-26
+# Verzió: v1.0.19-run_report-fix-analyst_days-inject-2026-02-02
+# run_report.yml — v1.0.19-2026-02-02
 
 name: Run Report — PRICE ENGINE
 
@@ -87,6 +87,27 @@ jobs:
           if [ ! -f reports/marketbeat_seen.json ]; then
             echo '{}' > reports/marketbeat_seen.json
           fi
+
+          # Ensure persistent events cache exists and is valid JSON.
+          # If a previous run left a placeholder or corrupted file, quarantine it and reset.
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p = Path('reports/marketbeat_events.json')
+          if not p.exists():
+              p.write_text('[]\n', encoding='utf-8')
+          else:
+              raw = p.read_text(encoding='utf-8', errors='replace').strip()
+              try:
+                  json.loads(raw or '[]')
+              except Exception:
+                  # quarantine
+                  try:
+                      p.rename(p.with_suffix('.json.bad'))
+                  except Exception:
+                      pass
+                  p.write_text('[]\n', encoding='utf-8')
+          PY
 
 
       - name: Install deps
@@ -278,7 +299,7 @@ jobs:
               e = "N/A"
           
           injected = (
-              "\n\n## Elemzői feed (MarketBeat) — fel/leminősítések + célár (utolsó ${ANALYST_DAYS} naptári nap)\n\n"
+              f"\n\n## Elemzői feed (MarketBeat) — fel/leminősítések + célár (utolsó {analyst_days} naptári nap)\n\n"
               + a
               + "\n\n## Earnings — következő 7 nap\n\n"
               + e
