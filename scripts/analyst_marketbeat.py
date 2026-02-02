@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# analyst_marketbeat.py — v0.3.25-marketbeat-allratings-currentprice-tickerline-hu-2026-01-26
+# analyst_marketbeat.py — v0.3.27-marketbeat-date-range-hu-2026-02-02
 # MarketBeat FREE analyst feed collector (CI-friendly).
 #
 # Ima (v0.3.15): bocsáss meg Uram, hogy megint bool-t hívtam függvényként.
@@ -43,7 +43,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 
-VERSION = "v0.3.26-marketbeat-dedup-current-price-ticker-2026-01-26"
+VERSION = "v0.3.27-marketbeat-date-range-hu-2026-02-02"
 BASE = "https://www.marketbeat.com"
 
 # Magyar megnevezések a reporthoz
@@ -155,37 +155,51 @@ def apply_seen_dates_and_filter(
     cache: Dict[str, str],
     today_iso: str,
 ) -> List["AnalystEvent"]:
-    """
-    - Assigns event.date from cache (first seen), otherwise today and stores into cache.
-    - Filters events to last N calendar days by first_seen date (inclusive).
+    """Windowing + persistence.
+
+    - `e.date` is the MarketBeat *reporting date* (YYYY-MM-DD) coming from the scraped page.
+      We DO NOT overwrite it.
+    - `cache[key]` stores the *first-seen date* (YYYY-MM-DD) so events can remain visible
+      even if they disappear from MarketBeat's "latest" lists.
+    - Inclusion rules:
+        1) report_date must be within the last N calendar days
+        2) first_seen must also be within the last N calendar days (so the window expires cleanly)
     """
     if days < 1:
         return []
 
     today = dt.date.fromisoformat(today_iso)
+    since = today - dt.timedelta(days=days - 1)
+
     out: List[AnalystEvent] = []
     for e in events:
+        # parse report date (from page)
+        try:
+            report_dt = dt.date.fromisoformat(e.date)
+        except Exception:
+            report_dt = today
+
+        # hard filter by report date (prevents accidental backfills from leaking in)
+        if report_dt < since or report_dt > today:
+            continue
+
         k = _event_key(e)
         first = cache.get(k)
         if not first:
             cache[k] = today_iso
             first = today_iso
-        e.date = first
 
         try:
-            d = dt.date.fromisoformat(first)
+            first_dt = dt.date.fromisoformat(first)
         except Exception:
-            d = today
-        delta = (today - d).days
-        if 0 <= delta <= (days - 1):
-            out.append(e)
+            first_dt = today
+
+        if first_dt < since:
+            continue
+
+        out.append(e)
 
     return out
-
-rce_url: str
-
-
-
 def dedup_merge_events(events: List[AnalystEvent]) -> List[AnalystEvent]:
     """De-duplicate/merge duplicates across MarketBeat lists.
 
@@ -612,59 +626,162 @@ def _extract_events_from_ratings_page(
 
 
 
-def fetch_events_from_ratings_pages(
-    master_tickers: List[str],
-    days: int,
+def _date_candidates_for_ratings_url(base_url: str, ymd: str) -> List[str]:
+    """Try multiple URL shapes for MarketBeat 'Reporting Date' filtering.
+    MarketBeat sometimes changes parameter names; we brute-force safely.
+    """
+    sep = "&" if "?" in base_url else "?"
+    candidates = [
+        f"{base_url}{sep}date={ymd}",
+        f"{base_url}{sep}reporting_date={ymd}",
+        f"{base_url}{sep}reportingDate={ymd}",
+        f"{base_url}{sep}reporting-date={ymd}",
+        f"{base_url}{sep}report_date={ymd}",
+        f"{base_url}{sep}reportDate={ymd}",
+    ]
+    # path-style (some sites use /YYYY-MM-DD/)
+    base_slash = base_url.rstrip("/")
+    candidates.append(f"{base_slash}/{ymd}/")
+    return candidates
+
+
+def _ratings_page_signature(html: str) -> str:
+    """Extract a stable-ish signature to detect whether date filtering took effect."""
+    m = re.search(r"<table[^>]*>.*?</table>", html, re.IGNORECASE | re.DOTALL)
+    if not m:
+        return html[:2000]
+    table = m.group(0)
+    # remove whitespace + digits that often vary (timestamps, cache-busters)
+    table = re.sub(r"\s+", " ", table)
+    return table[:2000]
+
+
+def _page_mentions_date(html: str, ymd: str) -> bool:
+    # common representations: 2026-01-30, 2026. 01. 30., 01/30/2026
+    y, m, d = ymd.split("-")
+    variants = {
+        ymd,
+        f"{y}.{m}.{d}",
+        f"{y}. {m}. {d}.",
+        f"{m}/{d}/{y}",
+        f"{y}/{m}/{d}",
+    }
+    low = html.lower()
+    return any(v.lower() in low for v in variants)
+
+
+def _fetch_ratings_page_for_date(
+    opener,
+    base_url: str,
+    ymd: str,
     timeout: int,
-    sleep_s: float,
     debug_dir: Optional[Path],
-) -> Tuple[List[AnalystEvent], Dict[str, int]]:
-    # Note: MarketBeat "Today's" ratings pages do NOT expose per-row timestamps in the table.
-    # We treat the event date as "run day UTC" and rely on the source being a real-time list.
-    opener = _make_opener()
+    kind: str,
+    baseline_sig: Optional[str],
+) -> Tuple[int, str, str]:
+    """Return (status, final_url, html) for a given reporting date.
+    We try several URL patterns and pick the first that differs from baseline
+    OR explicitly contains the requested date.
+    """
+    candidates = _date_candidates_for_ratings_url(base_url, ymd)
+    last_status, last_html, last_url = 0, "", base_url
 
-    statuses: Dict[str, int] = {}
-    warm = _warmup_session(opener, timeout, debug_dir)
-    statuses["warmup_home"] = warm
-    _log(f"WARMUP home: HTTP {warm}")
+    for cand in candidates:
+        status, html = _http_get(
+            opener,
+            cand,
+            timeout=timeout,
+            debug_dir=debug_dir,
+            debug_tag=f"ratings_{kind}_{ymd}",
+            allow_jinja_fallback=True,
+            max_tries=3,
+        )
+        last_status, last_html, last_url = status, html, cand
 
-    master_set = {t.upper() for t in master_tickers}
-    asof_date = dt.datetime.utcnow().date().isoformat()
-
-    out: List[AnalystEvent] = []
-    seen: set = set()
-
-    for kind, path in RATINGS_SOURCES:
-        url = BASE + path
-        status, page_html = _http_get(opener, url, timeout, debug_dir, f"ratings_{kind}", allow_jina_fallback=True, max_tries=3)
-        statuses[f"ratings_{kind}"] = status
-        if status >= 400 or status == 0:
-            _log(f"RATINGS {kind}: HTTP {status} (skip)")
-            time.sleep(sleep_s)
+        if status != 200:
             continue
-        if _is_challenge_page(page_html):
-            _log(f"RATINGS {kind}: HTTP {status} (blocked/challenge) (skip)")
-            time.sleep(sleep_s)
+        if _is_challenge_page(html):
             continue
 
-        events = _extract_events_from_ratings_page(page_html, kind, master_set, asof_date, url)
-        for e in events:
-            k = (e.ticker, e.firm, e.action, e.rating_from, e.rating_to, e.pt_from, e.pt_to, e.source)
-            if k in seen:
+        # Accept if we see the date explicitly, OR content differs from baseline.
+        sig = _ratings_page_signature(html)
+        if _page_mentions_date(html, ymd) or (baseline_sig is not None and sig != baseline_sig):
+            return status, cand, html
+
+    return last_status, last_url, last_html
+
+
+def fetch_events_from_ratings_pages(
+    tickers_set: set,
+    days: int,
+    debug_dir: Optional[Path] = None,
+    timeout: int = 20,
+) -> Tuple[List[AnalystEvent], Dict[str, Tuple[int, str]]]:
+    """Fetch MarketBeat ratings pages for the last N calendar days.
+
+    Important: The /ratings/* lists are date-filtered on the site ("Reporting Date").
+    Previously we only fetched today's list and relied on first-seen cache, which meant
+    you could miss older (but still in-window) events when today's list had no MASTER tickers.
+    This function now iterates over the last N dates and brute-forces the date parameter.
+    """
+    opener = _build_opener()
+
+    today = dt.date.today()
+    days = max(1, int(days))
+    date_list = [today - dt.timedelta(days=i) for i in range(days)]
+
+    events: List[AnalystEvent] = []
+    status_map: Dict[str, Tuple[int, str]] = {}
+
+    # Pre-fetch baseline (today) signatures per kind/source so we can detect if date filtering works.
+    baseline_sigs: Dict[str, str] = {}
+
+    for src in RATINGS_SOURCES:
+        kind = src["kind"]
+        url = BASE_URL.rstrip("/") + src["path"]
+        status, html = _http_get(
+            opener,
+            url,
+            timeout=timeout,
+            debug_dir=debug_dir,
+            debug_tag=f"ratings_{kind}_baseline_{today.isoformat()}",
+            allow_jinja_fallback=True,
+            max_tries=3,
+        )
+        status_map[f"{kind}:{today.isoformat()}" ] = (status, url)
+        if status == 200 and not _is_challenge_page(html):
+            baseline_sigs[kind] = _ratings_page_signature(html)
+            events.extend(_extract_from_ratings_page(html, tickers_set, today.isoformat(), kind))
+
+    # Historical dates (yesterday..)
+    for d in date_list[1:]:
+        ymd = d.isoformat()
+        for src in RATINGS_SOURCES:
+            kind = src["kind"]
+            base_url = BASE_URL.rstrip("/") + src["path"]
+            baseline_sig = baseline_sigs.get(kind)
+            status, final_url, html = _fetch_ratings_page_for_date(
+                opener,
+                base_url,
+                ymd,
+                timeout=timeout,
+                debug_dir=debug_dir,
+                kind=kind,
+                baseline_sig=baseline_sig,
+            )
+            status_map[f"{kind}:{ymd}"] = (status, final_url)
+            if status != 200:
                 continue
-            seen.add(k)
-            out.append(e)
+            if _is_challenge_page(html):
+                continue
+            events.extend(_extract_from_ratings_page(html, tickers_set, ymd, kind))
 
-        time.sleep(sleep_s)
+    # Sort: newest report date first, then ticker
+    def _sort_key(ev: AnalystEvent):
+        return (ev.date, ev.ticker or "", ev.action or "", ev.firm or "")
 
-    # days param is kept for label/compat; asof_date is always today UTC.
-    # If someone calls with days<1, return nothing.
-    if days < 1:
-        out = []
-
-    return out, statuses
-
-
+    events.sort(key=_sort_key, reverse=True)
+    return events, status_map
 def read_master_tickers(master_csv: Path) -> List[str]:
     # Read CSV and return unique tickers (best-effort on column name).
     raw = master_csv.read_text(encoding="utf-8", errors="replace").splitlines()
