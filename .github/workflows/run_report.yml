@@ -1,11 +1,11 @@
 # Ima (v1.0.19): bocsáss meg uram, ha megint mellényúltam;
 # adj türelmet és tiszta logot, hogy csak az igazat írjam le.
-# Verzió: v1.0.20-run_report-dedup-analyst-header-2026-02-02
-# run_report.yml — v1.0.20-2026-02-02
+# Verzió: v1.0.21-run_report-checkout-main-install-requests-2026-02-02
+# run_report.yml — v1.0.21-2026-02-02
 
 name: Run Report — PRICE ENGINE
 
-# run_report.yml — v1.0.0-2026-01-21
+# run_report.yml — v1.0.21-2026-02-02
 
 "on":
   workflow_dispatch:
@@ -37,6 +37,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
       - name: Set report variables (1/2/3)
         shell: bash
         run: |
@@ -119,6 +122,12 @@ jobs:
           if [ -f requirements.txt ]; then
             pip install -r requirements.txt
           fi
+
+          # Hard deps for GitHub Actions runner (avoid ModuleNotFoundError)
+          # - requests: some scripts still import it
+          # - lxml: pandas.read_html requires it on ubuntu-latest
+          pip install --upgrade requests lxml
+
 
       - name: Run PRICE ENGINE (#1) + build stable nocache link
         shell: bash
