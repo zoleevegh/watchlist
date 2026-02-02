@@ -1,7 +1,7 @@
 # Ima (v1.0.19): bocsáss meg uram, ha megint mellényúltam;
 # adj türelmet és tiszta logot, hogy csak az igazat írjam le.
-# Verzió: v1.0.19-run_report-fix-analyst_days-inject-2026-02-02
-# run_report.yml — v1.0.19-2026-02-02
+# Verzió: v1.0.20-run_report-inject-fix-2026-02-02
+# run_report.yml — v1.0.20-2026-02-02
 
 name: Run Report — PRICE ENGINE
 
@@ -266,10 +266,11 @@ jobs:
           def strip_leading_meta(text: str) -> str:
               lines = text.splitlines()
               while lines and (
-                  lines[0].startswith("#")
-                  or lines[0].startswith("Verzió:")
-                  or lines[0].startswith("Generálva")
-                  or lines[0].strip() == ""
+                  lines[0].startswith('Verzió:')
+                  or lines[0].startswith('Generálva')
+                  or lines[0].startswith('Generated')
+                  or lines[0].startswith('<!--')
+                  or lines[0].strip() == ''
               ):
                   lines.pop(0)
               return "\n".join(lines).strip()
@@ -289,12 +290,8 @@ jobs:
           a = strip_leading_meta(a_raw)
           e = strip_leading_meta(e_raw)
           
-          # Avoid showing the old italic "no fresh" sentence; keep it clean.
-          if "Nincs friss" in a and "fel/leminősítés" in a:
-              a = ""
-          
           if not a:
-              a = "N/A"
+              a = f"NO_DATA (analyst feed not produced) — last {analyst_days} days"
           if not e:
               e = "N/A"
           
