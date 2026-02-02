@@ -4,7 +4,7 @@
 MarketBeat analyst feed (upgrades/downgrades/price-target changes) with persistent cache + API fallbacks.
 
 Versioning rule: whenever this file is modified, bump VERSION continuously (no gaps).
-VERSION: v0.3.28-marketbeat-masterurl-parsefallback-2026-02-02
+VERSION: v0.3.29-no-requests-stdlib-http-2026-02-02
 
 Key fixes vs v0.3.27:
 - Robust cache loading: 'placeholder' / invalid JSON no longer crashes (auto-resets + .bad copy).
@@ -13,7 +13,8 @@ Key fixes vs v0.3.27:
 - Challenge / robot-protection detection: HTTP 200 with bot page is treated as blocked.
 - Output always includes ticker header; never exits non‑zero when data is simply empty.
 
-Additional fixes in v0.3.28:
+Additional fixes in v0.3.29:
+- Removed hard dependency on 'requests' (uses urllib fallback in GitHub Actions default runners).
 - MASTER can be a local CSV path OR an http(s) URL (workflow may pass URL when download fails).
 - If MarketBeat parsing fails due to missing lxml/pandas issues, fallbacks can still run (FMP/Finnhub).
 
@@ -38,8 +39,13 @@ import re
 import sys
 from dataclasses import dataclass, asdict
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+import urllib.request
+import urllib.error
 
-import requests
+try:
+    import requests  # type: ignore
+except Exception:
+    requests = None  # type: ignore
 
 try:
     import pandas as pd
@@ -47,7 +53,7 @@ except Exception as e:
     pd = None  # type: ignore
 
 
-VERSION = "v0.3.28-marketbeat-masterurl-parsefallback-2026-02-02"
+VERSION = "v0.3.29-no-requests-stdlib-http-2026-02-02"
 
 MB_BASE = "https://www.marketbeat.com"
 MB_PAGES = {
@@ -150,12 +156,8 @@ def _read_master_tickers(master_csv_path: str) -> List[str]:
     csv_text: Optional[str] = None
     if re.match(r"^https?://", (master_csv_path or ""), flags=re.IGNORECASE):
         # Download CSV
-        try:
-            r = requests.get(master_csv_path, timeout=25)
-            if r.status_code != 200 or not (r.text or "").strip():
-                raise FileNotFoundError(master_csv_path)
-            csv_text = r.text
-        except Exception:
+        st, csv_text, _hdr = _http_get(master_csv_path, timeout=25)
+        if st != 200 or not (csv_text or "").strip():
             raise FileNotFoundError(master_csv_path)
     else:
         if not os.path.exists(master_csv_path):
@@ -241,7 +243,11 @@ def _detect_bot_page(html: str) -> bool:
     ]
     return any(n in low for n in needles)
 
-def _http_get(session: requests.Session, url: str, timeout: int = 20) -> Tuple[int, str]:
+def _http_get(url: str, timeout: int = 20) -> Tuple[int, str, Dict[str, str]]:
+    """HTTP GET helper without hard dependency on 'requests'.
+
+    Returns: (status_code, text, response_headers)
+    """
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                       "(KHTML, like Gecko) Chrome/122.0 Safari/537.36",
@@ -249,8 +255,58 @@ def _http_get(session: requests.Session, url: str, timeout: int = 20) -> Tuple[i
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Connection": "close",
     }
-    r = session.get(url, headers=headers, timeout=timeout)
-    return r.status_code, r.text or ""
+
+    # Prefer requests if available (nicer TLS/proxy behavior), otherwise fallback to urllib.
+    if requests is not None:
+        try:
+            r = requests.get(url, headers=headers, timeout=timeout)
+            rh = {k.lower(): v for k, v in (r.headers or {}).items()}
+            return int(getattr(r, "status_code", 0) or 0), (r.text or ""), rh
+        except Exception:
+            return 0, "", {}
+
+    try:
+        req = urllib.request.Request(url, headers=headers, method="GET")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            status = int(getattr(resp, "status", 0) or 0)
+            raw = resp.read()
+            # Try to decode as UTF-8; fallback to latin-1 to avoid crashing on odd encodings.
+            try:
+                text = raw.decode("utf-8", errors="replace")
+            except Exception:
+                text = raw.decode("latin-1", errors="replace")
+            rh = {k.lower(): v for k, v in dict(resp.headers).items()}
+            return status, text, rh
+    except urllib.error.HTTPError as e:
+        try:
+            raw = e.read()
+            text = raw.decode("utf-8", errors="replace")
+        except Exception:
+            text = ""
+        rh = {k.lower(): v for k, v in dict(getattr(e, "headers", {}) or {}).items()}
+        return int(getattr(e, "code", 0) or 0), text, rh
+    except Exception:
+        return 0, "", {}
+
+
+def _http_get_with_params(url: str, params: Optional[Dict[str, Any]] = None, timeout: int = 20) -> Tuple[int, str, Dict[str, str]]:
+    """HTTP GET with query params (works without requests)."""
+    if params:
+        from urllib.parse import urlencode
+        qs = urlencode({k: v for k, v in params.items() if v is not None})
+        if qs:
+            url = url + ("&" if "?" in url else "?") + qs
+    return _http_get(url, timeout=timeout)
+
+def _http_get_json(url: str, params: Optional[Dict[str, Any]] = None, timeout: int = 20) -> Tuple[int, Any, str]:
+    """GET JSON endpoint. Returns (status, parsed_json_or_None, raw_text)."""
+    st, text, _hdr = _http_get_with_params(url, params=params, timeout=timeout)
+    if st != 200 or not text:
+        return st, None, text or ""
+    try:
+        return st, json.loads(text), text
+    except Exception:
+        return st, None, text
 
 def _pd_read_tables(html: str) -> List[Any]:
     if pd is None:
@@ -429,50 +485,49 @@ def _fetch_marketbeat_events(tickers: set, max_pages_each: int = 2) -> Tuple[Lis
     if pd is None:
         status["pandas_unavailable"] = True
 
-    with requests.Session() as s:
-        # warmup
-        st, html = _http_get(s, MB_BASE + "/", timeout=15)
-        status["warmup_home"] = st
+    # warmup (helps some CDNs set cookies; harmless if blocked)
+    st, _html, _hdr = _http_get(MB_BASE + "/", timeout=15)
+    status["warmup_home"] = st
 
-        for key, path in [("ratings_upgrade", MB_PAGES["upgrade"]),
-                          ("ratings_downgrade", MB_PAGES["downgrade"]),
-                          ("ratings_pt_change", MB_PAGES["pt_change"])]:
-            page_key = "upgrade" if "upgrade" in key else ("downgrade" if "downgrade" in key else "pt_change")
-            url0 = MB_BASE + path
-            st0, html0 = _http_get(s, url0, timeout=20)
-            status[key] = st0
+    for key, path in [("ratings_upgrade", MB_PAGES["upgrade"]),
+                      ("ratings_downgrade", MB_PAGES["downgrade"]),
+                      ("ratings_pt_change", MB_PAGES["pt_change"])]:
+        page_key = "upgrade" if "upgrade" in key else ("downgrade" if "downgrade" in key else "pt_change")
+        url0 = MB_BASE + path
+        st0, html0, _hdr0 = _http_get(url0, timeout=20)
+        status[key] = st0
 
-            if st0 != 200 or _detect_bot_page(html0):
-                status[key + "_blocked"] = True
+        if st0 != 200 or _detect_bot_page(html0):
+            status[key + "_blocked"] = True
+            continue
+
+        # pagination: MarketBeat uses ?p=2 on these pages.
+        html_pages = [html0]
+        for p in range(2, max_pages_each + 1):
+            url = url0 + f"?p={p}"
+            stp, hp, _hdrp = _http_get(url, timeout=20)
+            if stp != 200 or _detect_bot_page(hp):
+                break
+            html_pages.append(hp)
+
+        for hp in html_pages:
+            tables = _pd_read_tables(hp)
+            if not tables:
                 continue
-
-            # pagination: MarketBeat uses ?p=2 in some pages; also /?page=2 in others. We'll try both.
-            html_pages = [html0]
-            for p in range(2, max_pages_each + 1):
-                url = url0 + f"?p={p}"
-                stp, hp = _http_get(s, url, timeout=20)
-                if stp != 200 or _detect_bot_page(hp):
+            any_table_parsed = True
+            # find the most "ratings-like" table: has a ticker/symbol column or company column.
+            chosen = None
+            for t in tables:
+                cols = [str(c).lower() for c in getattr(t, "columns", [])]
+                if any(c in {"ticker", "symbol"} for c in cols) or any("company" in c for c in cols):
+                    chosen = t
                     break
-                html_pages.append(hp)
-
-            for hp in html_pages:
-                tables = _pd_read_tables(hp)
-                if not tables:
-                    continue
-                any_table_parsed = True
-                # find the most "ratings-like" table: has a ticker/symbol column or company column.
-                chosen = None
-                for t in tables:
-                    cols = [str(c).lower() for c in getattr(t, "columns", [])]
-                    if any(c in {"ticker", "symbol"} for c in cols) or any("company" in c for c in cols):
-                        chosen = t
-                        break
-                if chosen is None:
-                    chosen = tables[0]
-                evs = _extract_from_table(chosen, page_key=page_key, source_url=url0)
-                for ev in evs:
-                    if ev["ticker"] in tickers:
-                        all_events.append(ev)
+            if chosen is None:
+                chosen = tables[0]
+            evs = _extract_from_table(chosen, page_key=page_key, source_url=url0)
+            for ev in evs:
+                if ev["ticker"] in tickers:
+                    all_events.append(ev)
 
     if not any_table_parsed and not any(status.get(k + "_blocked") for k in ["ratings_upgrade", "ratings_downgrade", "ratings_pt_change"]):
         # Common CI issue: pandas.read_html can't parse because lxml isn't installed.
@@ -491,9 +546,8 @@ def _fetch_marketbeat_events(tickers: set, max_pages_each: int = 2) -> Tuple[Lis
 def _finnhub_validate_key(token: str) -> Tuple[bool, str]:
     try:
         url = "https://finnhub.io/api/v1/quote"
-        r = requests.get(url, params={"symbol": "AAPL", "token": token}, timeout=15)
-        if r.status_code == 200:
-            js = r.json()
+        st, js, _raw = _http_get_json(url, params={"symbol": "AAPL", "token": token}, timeout=15)
+        if st == 200 and isinstance(js, dict):
             # valid keys return dict with 'c' current price key
             if isinstance(js, dict) and "c" in js:
                 return True, "ok"
@@ -517,15 +571,14 @@ def _finnhub_updown(token: str, tickers: Iterable[str], days: int) -> Tuple[List
     for t in tickers:
         try:
             url = "https://finnhub.io/api/v1/stock/upgrade-downgrade"
-            r = requests.get(url, params={"symbol": t, "token": token}, timeout=20)
-            status.setdefault("per_ticker_http", {})[t] = r.status_code
-            if r.status_code == 403:
+            st, js, _raw = _http_get_json(url, params={"symbol": t, "token": token}, timeout=20)
+            status.setdefault("per_ticker_http", {})[t] = st
+            if st == 403:
                 # premium gating (common)
                 status["premium_or_blocked"] = True
                 continue
-            if r.status_code != 200:
+            if st != 200:
                 continue
-            js = r.json()
             if not isinstance(js, list):
                 continue
             for item in js:
@@ -574,11 +627,10 @@ def _fmp_updown(apikey: str, tickers: Iterable[str], days: int) -> Tuple[List[Di
     status: Dict[str, Any] = {"provider": "FMP"}
     url = "https://financialmodelingprep.com/api/v3/upgrades-downgrades"
     try:
-        r = requests.get(url, params={"apikey": apikey}, timeout=25)
-        status["http"] = r.status_code
-        if r.status_code != 200:
+        st, js, _raw = _http_get_json(url, params={"apikey": apikey}, timeout=25)
+        status["http"] = st
+        if st != 200 or not isinstance(js, list):
             return [], status
-        js = r.json()
         if not isinstance(js, list):
             return [], status
     except Exception:
