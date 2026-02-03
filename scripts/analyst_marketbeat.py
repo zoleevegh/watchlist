@@ -3,7 +3,7 @@
 """
 analyst_marketbeat.py — Analyst feed (upgrades/downgrades + price-target changes)
 
-VERSION: v0.3.38-marketbeat-v0316-strategy-jina-firstseen-fmp-len-probe-2026-02-03
+VERSION: v0.3.39-marketbeat-v0316-strategy-jina-firstseen-noapi-2026-02-03
 Versioning rule: whenever this file is modified, bump VERSION continuously (no gaps).
 
 IMÁDSÁG (2 sor):
@@ -16,8 +16,7 @@ Key changes (requested): revert to the previously-working MarketBeat strategy (v
 - Challenge detection even on HTTP 200 + retry via r.jina.ai proxy
 - No per-row timestamp parsing; uses first_seen/last_seen cache (UTC) to keep items inside N-day windows
 - Stdlib only (no requests); always writes outputs (no silent N/A due to exceptions)
-- Optional fallback: FMP (if FMP_API_KEY) using per-symbol endpoints (v4 upgrades-downgrades, v4 price-target)
-- Optional fallback: last_success snapshot (if MarketBeat blocked and FMP unavailable)
+- Optional fallback: last_success snapshot (if MarketBeat blocked from CI)
 
 Exit codes:
 - 0: outputs written (including BLOCKED/NO_EVENTS)
@@ -403,142 +402,6 @@ def fetch_marketbeat_events_v0316(tickers: List[str], days: int) -> Tuple[str, L
         return "NO_EVENTS", [], "No events matched MASTER tickers in cache/window."
     return "OK", out, f"MarketBeat OK (matched rows: {matched_rows})."
 
-# ---- FMP fallback (per-symbol endpoints) ----
-def _fmp_get_json(url: str, timeout: int = DEFAULT_TIMEOUT) -> Tuple[int, Any]:
-    st, body, _ = _http_get(url, timeout=timeout, headers={"Accept": "application/json,*/*;q=0.8"})
-    if st == 0:
-        return 0, None
-    try:
-        return st, json.loads(body) if body else None
-    except Exception:
-        return st, None
-
-def fetch_fmp_events(tickers: List[str], days: int) -> Tuple[str, List[AnalystEvent], str]:
-    apikey = (os.environ.get("FMP_API_KEY") or "").strip()
-    if not apikey:
-        return "NO_KEY", [], "FMP_API_KEY missing/empty (len=0)."
-
-    probe_url = f"https://financialmodelingprep.com/api/v3/quote/AAPL?{urlencode({'apikey': apikey})}"
-    st, data = _fmp_get_json(probe_url, timeout=min(10, DEFAULT_TIMEOUT))
-    if st in (401, 402, 403):
-        return "AUTH", [], f"FMP auth failed on quote probe (HTTP {st}); FMP_API_KEY len={len(apikey)}."
-    if st == 429:
-        return "RATE_LIMIT", [], f"FMP rate limit hit (HTTP 429); FMP_API_KEY len={len(apikey)}."
-    if st == 0 or st >= 400:
-        return "HTTP_ERROR", [], f"FMP probe HTTP error (HTTP {st}); FMP_API_KEY len={len(apikey)}."
-    if isinstance(data, dict) and data.get("Error Message"):
-        return "AUTH", [], f"FMP error: {data.get('Error Message')}; FMP_API_KEY len={len(apikey)}."
-
-    today = _utc_today()
-    cutoff = today - dt.timedelta(days=max(0, days - 1))
-    tickset = set([t.strip().upper() for t in tickers if t and t.strip()])
-
-    def _parse_fmp_date(s: str) -> Optional[dt.date]:
-        if not s:
-            return None
-        s = str(s).strip()
-        for fmt in ("%Y-%m-%d", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%m/%d/%Y"):
-            try:
-                return dt.datetime.strptime(s[:len(fmt)], fmt).date()
-            except Exception:
-                continue
-        try:
-            return dt.datetime.fromisoformat(s.replace("Z", "")[:19]).date()
-        except Exception:
-            return None
-
-    def _fetch_symbol(sym: str) -> Tuple[List[AnalystEvent], Optional[int]]:
-        sym = sym.upper()
-        out: List[AnalystEvent] = []
-
-        u_url = f"https://financialmodelingprep.com/api/v4/upgrades-downgrades?{urlencode({'symbol': sym, 'apikey': apikey})}"
-        u_st, u_data = _fmp_get_json(u_url)
-        if u_st in (401, 402, 403):
-            return out, u_st
-        if u_st in (429, 0) or u_st >= 400:
-            return out, u_st or 520
-
-        if isinstance(u_data, list):
-            for r in u_data:
-                try:
-                    t = (r.get("symbol") or sym).upper()
-                    d = _parse_fmp_date(r.get("publishedDate") or r.get("date") or r.get("updated") or "")
-                    if not d or d < cutoff:
-                        continue
-                    if t not in tickset:
-                        continue
-                    firm = (r.get("gradingCompany") or r.get("company") or r.get("analystFirm") or r.get("firm") or "").strip()
-                    analyst = (r.get("analyst") or "").strip()
-                    newg = (r.get("newGrade") or r.get("newRating") or r.get("toGrade") or r.get("action") or "").strip()
-                    oldg = (r.get("previousGrade") or r.get("previousRating") or r.get("fromGrade") or "").strip()
-                    act = f"{oldg} → {newg}".strip(" →") if (oldg or newg) else "Rating update"
-                    summary = (r.get("newsTitle") or r.get("notes") or "").strip()
-                    out.append(AnalystEvent(
-                        ticker=t, date=d.isoformat(), action=act,
-                        firm=firm or "FMP", analyst=analyst, rating=newg, pt="",
-                        summary=summary, source="FMP:upgrades-downgrades", url=""
-                    ))
-                except Exception:
-                    continue
-
-        pt_url = f"https://financialmodelingprep.com/api/v4/price-target?{urlencode({'symbol': sym, 'apikey': apikey})}"
-        pt_st, pt_data = _fmp_get_json(pt_url)
-        if pt_st in (401, 402, 403):
-            return out, pt_st
-        if pt_st in (429, 0) or pt_st >= 400:
-            return out, pt_st or 520
-
-        if isinstance(pt_data, list):
-            for r in pt_data:
-                try:
-                    t = (r.get("symbol") or sym).upper()
-                    d = _parse_fmp_date(r.get("publishedDate") or r.get("date") or "")
-                    if not d or d < cutoff:
-                        continue
-                    if t not in tickset:
-                        continue
-                    firm = (r.get("analystCompany") or r.get("company") or r.get("analystFirm") or r.get("firm") or "").strip()
-                    analyst = (r.get("analystName") or r.get("analyst") or "").strip()
-                    pt = str(r.get("priceTarget") or r.get("adjPriceTarget") or r.get("target") or "").strip()
-                    pt_old = str(r.get("priceTargetOld") or r.get("oldPriceTarget") or "").strip()
-                    act = f"PT {pt_old} → {pt}".strip(" →") if (pt_old or pt) else "Price target update"
-                    summary = (r.get("newsTitle") or r.get("notes") or "").strip()
-                    out.append(AnalystEvent(
-                        ticker=t, date=d.isoformat(), action=act,
-                        firm=firm or "FMP", analyst=analyst, rating="", pt=pt,
-                        summary=summary, source="FMP:price-target", url=""
-                    ))
-                except Exception:
-                    continue
-
-        return out, None
-
-    # small concurrency
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-    workers = int(os.environ.get("FMP_WORKERS") or "8")
-    workers = max(2, min(12, workers))
-
-    all_events: List[AnalystEvent] = []
-    probs: List[int] = []
-    with ThreadPoolExecutor(max_workers=workers) as ex:
-        futs = {ex.submit(_fetch_symbol, sym): sym for sym in sorted(tickset)}
-        for fut in as_completed(futs):
-            evs, prob = fut.result()
-            if evs:
-                all_events.extend(evs)
-            if prob is not None:
-                probs.append(prob)
-
-    all_events.sort(key=lambda e: (e.date, e.ticker), reverse=True)
-    if probs:
-        if any(p == 429 for p in probs):
-            return "RATE_LIMIT", all_events, "FMP rate limit (partial)."
-        if any(p in (401, 402, 403) for p in probs):
-            return "AUTH", all_events, "FMP auth/plan issue (partial)."
-        return "HTTP_ERROR", all_events, "FMP HTTP errors (partial)."
-
-    return ("OK" if all_events else "NO_EVENTS"), all_events, ("FMP OK." if all_events else "FMP no events in window.")
-
 def render_markdown(days: int, status: str, note: str, events: List[AnalystEvent]) -> str:
     title = f"## Elemzői feed (MarketBeat) – fel/leminősítések + célár (utolsó {days} naptári nap)"
     if status in ("BLOCKED", "HTTP_ERROR"):
@@ -590,20 +453,14 @@ def main() -> int:
 
     status, events, note = fetch_marketbeat_events_v0316(tickers, days)
 
-    # fallback: FMP if MarketBeat blocked or empty
-    if status in ("BLOCKED", "HTTP_ERROR") or (status == "NO_EVENTS" and not events):
-        fmp_status, fmp_events, fmp_note = fetch_fmp_events(tickers, days)
-        if fmp_status == "OK" and fmp_events:
-            status, events, note = "OK", fmp_events, fmp_note
-        else:
-            last_md = _read_text(LAST_SUCCESS_MD)
-            if last_md and status != "NO_EVENTS":
-                _write_text(args.out_md, last_md)
-                last_json = _load_json(LAST_SUCCESS_JSON, [])
-                _save_json(args.out_json, last_json if isinstance(last_json, list) else [])
-                return 0
-            if fmp_status in ("NO_KEY", "AUTH", "HTTP_ERROR", "RATE_LIMIT"):
-                note = f"{note} FMP fallback unavailable: {fmp_note}"
+    # If MarketBeat is blocked from CI, optionally serve the last successful snapshot (if available).
+    if status in ("BLOCKED", "HTTP_ERROR"):
+        last_md = _read_text(LAST_SUCCESS_MD)
+        if last_md:
+            _write_text(args.out_md, last_md)
+            last_json = _load_json(LAST_SUCCESS_JSON, [])
+            _save_json(args.out_json, last_json if isinstance(last_json, list) else [])
+            return 0
 
     md = render_markdown(days, status, note, events)
     _write_text(args.out_md, md)
