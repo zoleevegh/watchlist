@@ -4,7 +4,7 @@
 analyst_marketbeat.py — Analyst feed (upgrades/downgrades + price-target changes) with MarketBeat scrape + API fallbacks.
 
 Versioning rule: whenever this file is modified, bump VERSION continuously (no gaps).
-VERSION: v0.3.35-marketbeat-fmp-fallback-stdlib-2026-02-02
+VERSION: v0.3.36-marketbeat-fmp-fallback-stdlib-2026-02-02
 
 IMÁDSÁG (2 sor):
 bocsáss meg uram, mert balfék voltam, és hagytam hogy egy dependency szétverje a futást.
@@ -521,88 +521,187 @@ def _fmp_get_json(url: str, timeout: int = DEFAULT_TIMEOUT) -> Tuple[int, Any]:
 
 
 def fetch_fmp_events(tickers: List[str], days: int) -> Tuple[str, List[AnalystEvent], str]:
+    """
+    FMP fallback for analyst events (upgrades/downgrades + price target changes).
+
+    IMPORTANT:
+    - Uses per-symbol endpoints (NOT RSS-feed), because RSS-feed endpoints are often paywalled/403.
+      Docs (legacy) show per-symbol endpoints:
+        - https://financialmodelingprep.com/api/v4/upgrades-downgrades?symbol=AAPL
+        - https://financialmodelingprep.com/api/v4/price-target?symbol=AAPL
+    - 403 from FMP typically means invalid/missing API key or insufficient access.
+      We probe /api/v3/quote to validate key reachability before batch fetching.
+
+    Returns:
+      status: "OK" | "AUTH" | "RATE_LIMIT" | "HTTP_ERROR" | "NO_KEY"
+      events: list of AnalystEvent
+      note: human explanation for report
+    """
     apikey = (os.environ.get("FMP_API_KEY") or "").strip()
     if not apikey:
         return "NO_KEY", [], "FMP_API_KEY missing."
 
+    # Quick probe: verify the key is actually being injected and accepted.
+    probe_url = f"https://financialmodelingprep.com/api/v3/quote/{urlencode({'symbol': 'AAPL'})}".replace("symbol=AAPL", "AAPL")
+    # Some FMP endpoints use /api/v3/quote/AAPL (path param) rather than ?symbol=
+    probe_url = f"https://financialmodelingprep.com/api/v3/quote/AAPL?{urlencode({'apikey': apikey})}"
+    st, data = _fmp_get_json(probe_url, timeout=min(10, DEFAULT_TIMEOUT))
+    if st == 403:
+        return "AUTH", [], "FMP auth failed (HTTP 403). API key missing/invalid or not permitted for this endpoint."
+    if st in (401, 402):
+        return "AUTH", [], f"FMP auth failed (HTTP {st})."
+    if st == 429:
+        return "RATE_LIMIT", [], "FMP rate limit hit during auth probe (HTTP 429)."
+    if st is None:
+        return "HTTP_ERROR", [], "FMP probe failed (no HTTP response)."
+    # If probe returns JSON error object, handle.
+    if isinstance(data, dict) and data.get("Error Message"):
+        return "AUTH", [], f"FMP error: {data.get('Error Message')}"
+
     today = _utc_today()
-    tickset = set(tickers)
+    cutoff = today - dt.timedelta(days=max(0, days - 1))
+    tickset = set([t.strip().upper() for t in tickers if t and t.strip()])
+    if not tickset:
+        return "OK", [], "No tickers."
 
-    # Use RSS feed pages (broad list). Endpoint per FMP legacy docs.
-    # https://financialmodelingprep.com/api/v4/upgrades-downgrades-rss-feed?page=0&apikey=...
-    # Docs: citeturn5view2 (endpoint shown; requires apikey in practice)
-    events: List[AnalystEvent] = []
-    max_pages = 6
-    for page in range(max_pages):
-        url = f"https://financialmodelingprep.com/api/v4/upgrades-downgrades-rss-feed?{urlencode({'page': page, 'apikey': apikey})}"
-        status, data = _fmp_get_json(url, timeout=DEFAULT_TIMEOUT)
-        if status in (401, 403):
-            return "AUTH", [], f"FMP auth failed (HTTP {status})."
-        if status == 0:
-            return "HTTP_ERROR", [], "FMP no HTTP response."
-        if not isinstance(data, list):
-            # sometimes returns {'error':...}
-            if isinstance(data, dict) and data.get("Error Message"):
-                return "HTTP_ERROR", [], f"FMP error: {data.get('Error Message')}"
-            # stop paging on unexpected shape
-            break
-
-        for it in data:
+    def _parse_fmp_date(s: str) -> Optional[dt.date]:
+        if not s:
+            return None
+        s = str(s).strip()
+        # Common formats: '2026-02-02', '2026-02-02 00:00:00'
+        for fmt in ("%Y-%m-%d", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%m/%d/%Y"):
             try:
-                sym = (it.get("symbol") or it.get("ticker") or "").upper().strip()
-                if sym not in tickset:
-                    continue
-                # date field names vary
-                d_raw = it.get("publishedDate") or it.get("date") or it.get("created_at") or ""
-                d = _parse_date_yyyy_mm_dd(str(d_raw)[:10]) or today
-                if not _within_last_n_days(d, days, today=today):
-                    continue
-
-                firm = str(it.get("gradingCompany") or it.get("firm") or it.get("company") or "").strip()
-                analyst = str(it.get("analyst") or "").strip()
-                action = str(it.get("action") or it.get("type") or "Rating").strip()
-                oldg = str(it.get("previousGrade") or it.get("oldGrade") or it.get("oldRating") or "").strip()
-                newg = str(it.get("newGrade") or it.get("newRating") or it.get("rating") or "").strip()
-                pt = str(it.get("priceTarget") or it.get("price_target") or it.get("pt") or "").strip()
-
-                rating = newg or oldg
-                summary = f"{action}: {oldg}->{newg}".strip(": ").replace("->", " → ")
-                if pt:
-                    summary += f"; PT {pt}"
-
-                events.append(AnalystEvent(
-                    ticker=sym,
-                    date=d.strftime("%Y-%m-%d"),
-                    action=action or "Rating",
-                    firm=firm,
-                    analyst=analyst,
-                    rating=rating,
-                    pt=pt,
-                    summary=summary,
-                    source="FMP",
-                    url="https://site.financialmodelingprep.com/developer/docs/upgrades-and-downgrades-api",
-                ))
+                return dt.datetime.strptime(s[:len(fmt)], fmt).date()
             except Exception:
                 continue
+        return None
 
-        # early stop if the page is empty
-        if not data:
-            break
-        time.sleep(0.35)
+    def _fetch_symbol(sym: str) -> Tuple[str, List[AnalystEvent], Optional[int]]:
+        """Returns (sym, events, http_status_problem_if_any)."""
+        out: List[AnalystEvent] = []
+        sym = sym.upper()
 
-    if not events:
-        return "NO_EVENTS", [], "FMP returned no matching events in window."
-    # Sort
-    def key(e: AnalystEvent):
-        dd = _parse_date_yyyy_mm_dd(e.date) or today
-        return (dd, e.ticker)
-    events.sort(key=key, reverse=True)
-    return "OK", events, "FMP fallback OK."
+        # 1) Upgrades/Downgrades
+        u_url = f"https://financialmodelingprep.com/api/v4/upgrades-downgrades?{urlencode({'symbol': sym, 'apikey': apikey})}"
+        u_st, u_data = _fmp_get_json(u_url, timeout=DEFAULT_TIMEOUT)
+        if u_st in (401, 402, 403):
+            return sym, [], u_st
+        if u_st == 429:
+            return sym, [], 429
+        if u_st is None:
+            return sym, [], 520
 
+        if isinstance(u_data, list):
+            for r in u_data:
+                try:
+                    t = (r.get("symbol") or sym).upper()
+                    d = _parse_fmp_date(r.get("publishedDate") or r.get("date") or r.get("updated") or "")
+                    if not d or d < cutoff:
+                        continue
+                    if t not in tickset:
+                        continue
+                    firm = (r.get("gradingCompany") or r.get("company") or r.get("analystFirm") or r.get("firm") or "").strip()
+                    analyst = (r.get("analyst") or "").strip()
+                    action = (r.get("action") or r.get("newGrade") or r.get("newRating") or "").strip()
+                    prev = (r.get("previousGrade") or r.get("previousRating") or "").strip()
+                    summary = (r.get("newsTitle") or r.get("notes") or "").strip()
+                    if prev and action and prev != action:
+                        act = f"{prev} → {action}"
+                    else:
+                        act = action or "Rating update"
+                    out.append(
+                        AnalystEvent(
+                            ticker=t,
+                            date=d.isoformat(),
+                            action=act,
+                            firm=firm or "FMP",
+                            analyst=analyst,
+                            summary=summary,
+                            source="FMP:upgrades-downgrades",
+                            url="",
+                        )
+                    )
+                except Exception:
+                    continue
 
-# -------------------------
-# Finnhub (optional, premium in practice)
-# -------------------------
+        # 2) Price Target changes
+        pt_url = f"https://financialmodelingprep.com/api/v4/price-target?{urlencode({'symbol': sym, 'apikey': apikey})}"
+        pt_st, pt_data = _fmp_get_json(pt_url, timeout=DEFAULT_TIMEOUT)
+        if pt_st in (401, 402, 403):
+            return sym, out, pt_st
+        if pt_st == 429:
+            return sym, out, 429
+        if pt_st is None:
+            return sym, out, 520
+
+        if isinstance(pt_data, list):
+            for r in pt_data:
+                try:
+                    t = (r.get("symbol") or sym).upper()
+                    d = _parse_fmp_date(r.get("publishedDate") or r.get("date") or "")
+                    if not d or d < cutoff:
+                        continue
+                    if t not in tickset:
+                        continue
+                    firm = (r.get("analystCompany") or r.get("company") or r.get("analystFirm") or r.get("firm") or "").strip()
+                    analyst = (r.get("analystName") or r.get("analyst") or "").strip()
+                    pt = r.get("priceTarget") or r.get("adjPriceTarget") or r.get("target") or ""
+                    pt_old = r.get("priceTargetOld") or r.get("oldPriceTarget") or ""
+                    if pt_old and pt:
+                        act = f"PT {pt_old} → {pt}"
+                    elif pt:
+                        act = f"PT set {pt}"
+                    else:
+                        act = "Price target update"
+                    summary = (r.get("newsTitle") or r.get("notes") or "").strip()
+                    out.append(
+                        AnalystEvent(
+                            ticker=t,
+                            date=d.isoformat(),
+                            action=act,
+                            firm=firm or "FMP",
+                            analyst=analyst,
+                            summary=summary,
+                            source="FMP:price-target",
+                            url="",
+                        )
+                    )
+                except Exception:
+                    continue
+
+        return sym, out, None
+
+    # Concurrent fetch to keep runtime reasonable for 100+ tickers.
+    # Keep worker count conservative to avoid 429.
+    workers = int(os.environ.get("FMP_WORKERS") or "8")
+    workers = max(2, min(12, workers))
+
+    all_events: List[AnalystEvent] = []
+    problems: List[int] = []
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futs = {ex.submit(_fetch_symbol, sym): sym for sym in sorted(tickset)}
+        for fut in as_completed(futs):
+            sym, evs, prob = fut.result()
+            if evs:
+                all_events.extend(evs)
+            if prob is not None:
+                problems.append(prob)
+
+    # Normalize + sort newest first
+    all_events.sort(key=lambda e: (e.date or "", e.ticker), reverse=True)
+
+    if problems:
+        # Prioritize meaningful status
+        if any(p == 429 for p in problems):
+            return "RATE_LIMIT", all_events, "FMP rate limit hit (HTTP 429) on some requests; partial results."
+        if any(p in (401, 402, 403) for p in problems):
+            return "AUTH", all_events, f"FMP auth failed (HTTP {max([p for p in problems if p in (401,402,403)] or [403])})."
+        return "HTTP_ERROR", all_events, "FMP had HTTP errors on some requests; partial results."
+
+    return "OK", all_events, "FMP OK."
+
 def fetch_finnhub_events(tickers: List[str], days: int) -> Tuple[str, List[AnalystEvent], str]:
     token = (os.environ.get("FINNHUB_API_KEY") or "").strip()
     if not token:
