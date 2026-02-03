@@ -1,11 +1,12 @@
-# Ima (v1.0.19): bocsáss meg uram, ha megint mellényúltam;
+# Ima (v1.0.22): bocsáss meg uram, ha megint mellényúltam;
 # adj türelmet és tiszta logot, hogy csak az igazat írjam le.
-# Verzió: v1.0.21-run_report-checkout-main-install-requests-2026-02-02
-# run_report.yml — v1.0.21-2026-02-02
+# adj türelmet és tiszta logot, hogy csak az igazat írjam le.
+# Verzió: v1.0.22-run_report-analyst-no-override-2026-02-03
+# run_report.yml — v1.0.22-2026-02-03
 
 name: Run Report — PRICE ENGINE
 
-# run_report.yml — v1.0.21-2026-02-02
+# run_report.yml — v1.0.22-2026-02-03
 
 "on":
   workflow_dispatch:
@@ -236,10 +237,14 @@ jobs:
             RC_A=2
           fi
           set -e
-          if [ "${REPORT}" = "1" ] && ( [ "${RC_A}" -ne 0 ] || [ ! -f "reports/analyst_last${ANALYST_DAYS}d.md" ] ); then
-            mkdir -p reports
-          python -c "import os; from pathlib import Path; d=os.environ.get('ANALYST_DAYS','3'); Path(f'reports/analyst_last{d}d.md').write_text(f'## Elemzői feed (MarketBeat) – fel/leminősítések + célár (utolsó {d} naptári nap)\n\n_N/A._\n', encoding='utf-8')"
+          # If analyst script failed but still produced an output, keep it (do NOT overwrite with _N/A_).
+          # Only create a placeholder if the markdown file is missing.
+          if [ "${REPORT}" = "1" ] && [ -n "${ANALYST}" ]; then
             echo "ANALYST_EXIT=${RC_A}" | tee -a reports/runner.log
+          fi
+          if [ "${REPORT}" = "1" ] && [ ! -f "reports/analyst_last${ANALYST_DAYS}d.md" ]; then
+            mkdir -p reports
+            python -c "import os; from pathlib import Path; d=os.environ.get('ANALYST_DAYS','3'); Path(f'reports/analyst_last{d}d.md').write_text(f'## Elemzői feed (MarketBeat) – fel/leminősítések + célár (utolsó {d} naptári nap)\n\n_N/A._\n', encoding='utf-8')"
           fi
 
           # Run earnings next-7d audit (soft) -> reports/earnings_next7d.md
