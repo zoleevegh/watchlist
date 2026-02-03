@@ -3,7 +3,7 @@
 """
 analyst_marketbeat.py — Analyst feed (upgrades/downgrades + price-target changes)
 
-VERSION: v0.3.37-marketbeat-v0316-strategy-jina-firstseen-2026-02-03
+VERSION: v0.3.38-marketbeat-v0316-strategy-jina-firstseen-fmp-len-probe-2026-02-03
 Versioning rule: whenever this file is modified, bump VERSION continuously (no gaps).
 
 IMÁDSÁG (2 sor):
@@ -416,18 +416,18 @@ def _fmp_get_json(url: str, timeout: int = DEFAULT_TIMEOUT) -> Tuple[int, Any]:
 def fetch_fmp_events(tickers: List[str], days: int) -> Tuple[str, List[AnalystEvent], str]:
     apikey = (os.environ.get("FMP_API_KEY") or "").strip()
     if not apikey:
-        return "NO_KEY", [], "FMP_API_KEY missing."
+        return "NO_KEY", [], "FMP_API_KEY missing/empty (len=0)."
 
     probe_url = f"https://financialmodelingprep.com/api/v3/quote/AAPL?{urlencode({'apikey': apikey})}"
     st, data = _fmp_get_json(probe_url, timeout=min(10, DEFAULT_TIMEOUT))
     if st in (401, 402, 403):
-        return "AUTH", [], f"FMP auth failed (HTTP {st})."
+        return "AUTH", [], f"FMP auth failed on quote probe (HTTP {st}); FMP_API_KEY len={len(apikey)}."
     if st == 429:
-        return "RATE_LIMIT", [], "FMP rate limit hit (HTTP 429)."
+        return "RATE_LIMIT", [], f"FMP rate limit hit (HTTP 429); FMP_API_KEY len={len(apikey)}."
     if st == 0 or st >= 400:
-        return "HTTP_ERROR", [], f"FMP probe HTTP error (HTTP {st})."
+        return "HTTP_ERROR", [], f"FMP probe HTTP error (HTTP {st}); FMP_API_KEY len={len(apikey)}."
     if isinstance(data, dict) and data.get("Error Message"):
-        return "AUTH", [], f"FMP error: {data.get('Error Message')}"
+        return "AUTH", [], f"FMP error: {data.get('Error Message')}; FMP_API_KEY len={len(apikey)}."
 
     today = _utc_today()
     cutoff = today - dt.timedelta(days=max(0, days - 1))
