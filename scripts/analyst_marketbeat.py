@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# analyst_marketbeat.py — v0.3.15-marketbeat-challengefix3-hu-2026-01-23
+# analyst_marketbeat.py — v0.3.40-marketbeat-multiday-ratingfilter-hu-2026-02-03
 # MarketBeat FREE analyst feed collector (CI-friendly).
 #
 # Ima (v0.3.15): bocsáss meg Uram, hogy megint bool-t hívtam függvényként.
@@ -34,13 +34,14 @@ import html
 import time
 import urllib.error
 import urllib.request
+import urllib.parse
 from dataclasses import dataclass, asdict
 from http.cookiejar import CookieJar
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 
-VERSION = "v0.3.40-marketbeat-n-days-pagination-hu-2026-02-03"
+VERSION = "v0.3.40-marketbeat-multiday-ratingfilter-hu-2026-02-03"
 BASE = "https://www.marketbeat.com"
 
 # Magyar megnevezések a reporthoz
@@ -87,7 +88,7 @@ UA = (
 @dataclass
 class AnalystEvent:
     ticker: str
-    date: str  # ISO date YYYY-MM-DD (best-effort extracted; fallback: run day UTC)
+    date: str  # ISO date YYYY-MM-DD (first seen date, cache-based)
     firm: str
     action: str
     rating_from: Optional[str]
@@ -151,46 +152,28 @@ def apply_seen_dates_and_filter(
     today_iso: str,
 ) -> List["AnalystEvent"]:
     """
-    Backward-compatible helper:
-    - If event.date is missing/invalid, fall back to first-seen cache (or today).
-    - Filters events to last N calendar days by event.date (inclusive).
-
-    Note: MarketBeat *often* embeds a per-row date in the HTML (even if not an explicit column).
-    We try to extract it. If extraction fails, we revert to first-seen behavior.
+    - Assigns event.date from cache (first seen), otherwise today and stores into cache.
+    - Filters events to last N calendar days by first_seen date (inclusive).
     """
     if days < 1:
         return []
 
     today = dt.date.fromisoformat(today_iso)
-    cutoff = today - dt.timedelta(days=days - 1)
-
     out: List[AnalystEvent] = []
     for e in events:
         k = _event_key(e)
+        first = cache.get(k)
+        if not first:
+            cache[k] = today_iso
+            first = today_iso
+        e.date = first
 
-        # Validate/normalize date. If missing, use cache first_seen, else today.
-        d: Optional[dt.date] = None
-        if isinstance(e.date, str) and re.match(r"^\d{4}-\d{2}-\d{2}$", e.date.strip()):
-            try:
-                d = dt.date.fromisoformat(e.date.strip())
-            except Exception:
-                d = None
-
-        if d is None:
-            first = cache.get(k)
-            if not first:
-                cache[k] = today_iso
-                first = today_iso
-            e.date = first
-            try:
-                d = dt.date.fromisoformat(first)
-            except Exception:
-                d = today
-        else:
-            # If we successfully extracted a date, persist a first_seen for stability.
-            cache.setdefault(k, e.date.strip())
-
-        if cutoff <= d <= today:
+        try:
+            d = dt.date.fromisoformat(first)
+        except Exception:
+            d = today
+        delta = (today - d).days
+        if 0 <= delta <= (days - 1):
             out.append(e)
 
     return out
@@ -412,68 +395,6 @@ def _action_hu(kind: str, pt_from: float | None, pt_to: float | None) -> str:
     return "Elemzői frissítés"
 
 
-_MONTHS = {
-    "jan": 1, "january": 1,
-    "feb": 2, "february": 2,
-    "mar": 3, "march": 3,
-    "apr": 4, "april": 4,
-    "may": 5,
-    "jun": 6, "june": 6,
-    "jul": 7, "july": 7,
-    "aug": 8, "august": 8,
-    "sep": 9, "sept": 9, "september": 9,
-    "oct": 10, "october": 10,
-    "nov": 11, "november": 11,
-    "dec": 12, "december": 12,
-}
-
-
-def _extract_row_date_iso(row_html: str, fallback_iso: str) -> str:
-    """Best-effort date extraction from a MarketBeat ratings row.
-
-    We look for common formats that appear either in visible cells or in hidden sort keys:
-    - YYYY-MM-DD
-    - YYYY.MM.DD
-    - MM/DD/YYYY (or M/D/YYYY)
-    - 'Feb 3, 2026' (or 'February 3, 2026')
-
-    If no date is found, returns fallback_iso.
-    """
-    if not row_html:
-        return fallback_iso
-
-    # 1) ISO-like
-    m = re.search(r"\b(\d{4})[-/\.](\d{2})[-/\.](\d{2})\b", row_html)
-    if m:
-        y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
-        try:
-            return dt.date(y, mo, d).isoformat()
-        except Exception:
-            pass
-
-    # 2) US-like M/D/YYYY or MM/DD/YYYY
-    m = re.search(r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b", row_html)
-    if m:
-        mo, d, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
-        try:
-            return dt.date(y, mo, d).isoformat()
-        except Exception:
-            pass
-
-    # 3) Month name 'Feb 3, 2026'
-    m = re.search(r"\b([A-Za-z]{3,9})\.?\s+(\d{1,2}),\s*(\d{4})\b", row_html)
-    if m:
-        mon = _MONTHS.get(m.group(1).strip().lower())
-        if mon:
-            d, y = int(m.group(2)), int(m.group(3))
-            try:
-                return dt.date(y, mon, d).isoformat()
-            except Exception:
-                pass
-
-    return fallback_iso
-
-
 
 def _extract_events_from_ratings_page(
     html_text: str,
@@ -522,6 +443,14 @@ def _extract_events_from_ratings_page(
             if m2:
                 ticker = m2.group("t").upper().strip()
 
+        if not ticker:
+            # Fallback: some rows don't include data-clean nor /stocks/ links (e.g., locked elements).
+            # The visible cell text often starts with the ticker, e.g. "AAPL Apple Inc."
+            cell_txt = _strip_tags(tds[0])
+            m3 = re.match(r"^([A-Z0-9]{1,8}(?:\.[A-Z0-9]{1,4})?)\b", cell_txt)
+            if m3:
+                ticker = m3.group(1).upper().strip()
+
         if not ticker or ticker not in master_set:
             continue
 
@@ -565,12 +494,10 @@ def _extract_events_from_ratings_page(
                 stock_url = BASE + href
         src_url = stock_url or source
 
-        row_date = _extract_row_date_iso(row_html, asof_date)
-
         events.append(
             AnalystEvent(
                 ticker=ticker,
-                date=row_date,
+                date=asof_date,
                 firm=firm,
                 action=_action_hu(kind, pt_from, pt_to),
                 rating_from=rating_from,
@@ -585,42 +512,92 @@ def _extract_events_from_ratings_page(
     return events
 
 
-def _find_next_page_url(html_text: str, current_url: str) -> Optional[str]:
-    """Find a 'next' pagination URL on MarketBeat list pages (best-effort)."""
+
+def _format_date_variants(d: dt.date) -> Dict[str, str]:
+    """
+    MarketBeat's ratings pages use a date filter (Reporting Date). The exact parameter name/format
+    has changed over time. We try several common names & formats and then detect which one "sticks".
+    """
+    iso = d.isoformat()  # YYYY-MM-DD
+    us = d.strftime("%m/%d/%Y")
+    dot = d.strftime("%Y.%m.%d")
+    spaced = d.strftime("%Y. %m. %d.")
+    return {
+        "iso": iso,
+        "us": us,
+        "dot": dot,
+        "spaced": spaced,
+    }
+
+
+def _candidate_date_urls(base_url: str, d: dt.date) -> List[str]:
+    v = _format_date_variants(d)
+    # Common parameter names seen on similar MarketBeat filter pages:
+    # reportingDate / reporting_date / date / reporting-date / reporting_date
+    # We try ISO first, then US format.
+    params = [
+        ("reportingDate", v["iso"]),
+        ("reporting_date", v["iso"]),
+        ("date", v["iso"]),
+        ("reporting-date", v["iso"]),
+        ("reportingDate", v["us"]),
+        ("reporting_date", v["us"]),
+        ("date", v["us"]),
+    ]
+    out = []
+    for k, val in params:
+        if "?" in base_url:
+            out.append(f"{base_url}&{k}={urllib.parse.quote(val)}")
+        else:
+            out.append(f"{base_url}?{k}={urllib.parse.quote(val)}")
+    return out
+
+
+def _detect_reporting_date(html_text: str) -> Optional[str]:
+    """
+    Best-effort extraction of the currently selected reporting date from the HTML.
+    Returns ISO date if found.
+    """
     if not html_text:
         return None
 
-    # rel="next" is the cleanest if present
-    m = re.search(r'rel\s*=\s*"next"[^>]*href\s*=\s*"([^"]+)"', html_text, flags=re.IGNORECASE)
-    href = m.group(1).strip() if m else ""
+    # Look for an <input> value, JS variable, or data attribute containing a date.
+    # Examples we attempt to match:
+    # name="reportingDate" value="2026-02-03"
+    # reportingDate: "2026-02-03"
+    # reporting_date=02/03/2026
+    pats = [
+        r'reportingDate[^0-9]{0,40}(\d{4}-\d{2}-\d{2})',
+        r'reporting_date[^0-9]{0,40}(\d{4}-\d{2}-\d{2})',
+        r'date[^0-9]{0,40}(\d{4}-\d{2}-\d{2})',
+        r'reportingDate[^0-9]{0,40}(\d{2}/\d{2}/\d{4})',
+        r'reporting_date[^0-9]{0,40}(\d{2}/\d{2}/\d{4})',
+    ]
+    for p in pats:
+        m = re.search(p, html_text, flags=re.IGNORECASE)
+        if not m:
+            continue
+        s = m.group(1)
+        try:
+            if "-" in s:
+                return dt.date.fromisoformat(s).isoformat()
+            if "/" in s:
+                mm, dd, yy = s.split("/")
+                return dt.date(int(yy), int(mm), int(dd)).isoformat()
+        except Exception:
+            continue
+    return None
 
-    if not href:
-        # Common patterns: class contains 'next', or link text 'Next'
-        m = re.search(r'<a[^>]+href\s*=\s*"([^"]+)"[^>]*class\s*=\s*"[^"]*next[^"]*"', html_text, flags=re.IGNORECASE)
-        if m:
-            href = m.group(1).strip()
 
-    if not href:
-        m = re.search(r'<a[^>]+href\s*=\s*"([^"]+)"[^>]*>\s*Next\s*</a>', html_text, flags=re.IGNORECASE)
-        if m:
-            href = m.group(1).strip()
-
-    if not href or href.startswith("javascript"):
-        return None
-
-    # Build absolute
-    if href.startswith("http"):
-        return href
-    if href.startswith("/"):
-        return BASE + href
-
-    # relative to current path
-    try:
-        base = current_url.rsplit("/", 1)[0] + "/"
-        return base + href
-    except Exception:
-        return None
-
+def _page_mentions_date(html_text: str, d: dt.date) -> bool:
+    """
+    If we can't reliably parse the selected date, fall back to a looser check:
+    does the page include any reasonable representation of the date?
+    """
+    v = _format_date_variants(d)
+    needles = [v["iso"], v["us"], v["dot"], v["spaced"]]
+    h = html_text or ""
+    return any(n in h for n in needles)
 
 
 def fetch_events_from_ratings_pages(
@@ -630,9 +607,13 @@ def fetch_events_from_ratings_pages(
     sleep_s: float,
     debug_dir: Optional[Path],
 ) -> Tuple[List[AnalystEvent], Dict[str, int]]:
-    # We fetch the public ratings lists (upgrades / downgrades / PT changes).
-    # These pages often include a per-row reporting date (sometimes as hidden sort key).
-    # We also paginate to cover the last N calendar days.
+    """
+    MarketBeat ratings pages are essentially a "recent tape" with a Reporting Date filter.
+    v0.3.16 only read "today". This version:
+      - iterates the last N calendar days (UTC) including today
+      - for each day, tries multiple query-param variants to force the Reporting Date
+      - assigns event.date = that reporting date (since table rows do not expose timestamps)
+    """
     opener = _make_opener()
 
     statuses: Dict[str, int] = {}
@@ -641,102 +622,85 @@ def fetch_events_from_ratings_pages(
     _log(f"WARMUP home: HTTP {warm}")
 
     master_set = {t.upper() for t in master_tickers}
-    today = dt.datetime.utcnow().date()
-    asof_date = today.isoformat()
-    cutoff = today - dt.timedelta(days=max(1, days) - 1)
-
     out: List[AnalystEvent] = []
     seen: set = set()
 
-    def _find_next_url(html_text: str, current_url: str) -> str:
-        if not html_text:
-            return ""
-        # rel="next"
-        m = re.search(r'rel="next"[^>]*href="([^"]+)"', html_text, flags=re.IGNORECASE)
-        if not m:
-            # common pagination pattern
-            m = re.search(r'class="[^"]*(?:next|pagination-next)[^"]*"[^>]*href="([^"]+)"', html_text, flags=re.IGNORECASE)
-        if not m:
-            # anchor text 'Next'
-            m = re.search(r'<a[^>]*href="([^"]+)"[^>]*>\s*Next\s*</a>', html_text, flags=re.IGNORECASE)
-        if not m:
-            return ""
-        href = m.group(1)
-        if href.startswith("http"):
-            return href
-        if href.startswith("/"):
-            return BASE + href
-        # relative
-        try:
-            from urllib.parse import urljoin
-            return urljoin(current_url, href)
-        except Exception:
-            return ""
+    # Clamp: days must be >=1
+    if days < 1:
+        return [], statuses
 
-    max_pages = 8 if days >= 2 else 2
+    today = dt.datetime.utcnow().date()
+    date_list = [today - dt.timedelta(days=i) for i in range(days)]
 
-    for kind, path in RATINGS_SOURCES:
-        start_url = BASE + path
-        page_url = start_url
-        page_i = 0
+    for d in date_list:
+        asof_date = d.isoformat()
 
-        while page_url and page_i < max_pages:
-            page_i += 1
-            tag = f"ratings_{kind}_p{page_i}"
-            status, page_html = _http_get(opener, page_url, timeout, debug_dir, tag, allow_jina_fallback=True, max_tries=3)
-            statuses[tag] = status
+        for kind, path in RATINGS_SOURCES:
+            base_url = BASE + path
 
-            # Also keep legacy key for status summary in markdown.
-            statuses.setdefault(f"ratings_{kind}", status)
+            # Try: plain URL first (often defaults to "today"),
+            # then date-forced URL variants until we see the date "stick".
+            url_candidates = [base_url] + _candidate_date_urls(base_url, d)
 
-            if status >= 400 or status == 0:
-                _log(f"RATINGS {kind} p{page_i}: HTTP {status} (stop)")
-                break
-            if _is_challenge_page(page_html):
-                _log(f"RATINGS {kind} p{page_i}: HTTP {status} (blocked/challenge) (stop)")
-                break
+            page_html = ""
+            status = 0
+            used_url = base_url
+            detected_date = None
 
-            events = _extract_events_from_ratings_page(page_html, kind, master_set, asof_date, start_url)
-            min_date = None
+            for u in url_candidates:
+                used_url = u
+                status, page_html = _http_get(
+                    opener,
+                    u,
+                    timeout,
+                    debug_dir,
+                    f"ratings_{kind}_{asof_date}",
+                    allow_jina_fallback=True,
+                    max_tries=3,
+                )
+                statuses[f"ratings_{kind}_{asof_date}"] = status
 
-            for e in events:
-                # Best-effort filter early to reduce noise
-                try:
-                    ed = dt.date.fromisoformat(e.date)
-                except Exception:
-                    ed = today
-                if min_date is None or ed < min_date:
-                    min_date = ed
-
-                if ed < cutoff or ed > today:
+                if status >= 400 or status == 0:
+                    _log(f"RATINGS {kind} {asof_date}: HTTP {status} (try next)")
+                    time.sleep(min(0.2, sleep_s))
                     continue
 
+                if _is_challenge_page(page_html):
+                    _log(f"RATINGS {kind} {asof_date}: HTTP {status} (blocked/challenge) (try next)")
+                    time.sleep(min(0.2, sleep_s))
+                    continue
+
+                detected_date = _detect_reporting_date(page_html)
+                if detected_date == asof_date:
+                    break
+                # Looser fallback: the page includes some representation of the date
+                if _page_mentions_date(page_html, d):
+                    break
+
+                # If the page explicitly says "Date out of range", it's almost certainly the wrong param.
+                if "Date out of range" in page_html:
+                    time.sleep(min(0.2, sleep_s))
+                    continue
+
+                # Otherwise: keep trying variants
+                time.sleep(min(0.2, sleep_s))
+
+            if status >= 400 or status == 0 or _is_challenge_page(page_html):
+                _log(f"RATINGS {kind} {asof_date}: HTTP {status} (skip)")
+                time.sleep(sleep_s)
+                continue
+
+            events = _extract_events_from_ratings_page(page_html, kind, master_set, asof_date, used_url)
+            for e in events:
                 k = (e.ticker, e.firm, e.action, e.rating_from, e.rating_to, e.pt_from, e.pt_to, e.source, e.date)
                 if k in seen:
                     continue
                 seen.add(k)
                 out.append(e)
 
-            # Stop if this page already reaches beyond the cutoff window.
-            if min_date is not None and min_date <= cutoff:
-                break
-
-            next_url = _find_next_url(page_html, page_url)
-            if not next_url or next_url == page_url:
-                break
-            page_url = next_url
-
             time.sleep(sleep_s)
 
-        time.sleep(sleep_s)
-
-    # days param is kept for label/compat; asof_date is always today UTC.
-    # If someone calls with days<1, return nothing.
-    if days < 1:
-        out = []
-
     return out, statuses
-
 
 def read_master_tickers(master_csv: Path) -> List[str]:
     # Read CSV and return unique tickers (best-effort on column name).
@@ -778,7 +742,7 @@ def write_outputs(
 ) -> None:
     now = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     lines: List[str] = []
-    lines.append(f"# Elemzői feed (MarketBeat) – fel/leminősítések + célár (utolsó {days} naptári nap)")
+    lines.append(f"# Elemzői feed (fel/leminősítés + célár) — utolsó {days} naptári nap (első észlelés alapján)")
     lines.append("")
     lines.append(f"Verzió: {VERSION}")
     lines.append(f"Generálva (UTC): {now}")
