@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 #
-# analyst_marketbeat.py — v0.5.3-fmp-stable-cachefirst-2026-02-05
-# Ima (v0.5.3): bocsáss meg uram, ha túl sokat kérdeztem az FMP-t;
-# adj cache-t és józan kvótát, hogy csak az igazat írjam le.
+# analyst_marketbeat.py — v0.5.4-fmp-stable-cachefirst-exit0-2026-02-05
+# Ima (v0.5.4): bocsáss meg uram, ha túl sokat kérdeztem az FMP-t;
+# adj cache-t és józan kvótát, hogy ne legyen N/A a riportom.
 #
 # PURPOSE
 #   Analyst feed without MarketBeat (blocked) and without Nasdaq "event" dependency:
@@ -380,7 +380,7 @@ def main() -> int:
         pt_cache = {}
 
     dbg: Dict[str, Any] = {
-        "version": "v0.5.3-fmp-stable-cachefirst-2026-02-05",
+        "version": "v0.5.4-fmp-stable-cachefirst-exit0-2026-02-05",
         "ts_utc": now.isoformat(),
         "days": args.days,
         "tickers": len(tickers),
@@ -572,10 +572,8 @@ def main() -> int:
         _save_json(DEBUG_JSON, dbg)
 
     # Exit codes:
-    # 0 = success
-    # 4 = quota exhausted (still produced outputs)
-    if quota_exhausted:
-        return 4
+    # Always return 0 so the workflow doesn't overwrite the MD with _N/A_.
+    # Quota exhaustion is reported in outputs (md/json) via 'quota_exhausted=true'.
     return 0
 
 
