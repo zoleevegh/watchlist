@@ -1,7 +1,7 @@
-# Ima (v1.0.14): bocsáss meg uram, ha megint mellényúltam;
+# Ima (v1.0.17): bocsáss meg uram, ha megint mellényúltam;
 # adj türelmet és tiszta logot, hogy csak az igazat írjam le.
-# Verzió: v1.0.14-run_report-pin-gist-revision-2026-01-23
-# run_report.yml — v1.0.14-2026-01-23
+# Verzió: v1.0.17-run_report-fix-gist_id-env-newline-2026-02-05
+# run_report.yml — v1.0.17-2026-02-05
 
 name: Run Report — PRICE ENGINE
 
@@ -23,6 +23,14 @@ name: Run Report — PRICE ENGINE
         description: "MASTER CSV URL (optional). Leave empty to use default."
         required: false
         default: ""
+      debug:
+        description: "Debug (0/1) — MarketBeat HTML dump"
+        required: false
+        default: "0"
+        type: choice
+        options:
+          - "0"
+          - "1"
 
 jobs:
   run:
@@ -47,7 +55,10 @@ jobs:
           echo "REPORT=${REPORT}" >> $GITHUB_ENV
           echo "OUT_MD=${OUT_MD}" >> $GITHUB_ENV
           echo "GIST_ID=${GIST_ID}" >> $GITHUB_ENV
-          echo "DEBUG: REPORT=${REPORT} OUT_MD=${OUT_MD} GIST_ID=${GIST_ID}"
+          DEBUG="${{ inputs.debug }}"
+          if [ -z "${DEBUG}" ]; then DEBUG="0"; fi
+          echo "DEBUG=${DEBUG}" >> $GITHUB_ENV
+          echo "DEBUG: REPORT=${REPORT} OUT_MD=${OUT_MD} GIST_ID=${GIST_ID} DEBUG=${DEBUG}"
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -186,11 +197,13 @@ jobs:
           RC_A=0
           set +e
           if [ "${REPORT}" = "1" ] && [ -n "${ANALYST}" ]; then
+            EXTRA=""
+            if [ "${DEBUG}" = "1" ]; then EXTRA="--debug"; fi
             if [ -f "reports/master.csv" ]; then
-              python "${ANALYST}" --master "reports/master.csv" --days 2 --out-md "reports/analyst_last2d.md" --out-json "reports/analyst_last2d.json"
+              python "${ANALYST}" --master "reports/master.csv" --days 2 --out-md "reports/analyst_last2d.md" --out-json "reports/analyst_last2d.json" ${EXTRA}
               RC_A=$?
             else
-              python "${ANALYST}" --master "${MASTER_URL}" --days 2 --out-md "reports/analyst_last2d.md" --out-json "reports/analyst_last2d.json"
+              python "${ANALYST}" --master "${MASTER_URL}" --days 2 --out-md "reports/analyst_last2d.md" --out-json "reports/analyst_last2d.json" ${EXTRA}
               RC_A=$?
             fi
           else
