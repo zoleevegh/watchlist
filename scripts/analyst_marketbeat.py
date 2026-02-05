@@ -18,7 +18,7 @@
 # DATA SOURCES (FMP)
 # - Upgrades/Downgrades: https://financialmodelingprep.com/api/v4/upgrades-downgrades?symbol=...&apikey=...
 # - Price Targets:       https://financialmodelingprep.com/api/v4/price-target?symbol=...&apikey=...
-# - API key probe:       https://financialmodelingprep.com/api/v3/quote/AAPL?apikey=...
+# - API key probe:       https://financialmodelingprep.com/api/v3/quote/MSFT?apikey=...
 #
 # NOTES
 # - Rolling window uses calendar days (UTC) for filtering event date.
@@ -177,11 +177,11 @@ def _within_days(dt: datetime, days: int, now: datetime) -> bool:
     return dt.date() >= start and dt.date() <= now.date()
 
 def _probe_key(api_key: str, debug: bool=False) -> Tuple[bool, str]:
-    url = f"{FMP_BASE}/api/v3/quote/AAPL?apikey={api_key}"
+    url = f"{FMP_BASE}/api/v3/quote/MSFT?apikey={api_key}"
     dump = None
     if debug:
         DEBUG_DIR.mkdir(parents=True, exist_ok=True)
-        dump = DEBUG_DIR / f"probe_quote_AAPL.json"
+        dump = DEBUG_DIR / f"probe_quote_MSFT.json"
     status, js, text = _http_get_json(url, debug_dump=dump)
     if status in (401, 403):
         return False, f"FMP key invalid or not authorized (HTTP {status})"
