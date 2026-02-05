@@ -44,9 +44,9 @@ from http.cookiejar import CookieJar
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-VERSION = "v0.3.41-marketbeat-rolling-window-hu-2026-02-04"
+VERSION = "v0.3.42-marketbeat-jina-scheme-challenge-detect-2026-02-05"
 BASE = "https://www.marketbeat.com"
-JINA = "https://r.jina.ai/http://www.marketbeat.com"
+JINA_BASE = "https://r.jina.ai/"  # scheme-aware proxy prefix
 
 UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -138,6 +138,15 @@ def _mk_opener() -> urllib.request.OpenerDirector:
     return opener
 
 
+
+def _jina_url(url: str) -> str:
+    # Format: https://r.jina.ai/http(s)://example.com/path
+    if url.startswith("https://"):
+        return JINA_BASE + "https://" + url[len("https://") :]
+    if url.startswith("http://"):
+        return JINA_BASE + "http://" + url[len("http://") :]
+    return JINA_BASE + "https://" + url
+
 def _fetch_url(opener: urllib.request.OpenerDirector, url: str, timeout: int) -> Tuple[int, str, bytes]:
     req = urllib.request.Request(
         url,
@@ -171,13 +180,19 @@ _CHALLENGE_RE = re.compile(r"(cloudflare|cf-.*?challenge|captcha|verify you are 
 
 
 def _looks_blocked(html_text: str) -> bool:
-    if not html_text:
+    h = (html_text or "").lower()
+    # Strong bot-defense markers (avoid overly generic patterns)
+    markers = [
+        "cf-challenge", "cloudflare", "attention required", "checking your browser",
+        "/cdn-cgi/challenge", "/cdn-cgi/", "verify you are human",
+        "just a moment", "browser verification", "cf-turnstile", "cf_chl_",
+    ]
+    if any(x in h for x in markers):
         return True
-    if _CHALLENGE_RE.search(html_text):
+    # Very small HTML is usually an error page / blocked response
+    if len(h) < 2000:
         return True
-    # known page signatures
-    if "Stock Analyst Upgrades" in html_text:
-        return False
+    return False
     if "Stock Analyst Downgrades" in html_text:
         return False
     if "Price Target Changes" in html_text:
@@ -204,7 +219,7 @@ def _fetch_with_jina_fallback(
     if code and 200 <= code < 400 and not _looks_blocked(txt):
         return True, code, txt
 
-    jina_url = f"{JINA}{url.replace('https://www.marketbeat.com', '')}"
+    jina_url = _jina_url(url)
     time.sleep(0.6 + random.random() * 0.6)
     code2, _, raw2 = _fetch_url(opener, jina_url, timeout)
     txt2 = raw2.decode("utf-8", errors="ignore")
