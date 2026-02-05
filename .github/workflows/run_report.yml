@@ -201,14 +201,14 @@ jobs:
             EXTRA=""
             if [ "${DEBUG}" = "1" ]; then EXTRA="--debug"; fi
             if [ -f "reports/master.csv" ]; then
-              python "${ANALYST}" --master "reports/master.csv" --days 2 --out-md "reports/analyst_last2d.md" --out-json "reports/analyst_last2d.json" ${EXTRA} 2> "reports/analyst_stderr.log"
+              python "${ANALYST}" --master "reports/master.csv" --days 5 --out-md "reports/analyst_last2d.md" --out-json "reports/analyst_last2d.json" ${EXTRA} 2> "reports/analyst_stderr.log"
               RC_A=$?
               if [ "${RC_A}" -ne 0 ]; then
                 echo "ANALYST_ERROR_TAIL:" | tee -a reports/runner.log
                 tail -n 80 "reports/analyst_stderr.log" | tee -a reports/runner.log
               fi
             else
-              python "${ANALYST}" --master "${MASTER_URL}" --days 2 --out-md "reports/analyst_last2d.md" --out-json "reports/analyst_last2d.json" ${EXTRA} 2> "reports/analyst_stderr.log"
+              python "${ANALYST}" --master "${MASTER_URL}" --days 5 --out-md "reports/analyst_last2d.md" --out-json "reports/analyst_last2d.json" ${EXTRA} 2> "reports/analyst_stderr.log"
               RC_A=$?
               if [ "${RC_A}" -ne 0 ]; then
                 echo "ANALYST_ERROR_TAIL:" | tee -a reports/runner.log
