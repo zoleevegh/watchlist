@@ -1,44 +1,43 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 #
-# analyst_marketbeat.py — v0.4.0-fmp-primary-2026-02-05
+# analyst_marketbeat.py — v0.4.1-fmp-diagnostics-2026-02-05
 #
 # PURPOSE
-# - Replace brittle MarketBeat scraping (Cloudflare) with Financial Modeling Prep (FMP) APIs.
-# - Produces the same report artifacts:
-#     reports/analyst_last2d.md
-#     reports/analyst_last2d.json
-# - Keeps CLI compatible with previous script:
-#     --master <csv>
-#     --days N
-#     --out-md <path>
-#     --out-json <path>
-#     --debug
+# - MarketBeat HTML scraping is blocked on GitHub-hosted runners (Cloudflare).
+# - This script replaces MarketBeat scraping with Financial Modeling Prep (FMP) APIs.
+# - Adds HARD diagnostics + explicit exit codes so failures are visible in workflow logs.
 #
-# DATA SOURCES (FMP)
-# - Upgrades/Downgrades: https://financialmodelingprep.com/api/v4/upgrades-downgrades?symbol=...&apikey=...
-# - Price Targets:       https://financialmodelingprep.com/api/v4/price-target?symbol=...&apikey=...
-# - API key probe:       https://financialmodelingprep.com/api/v3/quote/MSFT?apikey=...
+# OUTPUTS
+# - reports/analyst_last2d.md
+# - reports/analyst_last2d.json
+# - reports/analyst_probe.json (always)
+# - reports/analyst_runtime.json (always)
+# - reports/debug_fmp/* (when --debug)
 #
-# NOTES
-# - Rolling window uses calendar days (UTC) for filtering event date.
-# - Robust handling of missing fields and rate limits.
-# - Cache file: reports/fmp_events.json (optional; used for dedup + persistence if endpoint is temporarily empty).
+# CLI (compatible)
+#   --master <csv>
+#   --days N
+#   --out-md <path>
+#   --out-json <path>
+#   --debug
 #
-# ZOLI RULES
-# - If ticker has no data: report "[TICKER] – adat nem elérhető (kihagyva)" in JSON, and omit from MD unless debug.
+# EXIT CODES
+#   0 = success (API access OK; events may be 0)
+#   2 = configuration error (missing key)
+#   3 = auth error (401/403)
+#   4 = rate limited (429)
+#   5 = unexpected API/parse error (non-JSON, schema mismatch, etc.)
 #
 from __future__ import annotations
 
 import argparse
 import csv
-import dataclasses
-import hashlib
 import json
 import os
-import random
 import sys
 import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -46,433 +45,459 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 
 FMP_BASE = "https://financialmodelingprep.com"
-UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/121.0.0.0 Safari/537.36"
+)
 
-CACHE_PATH = Path("reports/fmp_events.json")
-DEBUG_DIR = Path("reports/debug_fmp")
+# Endpoints (FMP)
+EP_QUOTE_V3 = "/api/v3/quote/{symbol}"
+EP_UPDOWN_V4 = "/api/v4/upgrades-downgrades"
+EP_PT_V4 = "/api/v4/price-target"
 
-@dataclasses.dataclass
-class Event:
-    ticker: str
-    kind: str  # upgrade | downgrade | pt_change
-    date: str  # YYYY-MM-DD (best effort)
-    firm: str
-    analyst: str
-    action: str
-    rating_from: str
-    rating_to: str
-    pt_from: Optional[float]
-    pt_to: Optional[float]
-    source: str
+DEFAULT_TIMEOUT = 25
+
+
+@dataclass
+class FetchResult:
+    ok: bool
+    status: int
     url: str
+    error: Optional[str] = None
+    json_ok: bool = False
+    items: int = 0
 
-    def to_dict(self) -> Dict[str, Any]:
-        return dataclasses.asdict(self)
 
-def _sha1(s: str) -> str:
-    return hashlib.sha1(s.encode("utf-8", errors="ignore")).hexdigest()
+def _now_utc() -> datetime:
+    return datetime.now(timezone.utc)
 
-def _parse_date_any(s: str) -> Optional[datetime]:
-    if not s:
+
+def _ensure_parent(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+
+def _write_json(path: Path, obj: Any) -> None:
+    _ensure_parent(path)
+    path.write_text(json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _read_master_tickers(master_csv: str) -> List[str]:
+    tickers: List[str] = []
+    with open(master_csv, "r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            t = (row.get("Ticker") or row.get("ticker") or "").strip()
+            if t:
+                tickers.append(t)
+
+    # de-dup preserve order
+    seen = set()
+    out: List[str] = []
+    for t in tickers:
+        if t not in seen:
+            seen.add(t)
+            out.append(t)
+    return out
+
+
+def _classify_http(status: int) -> Tuple[bool, Optional[int], str]:
+    '''
+    Returns: (terminal_error, exit_code_if_terminal, label)
+    '''
+    if status in (401, 403):
+        return True, 3, "AUTH"
+    if status == 429:
+        return True, 4, "RATE_LIMIT"
+    if status >= 500:
+        return False, None, "SERVER"
+    if status >= 400:
+        return False, 5, "HTTP_ERROR"
+    return False, None, "OK"
+
+
+def _is_fmp_error_payload(obj: Any) -> Optional[str]:
+    # FMP sometimes returns {"Error Message": "..."} or {"error": "..."} etc.
+    if isinstance(obj, dict):
+        for k in ("Error Message", "error", "message", "Error"):
+            if k in obj and isinstance(obj[k], str):
+                return obj[k]
+    return None
+
+
+def _fetch_json(session: requests.Session, url: str, debug_path: Optional[Path] = None) -> Tuple[FetchResult, Any]:
+    headers = {"User-Agent": UA}
+    try:
+        r = session.get(url, headers=headers, timeout=DEFAULT_TIMEOUT)
+    except Exception as e:
+        fr = FetchResult(ok=False, status=0, url=url, error=f"request_exception:{e}", json_ok=False)
+        if debug_path:
+            _ensure_parent(debug_path)
+            debug_path.write_text(str(e), encoding="utf-8")
+        return fr, None
+
+    status = r.status_code
+    text = r.text or ""
+
+    if debug_path:
+        _ensure_parent(debug_path)
+        debug_path.write_text(text, encoding="utf-8", errors="ignore")
+
+    # Try JSON parse
+    try:
+        obj = r.json()
+        json_ok = True
+    except Exception:
+        obj = None
+        json_ok = False
+
+    terminal, exit_code, label = _classify_http(status)
+
+    if status >= 400:
+        msg = None
+        if json_ok and obj is not None:
+            msg = _is_fmp_error_payload(obj)
+        if not msg:
+            msg = (text.strip()[:200] if text else None)
+        fr = FetchResult(ok=False, status=status, url=url, error=f"{label}:{msg}", json_ok=json_ok)
+        return fr, obj
+
+    # status < 400
+    if not json_ok:
+        fr = FetchResult(ok=False, status=status, url=url, error="PARSE:non_json_response", json_ok=False)
+        return fr, None
+
+    err_msg = _is_fmp_error_payload(obj)
+    if err_msg:
+        fr = FetchResult(ok=False, status=status, url=url, error=f"PAYLOAD_ERROR:{err_msg}", json_ok=True)
+        return fr, obj
+
+    items = len(obj) if isinstance(obj, list) else (len(obj.keys()) if isinstance(obj, dict) else 0)
+    fr = FetchResult(ok=True, status=status, url=url, json_ok=True, items=items)
+    return fr, obj
+
+
+def _probe_key(session: requests.Session, api_key: str, debug: bool) -> Dict[str, Any]:
+    symbol = "AAPL"
+    url = f"{FMP_BASE}{EP_QUOTE_V3.format(symbol=symbol)}?apikey={api_key}"
+    dbg = Path("reports/debug_fmp/probe_quote_AAPL.txt") if debug else None
+    fr, obj = _fetch_json(session, url, dbg)
+
+    diag: Dict[str, Any] = {
+        "ts_utc": _now_utc().isoformat(),
+        "endpoint": "quote_v3",
+        "symbol": symbol,
+        "url": url.replace(api_key, "****"),
+        "http_status": fr.status,
+        "ok": fr.ok,
+        "error": fr.error,
+        "json_ok": fr.json_ok,
+        "items": fr.items,
+    }
+
+    if fr.ok:
+        # quote endpoint should return list[dict]
+        if not isinstance(obj, list) or not obj or not isinstance(obj[0], dict):
+            diag["ok"] = False
+            diag["error"] = "SCHEMA:quote_v3_expected_list_of_dict"
+        else:
+            diag["sample_keys"] = sorted(list(obj[0].keys()))[:25]
+
+    _write_json(Path("reports/analyst_probe.json"), diag)
+    return diag
+
+
+def _parse_date_any(v: Any) -> Optional[datetime]:
+    if v is None:
         return None
-    s = str(s).strip()
-    fmts = [
-        "%Y-%m-%d",
-        "%Y-%m-%d %H:%M:%S",
-        "%Y-%m-%dT%H:%M:%S",
-        "%Y-%m-%dT%H:%M:%S.%fZ",
-        "%Y-%m-%dT%H:%M:%S%z",
-    ]
-    for f in fmts:
+    if isinstance(v, (int, float)):
         try:
-            dt = datetime.strptime(s, f)
+            return datetime.fromtimestamp(float(v), tz=timezone.utc)
+        except Exception:
+            return None
+    if isinstance(v, str):
+        s = v.strip()
+        if not s:
+            return None
+        for fmt in ("%Y-%m-%d", "%Y-%m-%d %H:%M:%S"):
+            try:
+                dt = datetime.strptime(s, fmt).replace(tzinfo=timezone.utc)
+                return dt
+            except Exception:
+                pass
+        try:
+            dt = datetime.fromisoformat(s)
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
             return dt.astimezone(timezone.utc)
         except Exception:
-            pass
-    # sometimes date is like "2026-02-05T00:00:00.000Z"
-    try:
-        if s.endswith("Z"):
-            dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
-            return dt.astimezone(timezone.utc)
-        dt = datetime.fromisoformat(s)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc)
-    except Exception:
-        return None
-
-def _safe_float(x: Any) -> Optional[float]:
-    try:
-        if x is None:
             return None
-        if isinstance(x, (int, float)):
-            return float(x)
-        s = str(x).strip().replace(",", "")
-        if s == "":
-            return None
-        return float(s)
-    except Exception:
-        return None
+    return None
 
-def _http_get_json(url: str, timeout: int = 25, debug_dump: Optional[Path] = None) -> Tuple[int, Any, str]:
-    headers = {"User-Agent": UA, "Accept": "application/json,text/plain,*/*"}
+
+def _within_days(dt: datetime, days: int) -> bool:
+    start = _now_utc() - timedelta(days=days)
+    return dt >= start
+
+
+def _event_key(e: Dict[str, Any]) -> str:
+    parts = [
+        str(e.get("ticker", "")),
+        str(e.get("date", "")),
+        str(e.get("firm", "")),
+        str(e.get("type", "")),
+        str(e.get("rating_to", "")),
+        str(e.get("pt_to", "")),
+    ]
+    return "|".join(parts)
+
+
+def _load_cache(path: Path) -> List[Dict[str, Any]]:
+    if not path.exists():
+        return []
     try:
-        r = requests.get(url, headers=headers, timeout=timeout)
-        text = r.text or ""
-        if debug_dump:
-            debug_dump.write_text(text, encoding="utf-8", errors="ignore")
-        try:
-            return r.status_code, r.json(), text
-        except Exception:
-            return r.status_code, None, text
-    except requests.RequestException as e:
-        return 0, None, str(e)
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
 
-def _load_master_tickers(master_csv: str) -> List[str]:
-    tickers: List[str] = []
-    with open(master_csv, "r", encoding="utf-8", errors="ignore") as f:
-        reader = csv.DictReader(f)
-        # tolerate various headers
-        for row in reader:
-            t = (row.get("ticker") or row.get("Ticker") or row.get("TICKER") or "").strip()
-            if not t:
-                continue
-            tickers.append(t)
-    # keep order, dedup
-    seen=set()
-    out=[]
-    for t in tickers:
-        if t not in seen:
-            out.append(t)
-            seen.add(t)
+
+def _save_cache(path: Path, events: List[Dict[str, Any]]) -> None:
+    _write_json(path, events)
+
+
+def _fetch_updown_for(session: requests.Session, api_key: str, ticker: str, debug: bool) -> Tuple[FetchResult, Any]:
+    url = f"{FMP_BASE}{EP_UPDOWN_V4}?symbol={ticker}&apikey={api_key}"
+    dbg = Path(f"reports/debug_fmp/{ticker}_updown.txt") if debug else None
+    return _fetch_json(session, url, dbg)
+
+
+def _fetch_pt_for(session: requests.Session, api_key: str, ticker: str, debug: bool) -> Tuple[FetchResult, Any]:
+    url = f"{FMP_BASE}{EP_PT_V4}?symbol={ticker}&apikey={api_key}"
+    dbg = Path(f"reports/debug_fmp/{ticker}_pt.txt") if debug else None
+    return _fetch_json(session, url, dbg)
+
+
+def _extract_events_updown(ticker: str, obj: Any, days: int) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    if not isinstance(obj, list):
+        return out
+    for it in obj:
+        if not isinstance(it, dict):
+            continue
+        dt = _parse_date_any(it.get("publishedDate") or it.get("date") or it.get("time"))
+        if not dt or not _within_days(dt, days):
+            continue
+        action = (it.get("action") or it.get("type") or "").strip()
+        firm = (it.get("gradingCompany") or it.get("firm") or it.get("company") or "").strip()
+        r_from = (it.get("previousGrade") or it.get("fromGrade") or it.get("ratingFrom") or "").strip() or None
+        r_to = (it.get("newGrade") or it.get("toGrade") or it.get("ratingTo") or "").strip() or None
+        kind = "upgrade" if action.lower() == "upgrade" else ("downgrade" if action.lower() == "downgrade" else "rating")
+        out.append({
+            "source": "FMP",
+            "type": kind,
+            "ticker": ticker,
+            "date": dt.date().isoformat(),
+            "ts_utc": dt.isoformat(),
+            "firm": firm,
+            "action": action or kind,
+            "rating_from": r_from,
+            "rating_to": r_to,
+            "pt_from": None,
+            "pt_to": None,
+        })
     return out
 
-def _load_cache() -> Dict[str, Any]:
-    if CACHE_PATH.exists():
-        try:
-            return json.loads(CACHE_PATH.read_text(encoding="utf-8"))
-        except Exception:
-            return {"_meta": {}, "events": {}}
-    return {"_meta": {}, "events": {}}
 
-def _save_cache(cache: Dict[str, Any]) -> None:
-    CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    cache["_meta"] = {
-        "updated_utc": datetime.now(timezone.utc).isoformat(),
-        "version": "v0.4.0-fmp-primary-2026-02-05",
-    }
-    CACHE_PATH.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
-
-def _event_key(e: Event) -> str:
-    core = "|".join([
-        e.ticker, e.kind, e.date or "", e.firm or "", e.analyst or "", e.action or "",
-        e.rating_from or "", e.rating_to or "", str(e.pt_from or ""), str(e.pt_to or "")
-    ])
-    return _sha1(core)
-
-def _within_days(dt: datetime, days: int, now: datetime) -> bool:
-    start = (now - timedelta(days=days)).date()
-    return dt.date() >= start and dt.date() <= now.date()
-
-def _probe_key(api_key: str, debug: bool=False) -> Tuple[bool, str]:
-    url = f"{FMP_BASE}/api/v3/quote/MSFT?apikey={api_key}"
-    dump = None
-    if debug:
-        DEBUG_DIR.mkdir(parents=True, exist_ok=True)
-        dump = DEBUG_DIR / f"probe_quote_MSFT.json"
-    status, js, text = _http_get_json(url, debug_dump=dump)
-    if status in (401, 403):
-        return False, f"FMP key invalid or not authorized (HTTP {status})"
-    if status == 429:
-        return False, "FMP rate-limited (HTTP 429)"
-    if status != 200:
-        return False, f"FMP probe failed (HTTP {status})"
-    if not isinstance(js, list):
-        return False, "FMP probe returned non-list payload"
-    return True, "OK"
-
-def _fetch_updown(ticker: str, api_key: str, debug: bool=False) -> Tuple[str, int, List[Dict[str, Any]]]:
-    url = f"{FMP_BASE}/api/v4/upgrades-downgrades?symbol={ticker}&apikey={api_key}"
-    dump = None
-    if debug:
-        DEBUG_DIR.mkdir(parents=True, exist_ok=True)
-        dump = DEBUG_DIR / f"{ticker}_updown.json"
-    status, js, _ = _http_get_json(url, debug_dump=dump)
-    if isinstance(js, list):
-        return url, status, js
-    return url, status, []
-
-def _fetch_price_targets(ticker: str, api_key: str, debug: bool=False) -> Tuple[str, int, List[Dict[str, Any]]]:
-    url = f"{FMP_BASE}/api/v4/price-target?symbol={ticker}&apikey={api_key}"
-    dump = None
-    if debug:
-        DEBUG_DIR.mkdir(parents=True, exist_ok=True)
-        dump = DEBUG_DIR / f"{ticker}_pt.json"
-    status, js, _ = _http_get_json(url, debug_dump=dump)
-    if isinstance(js, list):
-        return url, status, js
-    return url, status, []
-
-def _map_updown_row(ticker: str, row: Dict[str, Any], src_url: str) -> Optional[Event]:
-    # FMP keys vary; handle common variants
-    dt = _parse_date_any(row.get("publishedDate") or row.get("date") or row.get("updated") or "")
-    if not dt:
-        return None
-    date_s = dt.date().isoformat()
-    firm = str(row.get("gradingCompany") or row.get("company") or row.get("brokerage") or row.get("firm") or "").strip()
-    analyst = str(row.get("analyst") or row.get("analystName") or "").strip()
-    to_grade = str(row.get("newGrade") or row.get("newRating") or row.get("toGrade") or row.get("grade") or "").strip()
-    from_grade = str(row.get("previousGrade") or row.get("previousRating") or row.get("fromGrade") or "").strip()
-    action = str(row.get("action") or row.get("ratingAction") or "").strip()
-    kind = "upgrade"
-    # try infer
-    a_low = action.lower()
-    if "down" in a_low or "downgrade" in a_low:
-        kind = "downgrade"
-    elif "up" in a_low or "upgrade" in a_low:
-        kind = "upgrade"
-    else:
-        # compare common buy/hold/sell ranks if available
-        order = {"strong buy":4, "buy":3, "overweight":3, "outperform":3,
-                 "hold":2, "neutral":2, "equal-weight":2, "market perform":2,
-                 "underweight":1, "underperform":1, "sell":0}
-        f = order.get(from_grade.lower(), None)
-        t = order.get(to_grade.lower(), None)
-        if f is not None and t is not None and t < f:
-            kind = "downgrade"
-        elif f is not None and t is not None and t > f:
-            kind = "upgrade"
-        else:
-            # default
-            kind = "upgrade"
-    return Event(
-        ticker=ticker,
-        kind=kind,
-        date=date_s,
-        firm=firm or "—",
-        analyst=analyst or "—",
-        action=action or ("Upgrade" if kind=="upgrade" else "Downgrade"),
-        rating_from=from_grade or "—",
-        rating_to=to_grade or "—",
-        pt_from=None,
-        pt_to=None,
-        source="FMP",
-        url=src_url,
-    )
-
-def _map_pt_row(ticker: str, row: Dict[str, Any], src_url: str) -> Optional[Event]:
-    dt = _parse_date_any(row.get("publishedDate") or row.get("date") or row.get("updated") or "")
-    if not dt:
-        return None
-    date_s = dt.date().isoformat()
-    firm = str(row.get("analystCompany") or row.get("company") or row.get("brokerage") or row.get("firm") or "").strip()
-    analyst = str(row.get("analystName") or row.get("analyst") or "").strip()
-    pt = _safe_float(row.get("priceTarget") or row.get("priceTargetValue") or row.get("target") or row.get("pt"))
-    pt_old = _safe_float(row.get("priceTargetPrevious") or row.get("previousPriceTarget") or row.get("ptFrom"))
-    action = str(row.get("newsTitle") or row.get("action") or "Price Target Update").strip()
-    # Determine raised/lowered if old exists
-    kind = "pt_change"
-    return Event(
-        ticker=ticker,
-        kind=kind,
-        date=date_s,
-        firm=firm or "—",
-        analyst=analyst or "—",
-        action=action,
-        rating_from="—",
-        rating_to=str(row.get("rating") or row.get("recommendation") or "—"),
-        pt_from=pt_old,
-        pt_to=pt,
-        source="FMP",
-        url=src_url,
-    )
-
-def _format_md(events_by_ticker: Dict[str, List[Event]], days: int, tickers_total: int, status_line: str) -> str:
-    lines: List[str] = []
-    lines.append("## Elemzői feed (FMP) – fel/lemínősítések + célár (utolsó %d naptári nap)" % days)
-    lines.append("")
-    lines.append(f"_forrás státusz: {status_line}_")
-    lines.append("")
-    lines.append("_FMP API – cache used if available._")
-    lines.append("")
-    found = 0
-    for t, evs in events_by_ticker.items():
-        if not evs:
+def _extract_events_pt(ticker: str, obj: Any, days: int) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    if not isinstance(obj, list):
+        return out
+    for it in obj:
+        if not isinstance(it, dict):
             continue
-        found += 1
-        lines.append(f"## {t}")
-        for e in evs:
-            if e.kind in ("upgrade", "downgrade"):
-                lines.append(f"- {e.date} – {e.firm} – {e.kind.upper()} | Ajánlás: {e.rating_from} -> {e.rating_to} | Forrás: {e.url}")
-            else:
-                if e.pt_from is not None and e.pt_to is not None:
-                    lines.append(f"- {e.date} – {e.firm} – Célár változás | Célár: USD {e.pt_from:.2f} -> {e.pt_to:.2f} | Forrás: {e.url}")
-                elif e.pt_to is not None:
-                    lines.append(f"- {e.date} – {e.firm} – Célár frissítés | Célár: USD {e.pt_to:.2f} | Forrás: {e.url}")
-                else:
-                    lines.append(f"- {e.date} – {e.firm} – Célár frissítés | Célár: — | Forrás: {e.url}")
-        lines.append("")
-    lines.append(f"Időablak: utolsó {days} naptári nap (UTC) | Találat: {sum(len(v) for v in events_by_ticker.values())} / {tickers_total} ticker")
-    return "\n".join(lines).strip() + "\n"
+        dt = _parse_date_any(it.get("publishedDate") or it.get("date") or it.get("time"))
+        if not dt or not _within_days(dt, days):
+            continue
+        firm = (it.get("analystCompany") or it.get("gradingCompany") or it.get("firm") or "").strip()
+        rating = (it.get("rating") or it.get("analystRating") or "").strip() or None
+        pt_from = it.get("oldPriceTarget") if "oldPriceTarget" in it else it.get("ptFrom")
+        pt_to = it.get("newPriceTarget") if "newPriceTarget" in it else (it.get("priceTarget") or it.get("ptTo"))
+        out.append({
+            "source": "FMP",
+            "type": "pt_change",
+            "ticker": ticker,
+            "date": dt.date().isoformat(),
+            "ts_utc": dt.isoformat(),
+            "firm": firm,
+            "action": "price_target",
+            "rating_from": None,
+            "rating_to": rating,
+            "pt_from": pt_from,
+            "pt_to": pt_to,
+        })
+    return out
 
-def main() -> int:
+
+def _render_md(events: List[Dict[str, Any]], days: int, status_line: str) -> str:
+    lines: List[str] = []
+    lines.append(f"## Elemzői feed (FMP) – fel/lemínősítések + célár (utolsó {days} naptári nap)")
+    lines.append("")
+    lines.append(status_line)
+    lines.append("")
+    if not events:
+        lines.append("_Nincs találat az ablakban._")
+        return "\n".join(lines) + "\n"
+
+    by_t: Dict[str, List[Dict[str, Any]]] = {}
+    for e in events:
+        by_t.setdefault(e["ticker"], []).append(e)
+
+    for t in sorted(by_t.keys()):
+        lines.append(f"## {t}")
+        for e in sorted(by_t[t], key=lambda x: x.get("ts_utc", ""), reverse=True):
+            firm = e.get("firm") or "?"
+            date = e.get("date") or "?"
+            typ = e.get("type")
+            if typ == "pt_change":
+                lines.append(
+                    f"- {date} – {firm} – célár változás | Ajánlás: {e.get('rating_to') or '-'} | "
+                    f"Célár: {e.get('pt_from') or '-'} → {e.get('pt_to') or '-'} | Forrás: FMP"
+                )
+            else:
+                lines.append(
+                    f"- {date} – {firm} – {typ} | Ajánlás: {e.get('rating_from') or '-'} → {e.get('rating_to') or '-'} | Forrás: FMP"
+                )
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--master", required=True, help="Path to master.csv exported from Google Sheets")
-    ap.add_argument("--days", type=int, default=2, help="Rolling window in calendar days")
+    ap.add_argument("--master", required=True)
+    ap.add_argument("--days", type=int, default=2)
     ap.add_argument("--out-md", required=True)
     ap.add_argument("--out-json", required=True)
     ap.add_argument("--debug", action="store_true")
     args = ap.parse_args()
 
-    api_key = os.getenv("FMP_API_KEY", "").strip()
+    api_key = (os.environ.get("FMP_API_KEY") or os.environ.get("FMP_KEY") or "").strip()
+
+    runtime = {
+        "ts_utc": _now_utc().isoformat(),
+        "version": "v0.4.1-fmp-diagnostics-2026-02-05",
+        "master": args.master,
+        "days": args.days,
+        "debug": bool(args.debug),
+        "api_key_present": bool(api_key),
+    }
+    _write_json(Path("reports/analyst_runtime.json"), runtime)
+
     if not api_key:
-        # write empty outputs with clear status
-        Path(args.out_md).write_text(_format_md({}, args.days, 0, "FMP_API_KEY:MISSING"), encoding="utf-8")
-        Path(args.out_json).write_text(json.dumps({"status":"missing_api_key","source":"FMP","events":[]}, ensure_ascii=False, indent=2), encoding="utf-8")
-        return 0
+        status_line = "_forrás státusz: probe:FAIL (missing FMP_API_KEY secret)._"
+        Path(args.out_md).write_text(_render_md([], args.days, status_line), encoding="utf-8")
+        _write_json(Path(args.out_json), {"events": [], "probe": {"ok": False, "reason": "missing_key"}, "version": runtime["version"]})
+        print("FMP_PROBE:FAIL missing_key", file=sys.stderr)
+        sys.exit(2)
 
-    ok, msg = _probe_key(api_key, debug=args.debug)
-    if not ok:
-        Path(args.out_md).write_text(_format_md({}, args.days, 0, f"probe:FAIL ({msg})"), encoding="utf-8")
-        Path(args.out_json).write_text(json.dumps({"status":"probe_failed","message":msg,"source":"FMP","events":[]}, ensure_ascii=False, indent=2), encoding="utf-8")
-        return 0
+    session = requests.Session()
+    probe = _probe_key(session, api_key, args.debug)
 
-    tickers = _load_master_tickers(args.master)
-    now = datetime.now(timezone.utc)
+    if not probe.get("ok"):
+        st = int(probe.get("http_status") or 0)
+        _, exit_code, _ = _classify_http(st)
+        status_line = f"_forrás státusz: probe:FAIL (HTTP {st}) | {probe.get('error') or ''}_"
+        Path(args.out_md).write_text(_render_md([], args.days, status_line), encoding="utf-8")
+        _write_json(Path(args.out_json), {"events": [], "probe": probe, "version": runtime["version"]})
+        print(f"FMP_PROBE:FAIL status={st} error={probe.get('error')}", file=sys.stderr)
+        sys.exit(exit_code or 5)
 
-    cache = _load_cache()
-    cache_events: Dict[str, Dict[str, Any]] = cache.get("events", {}) if isinstance(cache.get("events", {}), dict) else {}
+    tickers = _read_master_tickers(args.master)
 
-    events_by_ticker: Dict[str, List[Event]] = {}
-    errors: Dict[str, str] = {}
-    status_parts = []
-    # Throttle to be nice to FMP
-    base_sleep = 0.12
+    cache_path = Path("reports/fmp_events.json")
+    cache = _load_cache(cache_path)
+
+    all_events: List[Dict[str, Any]] = []
+    errors: List[Dict[str, Any]] = []
+    ok_calls = 0
+    auth_err = 0
+    rate_err = 0
+    other_err = 0
 
     for i, t in enumerate(tickers, start=1):
-        # optional skip for non-US formats that often break (still keep if user has .TO etc)
-        # We'll keep all except explicitly skipped in rules:
-        if t.upper() == "PKN.WA":
-            continue
+        if i % 25 == 0:
+            time.sleep(0.8)
 
-        evs: List[Event] = []
+        fr_ud, obj_ud = _fetch_updown_for(session, api_key, t, args.debug)
+        fr_pt, obj_pt = _fetch_pt_for(session, api_key, t, args.debug)
 
-        # fetch upgrades/downgrades
-        up_url, up_status, up_rows = _fetch_updown(t, api_key, debug=args.debug)
-        if up_status == 429:
-            errors[t] = "rate_limited"
-            # backoff hard, then continue
-            time.sleep(2.5 + random.random())
-            up_rows = []
-        elif up_status not in (200,):
-            # treat as soft error
-            pass
+        for fr in (fr_ud, fr_pt):
+            if fr.ok:
+                ok_calls += 1
+            else:
+                st = fr.status
+                _, exit_code, label = _classify_http(st)
+                if label == "AUTH":
+                    auth_err += 1
+                elif label == "RATE_LIMIT":
+                    rate_err += 1
+                else:
+                    other_err += 1
 
-        for row in up_rows:
-            e = _map_updown_row(t, row, up_url)
-            if not e:
-                continue
-            dt = _parse_date_any(e.date)
-            if not dt:
-                continue
-            if _within_days(dt, args.days, now):
-                evs.append(e)
-
-        # fetch price targets
-        pt_url, pt_status, pt_rows = _fetch_price_targets(t, api_key, debug=args.debug)
-        if pt_status == 429:
-            errors[t] = "rate_limited"
-            time.sleep(2.5 + random.random())
-            pt_rows = []
-        elif pt_status not in (200,):
-            pass
-
-        for row in pt_rows:
-            e = _map_pt_row(t, row, pt_url)
-            if not e:
-                continue
-            dt = _parse_date_any(e.date)
-            if not dt:
-                continue
-            if _within_days(dt, args.days, now):
-                evs.append(e)
-
-        # Dedup inside ticker
-        dedup = {}
-        for e in evs:
-            dedup[_event_key(e)] = e
-        evs = list(dedup.values())
-        evs.sort(key=lambda x: (x.date, x.kind), reverse=True)
-
-        # Cache merge (keep last_seen)
-        if evs:
-            events_by_ticker[t] = evs
-            # update cache
-            ce = cache_events.get(t, {})
-            if not isinstance(ce, dict):
-                ce = {}
-            # store by key
-            for e in evs:
-                k = _event_key(e)
-                ce[k] = {"event": e.to_dict(), "last_seen_utc": now.isoformat()}
-            cache_events[t] = ce
+        if fr_ud.ok:
+            all_events.extend(_extract_events_updown(t, obj_ud, args.days))
         else:
-            # If no events now, try cache for window
-            ce = cache_events.get(t, {})
-            cached: List[Event] = []
-            if isinstance(ce, dict):
-                for k, v in ce.items():
-                    try:
-                        ed = v.get("event", {})
-                        dt = _parse_date_any(ed.get("date",""))
-                        if dt and _within_days(dt, args.days, now):
-                            cached.append(Event(**ed))
-                    except Exception:
-                        continue
-            cached_dedup = { _event_key(e): e for e in cached }
-            cached = list(cached_dedup.values())
-            cached.sort(key=lambda x: (x.date, x.kind), reverse=True)
-            if cached:
-                events_by_ticker[t] = cached
+            errors.append({"ticker": t, "kind": "updown", "status": fr_ud.status, "error": fr_ud.error})
 
-        # polite sleep
-        time.sleep(base_sleep + random.random()*0.08)
+        if fr_pt.ok:
+            all_events.extend(_extract_events_pt(t, obj_pt, args.days))
+        else:
+            errors.append({"ticker": t, "kind": "pt", "status": fr_pt.status, "error": fr_pt.error})
 
-    cache["events"] = cache_events
-    _save_cache(cache)
+    # Merge with cache (keep last 30 days)
+    keep_from = (_now_utc() - timedelta(days=30)).date().isoformat()
+    merged: Dict[str, Dict[str, Any]] = {}
+    for e in (cache + all_events):
+        if (e.get("date") or "") < keep_from:
+            continue
+        merged[_event_key(e)] = e
+    merged_events = list(merged.values())
+    _save_cache(cache_path, merged_events)
 
-    # Build status line
-    # We'll show the latest HTTP status we observed for the two endpoints (best effort)
-    status_line = "probe:OK"
-    if errors:
-        status_line += f", errors:{len(errors)}"
+    # Filter output window
+    out_events: List[Dict[str, Any]] = []
+    for e in merged_events:
+        dt = _parse_date_any(e.get("ts_utc") or e.get("date"))
+        if dt and _within_days(dt, args.days):
+            out_events.append(e)
 
-    md = _format_md(events_by_ticker, args.days, len(tickers), status_line)
-    Path(args.out_md).parent.mkdir(parents=True, exist_ok=True)
-    Path(args.out_md).write_text(md, encoding="utf-8")
-
-    flat_events: List[Dict[str, Any]] = []
-    for t, evs in events_by_ticker.items():
-        for e in evs:
-            flat_events.append(e.to_dict())
-
-    out = {
-        "status": "ok",
-        "source": "FMP",
-        "window_days": args.days,
-        "generated_utc": now.isoformat(),
-        "tickers_total": len(tickers),
-        "tickers_with_events": len(events_by_ticker),
-        "events": flat_events,
-        "errors": errors,
-        "cache_file": str(CACHE_PATH),
-        "version": "v0.4.0-fmp-primary-2026-02-05",
+    status_line = f"_forrás státusz: probe:OK(200) | calls_ok={ok_calls} auth_err={auth_err} rate_err={rate_err} other_err={other_err}_"
+    out_obj = {
+        "version": runtime["version"],
+        "probe": probe,
+        "events": out_events,
+        "stats": {
+            "tickers": len(tickers),
+            "events_window": len(out_events),
+            "calls_ok": ok_calls,
+            "auth_err": auth_err,
+            "rate_err": rate_err,
+            "other_err": other_err,
+        },
+        "errors_sample": errors[:80],
     }
-    Path(args.out_json).parent.mkdir(parents=True, exist_ok=True)
-    Path(args.out_json).write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
-    return 0
+    _write_json(Path(args.out_json), out_obj)
+    Path(args.out_md).write_text(_render_md(out_events, args.days, status_line), encoding="utf-8")
+
+    # Escalate if everything failed after a good probe (rare, but makes issues visible)
+    if ok_calls == 0 and rate_err > 0:
+        print("FMP_CALLS:FAIL rate_limited", file=sys.stderr)
+        sys.exit(4)
+    if ok_calls == 0 and auth_err > 0:
+        print("FMP_CALLS:FAIL auth", file=sys.stderr)
+        sys.exit(3)
+
+    sys.exit(0)
+
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()
