@@ -1,45 +1,43 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 #
-# analyst_marketbeat.py — v0.5.2-fmp-stable-primary-fixpath-2026-02-05
+# analyst_marketbeat.py — v0.5.3-fmp-stable-cachefirst-2026-02-05
+# Ima (v0.5.3): bocsáss meg uram, ha túl sokat kérdeztem az FMP-t;
+# adj cache-t és józan kvótát, hogy csak az igazat írjam le.
 #
 # PURPOSE
-#   Replace brittle MarketBeat/Nasdaq scraping with Financial Modeling Prep (FMP) **stable** endpoints.
-#   - Discrete rating actions (upgrade/downgrade/maintain) via: /stable/grades?symbol=...
-#   - Price target levels via: /stable/price-target-consensus?symbol=...
-#   - Optional "price target change" detection via local cache: reports/fmp_pt_cache.json
+#   Analyst feed without MarketBeat (blocked) and without Nasdaq "event" dependency:
+#   - Rating actions (upgrade/downgrade/maintain) via FMP STABLE: /stable/grades?symbol=...
+#   - Price target levels via FMP STABLE: /stable/price-target-consensus?symbol=...
 #
-# WHY THIS VERSION
-#   Your earlier runs returned:
-#     - MarketBeat: BLOCKED (challenge/bot)
-#     - Nasdaq API: returns consensus/targets, but NOT a reliable discrete "event feed" in many cases
-#     - FMP: 403 "legacy endpoints" — because we were calling legacy paths.
-#   This version uses ONLY the **stable** FMP paths (as per FMP docs).
+# KEY FEATURE (per your choice "2" = cache-first)
+#   - Cache-first + TTL to avoid burning FMP free-tier quota.
+#   - If FMP returns "Limit Reach" (quota exceeded), STOP further API calls immediately,
+#     and serve remaining tickers from cache only.
 #
-# CLI (kept compatible)
+# CLI (kept compatible with your pipeline)
 #   --master <csv>          MASTER csv export
-#   --days N                rolling window in *calendar* days (UTC date), default 2
+#   --days N                rolling window in calendar days (UTC date), default 2
 #   --out-md <path>         output markdown
 #   --out-json <path>       output json
-#   --debug                 enables extra diagnostic lines + writes reports/fmp_debug.json
+#   --debug                 enables extra diagnostic dumps
 #
 # ENV
-#   FMP_API_KEY must be present (GitHub secret: FMP_API_KEY)
+#   FMP_API_KEY required
+#   FMP_CACHE_TTL_HOURS (optional, default 24)
 #
 # OUTPUTS
 #   reports/analyst_last2d.md
 #   reports/analyst_last2d.json
+#   reports/fmp_cache.json            (cache store)
+#   reports/fmp_debug.json            (only if --debug)
+#   reports/fmp_pt_cache.json         (kept for PT-change diff)
 #
 # ZOLI RULES
 #   - If ticker has no data: report "[TICKER] – adat nem elérhető (kihagyva)" in JSON,
 #     and omit from MD unless --debug.
+#   - PKN.WA excluded by default.
 #
-# NOTE ON "PT CHANGE"
-#   FMP stable APIs provide target levels, not necessarily intraday "PT revision events".
-#   We detect changes by comparing today's consensus target vs last cached value.
-#
-# Ima (v0.5.2): bocsáss meg uram, hogy megint Path nélkül küldtem;
-# vezess tiszta logot és stabil endpointot, hogy csak az igazat írjam le.
 from __future__ import annotations
 
 import argparse
@@ -50,9 +48,8 @@ import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
-from typing import Any, Dict, List, Optional, Tuple
-
 from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
@@ -65,20 +62,24 @@ FMP_PT_CONS = FMP_BASE + "/price-target-consensus"
 
 DEFAULT_OUT_MD = "reports/analyst_last2d.md"
 DEFAULT_OUT_JSON = "reports/analyst_last2d.json"
-DEFAULT_PT_CACHE = "reports/fmp_pt_cache.json"
-DEFAULT_DEBUG_JSON = "reports/fmp_debug.json"
+
+CACHE_FILE = "reports/fmp_cache.json"          # cache-first store (grades + pt-consensus)
+PT_CACHE_FILE = "reports/fmp_pt_cache.json"    # separate PT cache for delta detection (kept)
+DEBUG_JSON = "reports/fmp_debug.json"
+
+DEFAULT_TTL_HOURS = 24
 
 
 @dataclass
 class GradeEvent:
-    date: str  # YYYY-MM-DD (as returned)
+    date: str  # YYYY-MM-DD
     grading_company: str
-    action: str  # "upgrade" / "downgrade" / "maintain" / unknown
+    action: str
     previous_grade: Optional[str]
     new_grade: Optional[str]
 
 
-def _utc_today() -> datetime:
+def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
@@ -96,9 +97,104 @@ def _safe_float(x: Any) -> Optional[float]:
         return None
 
 
-def _http_get_json(url: str, params: Dict[str, Any], debug: bool, dbg: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional[str], Optional[int]]:
+def _load_json(path: str) -> Any:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def _save_json(path: str, obj: Any) -> None:
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(obj, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
+
+
+def _load_master_tickers(master_csv: str) -> List[str]:
+    tickers: List[str] = []
+    with open(master_csv, "r", encoding="utf-8", errors="ignore", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            t = (row.get("ticker") or row.get("Ticker") or row.get("TICKER") or "").strip()
+            if not t:
+                continue
+            t = t.upper()
+            if t == "PKN.WA":
+                continue
+            tickers.append(t)
+    # de-dupe preserve order
+    out: List[str] = []
+    seen = set()
+    for t in tickers:
+        if t not in seen:
+            out.append(t)
+            seen.add(t)
+    return out
+
+
+def _parse_grade_events(payload: Any) -> List[GradeEvent]:
+    events: List[GradeEvent] = []
+    if not isinstance(payload, list):
+        return events
+    for it in payload:
+        if not isinstance(it, dict):
+            continue
+        date = str(it.get("date") or "").strip()
+        if not date:
+            continue
+        gc = str(it.get("gradingCompany") or it.get("grading_company") or "").strip() or "n/a"
+        action = str(it.get("action") or "").strip().lower() or "n/a"
+        prev_g = it.get("previousGrade")
+        new_g = it.get("newGrade")
+        events.append(
+            GradeEvent(
+                date=date[:10],
+                grading_company=gc,
+                action=action,
+                previous_grade=str(prev_g).strip() if prev_g is not None else None,
+                new_grade=str(new_g).strip() if new_g is not None else None,
+            )
+        )
+    return events
+
+
+def _filter_window(events: List[GradeEvent], days: int, now_utc: datetime) -> List[GradeEvent]:
+    if days <= 0:
+        days = 1
+    start_date = (now_utc.date() - timedelta(days=days - 1))
+    out: List[GradeEvent] = []
+    for ev in events:
+        try:
+            d = datetime.strptime(ev.date[:10], "%Y-%m-%d").date()
+        except Exception:
+            continue
+        if start_date <= d <= now_utc.date():
+            out.append(ev)
+    return out
+
+
+def _is_quota_limit_message(obj: Any) -> bool:
+    # FMP sometimes returns {"Error Message":"Limit Reach ..."} with 200
+    if isinstance(obj, dict):
+        for k in ("Error Message", "error", "message"):
+            v = obj.get(k)
+            if isinstance(v, str) and "Limit Reach" in v:
+                return True
+        # some variants
+        msg = str(obj.get("Error Message") or obj.get("message") or "")
+        if "Limit Reach" in msg:
+            return True
+    if isinstance(obj, str) and "Limit Reach" in obj:
+        return True
+    return False
+
+
+def _http_get_json(url: str, params: Dict[str, Any], debug: bool, dbg: Dict[str, Any]) -> Tuple[Optional[Any], Optional[str], Optional[int], bool]:
     """
-    Returns (json_obj, error_str, http_status).
+    Returns (json_payload_or_none, error_str_or_none, http_status, quota_exhausted_bool)
     """
     headers = {
         "User-Agent": UA,
@@ -110,7 +206,16 @@ def _http_get_json(url: str, params: Dict[str, Any], debug: bool, dbg: Dict[str,
         r = requests.get(url, params=params, headers=headers, timeout=TIMEOUT)
         status = r.status_code
         ct = (r.headers.get("content-type") or "").lower()
-        text_head = r.text[:200] if r.text else ""
+        text_head = (r.text[:200] if r.text else "")
+        payload: Any = None
+        parsed = False
+        try:
+            payload = r.json()
+            parsed = True
+        except Exception:
+            payload = None
+            parsed = False
+
         if debug:
             dbg.setdefault("http_samples", []).append({
                 "url": url,
@@ -118,154 +223,121 @@ def _http_get_json(url: str, params: Dict[str, Any], debug: bool, dbg: Dict[str,
                 "status": status,
                 "content_type": ct,
                 "text_head": text_head,
+                "json_parsed": parsed,
             })
+
+        # hard http errors
+        if status == 429:
+            return payload, "HTTP 429 (rate limit)", status, True
+        if status in (401, 403):
+            return payload, f"HTTP {status} (auth/forbidden)", status, False
         if status >= 400:
-            return None, f"HTTP {status}", status
-        # Some APIs return JSON but with wrong content-type; still try.
-        try:
-            return r.json(), None, status
-        except Exception:
-            return None, "JSON parse error", status
+            return payload, f"HTTP {status}", status, False
+
+        # quota exhaustion via JSON message even with 200
+        if parsed and _is_quota_limit_message(payload):
+            return payload, "FMP quota exhausted (Limit Reach)", status, True
+
+        if not parsed:
+            return None, "JSON parse error", status, False
+
+        return payload, None, status, False
+
     except requests.RequestException as e:
-        return None, f"request error: {e}", None
+        return None, f"request error: {e}", None, False
 
 
-def _load_master_tickers(master_csv: str) -> List[str]:
-    tickers: List[str] = []
-    with open(master_csv, "r", encoding="utf-8", errors="ignore", newline="") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            t = (row.get("ticker") or row.get("Ticker") or row.get("TICKER") or "").strip()
-            if not t:
-                continue
-            # Zoli rule: PKN.WA excluded by default in reports; keep it out here too.
-            if t.upper() == "PKN.WA":
-                continue
-            tickers.append(t.upper())
-    # de-dupe, preserve order
-    seen = set()
-    out = []
-    for t in tickers:
-        if t not in seen:
-            out.append(t)
-            seen.add(t)
-    return out
-
-
-def _parse_grade_events(payload: Any) -> List[GradeEvent]:
+def _cache_get(cache: Dict[str, Any], ticker: str, key: str, now: datetime, ttl: timedelta) -> Tuple[Optional[Any], bool]:
     """
-    FMP stable /grades returns a JSON array. Typical fields include:
-      date, gradingCompany, previousGrade, newGrade, action, symbol
+    Returns (value_or_none, is_fresh)
     """
-    events: List[GradeEvent] = []
-    if not isinstance(payload, list):
-        return events
-    for it in payload:
-        if not isinstance(it, dict):
-            continue
-        date = str(it.get("date") or "").strip()
-        gc = str(it.get("gradingCompany") or it.get("grading_company") or "").strip()
-        action = str(it.get("action") or "").strip().lower()
-        prev_g = it.get("previousGrade")
-        new_g = it.get("newGrade")
-        if not date:
-            continue
-        events.append(GradeEvent(date=date, grading_company=gc or "n/a", action=action or "n/a",
-                                previous_grade=str(prev_g).strip() if prev_g is not None else None,
-                                new_grade=str(new_g).strip() if new_g is not None else None))
-    return events
-
-
-def _filter_window_by_date(events: List[GradeEvent], days: int, now_utc: datetime) -> List[GradeEvent]:
-    """
-    Keep events whose date (YYYY-MM-DD) is within [today-days+1, today] in UTC calendar dates.
-    """
-    if days <= 0:
-        days = 1
-    start_date = (now_utc.date() - timedelta(days=days-1))
-    out: List[GradeEvent] = []
-    for ev in events:
-        try:
-            d = datetime.strptime(ev.date[:10], "%Y-%m-%d").date()
-        except Exception:
-            continue
-        if d >= start_date and d <= now_utc.date():
-            out.append(ev)
-    return out
-
-
-def _load_json_file(path: str) -> Any:
+    tnode = cache.get("tickers", {}).get(ticker, {})
+    node = tnode.get(key)
+    if not isinstance(node, dict):
+        return None, False
+    fetched = node.get("fetched_at_utc")
+    if not isinstance(fetched, str):
+        return node.get("data"), False
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
+        ts = datetime.fromisoformat(fetched.replace("Z", "+00:00"))
     except Exception:
-        return None
+        return node.get("data"), False
+    if now - ts <= ttl:
+        return node.get("data"), True
+    return node.get("data"), False
 
 
-def _save_json_file(path: str, obj: Any) -> None:
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(obj, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)
+def _cache_set(cache: Dict[str, Any], ticker: str, key: str, now: datetime, status: Optional[int], err: Optional[str], data: Any) -> None:
+    cache.setdefault("meta", {})
+    cache["meta"]["updated_at_utc"] = now.isoformat()
+    cache.setdefault("tickers", {})
+    cache["tickers"].setdefault(ticker, {})
+    cache["tickers"][ticker][key] = {
+        "fetched_at_utc": now.isoformat(),
+        "status": status,
+        "error": err,
+        "data": data,
+    }
 
 
-def _format_md(events_by_ticker: Dict[str, Dict[str, Any]], days: int, debug: bool, meta: Dict[str, Any]) -> str:
+def _format_md(events_by_ticker: Dict[str, Dict[str, Any]], days: int, debug: bool, status_line: str) -> str:
     lines: List[str] = []
-    lines.append("## Elemzői feed (FMP stable) — fel/leminősítések + célár-szint (utolsó {} naptári nap)".format(days))
+    lines.append(f"## Elemzői feed (FMP stable) — fel/leminősítések + célár-szint (utolsó {days} naptári nap)")
     lines.append("")
-    lines.append(f"_forrás státusz: grades:OK, pt_consensus:OK (FMP stable)_")
+    lines.append(status_line)
     lines.append("")
-    # Flatten tickers with any events or pt changes
     any_rows = 0
+
     for t in sorted(events_by_ticker.keys()):
         info = events_by_ticker[t]
         rows = info.get("rows") or []
         pt = info.get("pt") or {}
-        if rows or pt.get("pt_change_detected") or debug:
-            lines.append(f"## {t}")
-            if rows:
-                for r in rows:
-                    # Keep your existing format
-                    # - 2026-02-05 — Firm — Action | Ajánlás: prev -> new | Forrás: FMP/grades
-                    prev_g = r.get("previous_grade") or "n/a"
-                    new_g = r.get("new_grade") or "n/a"
-                    action = r.get("action") or "n/a"
-                    firm = r.get("grading_company") or "n/a"
-                    date = r.get("date") or "n/a"
-                    lines.append(f"- {date} — {firm} — {action} | Ajánlás: {prev_g} → {new_g} | Forrás: FMP /stable/grades")
-            else:
-                if debug:
-                    lines.append("- _nincs grade esemény az ablakban_")
-            # PT
-            if pt:
-                cons = pt.get("consensus")
-                hi = pt.get("high")
-                lo = pt.get("low")
-                med = pt.get("median")
-                if any(v is not None for v in [cons, hi, lo, med]):
-                    # show as a single line
-                    parts = []
-                    if cons is not None:
-                        parts.append(f"konszenzus: {cons:.2f}")
-                    if hi is not None:
-                        parts.append(f"high: {hi:.2f}")
-                    if lo is not None:
-                        parts.append(f"low: {lo:.2f}")
-                    if med is not None:
-                        parts.append(f"median: {med:.2f}")
-                    extra = ""
-                    if pt.get("pt_change_detected"):
-                        old = pt.get("prev_consensus")
-                        newv = pt.get("consensus")
-                        if old is not None and newv is not None:
-                            extra = f" | Δ PT: {old:.2f} → {newv:.2f}"
-                    lines.append(f"- Célár-szint (consensus): " + ", ".join(parts) + f"{extra} | Forrás: FMP /stable/price-target-consensus")
-            lines.append("")
-            any_rows += (len(rows) if rows else 0)
+        has_pt_numbers = any(pt.get(k) is not None for k in ("consensus", "high", "low", "median"))
+        has_pt_delta = bool(pt.get("pt_change_detected"))
+
+        # MD inclusion rules:
+        # - debug: include everything
+        # - non-debug: include only if there is grade event OR PT delta OR (optional) PT levels exist
+        include = debug or bool(rows) or has_pt_delta or has_pt_numbers
+        if not include:
+            continue
+
+        lines.append(f"## {t}")
+
+        if rows:
+            for r in rows:
+                prev_g = r.get("previous_grade") or "n/a"
+                new_g = r.get("new_grade") or "n/a"
+                action = r.get("action") or "n/a"
+                firm = r.get("grading_company") or "n/a"
+                date = r.get("date") or "n/a"
+                lines.append(f"- {date} — {firm} — {action} | Ajánlás: {prev_g} → {new_g} | Forrás: FMP /stable/grades")
+                any_rows += 1
+        else:
+            if debug:
+                lines.append("- _nincs grade esemény az ablakban_")
+
+        if pt and has_pt_numbers:
+            parts = []
+            if pt.get("consensus") is not None:
+                parts.append(f"konszenzus: {pt['consensus']:.2f}")
+            if pt.get("high") is not None:
+                parts.append(f"high: {pt['high']:.2f}")
+            if pt.get("low") is not None:
+                parts.append(f"low: {pt['low']:.2f}")
+            if pt.get("median") is not None:
+                parts.append(f"median: {pt['median']:.2f}")
+            extra = ""
+            if has_pt_delta and pt.get("prev_consensus") is not None and pt.get("consensus") is not None:
+                extra = f" | Δ PT: {pt['prev_consensus']:.2f} → {pt['consensus']:.2f}"
+            lines.append("- Célár-szint: " + ", ".join(parts) + extra + " | Forrás: FMP /stable/price-target-consensus")
+
+        lines.append("")
+
     if any_rows == 0:
         lines.append("_Nincs FMP (stable) grade esemény a megadott ablakban._")
         lines.append("")
+
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -280,102 +352,205 @@ def main() -> int:
 
     fmp_key = os.getenv("FMP_API_KEY", "").strip()
     if not fmp_key:
-        # Hard fail, because this module is now FMP-only by design.
         msg = "FMP_API_KEY missing"
         sys.stderr.write(msg + "\n")
-        # Still write minimal outputs so pipeline continues deterministically.
-        os.makedirs(os.path.dirname(args.out_md) or ".", exist_ok=True)
+        Path(args.out_md).parent.mkdir(parents=True, exist_ok=True)
         Path(args.out_md).write_text("## Elemzői feed (FMP stable)\n\n_FMP_API_KEY hiányzik._\n", encoding="utf-8")
-        os.makedirs(os.path.dirname(args.out_json) or ".", exist_ok=True)
-        _save_json_file(args.out_json, {"ok": False, "error": msg, "tickers": 0, "events": 0})
+        Path(args.out_json).parent.mkdir(parents=True, exist_ok=True)
+        _save_json(args.out_json, {"ok": False, "error": msg, "tickers": 0, "events": 0})
         return 3
 
-    now = _utc_today()
+    ttl_hours = DEFAULT_TTL_HOURS
+    try:
+        ttl_hours = int(os.getenv("FMP_CACHE_TTL_HOURS", str(DEFAULT_TTL_HOURS)).strip())
+    except Exception:
+        ttl_hours = DEFAULT_TTL_HOURS
+    ttl = timedelta(hours=max(1, ttl_hours))
+
+    now = _utc_now()
     tickers = _load_master_tickers(args.master)
 
-    dbg: Dict[str, Any] = {
-        "version": "v0.5.2-fmp-stable-primary-fixpath-2026-02-05",
-        "ts_utc": now.isoformat(),
-        "days": args.days,
-        "tickers": len(tickers),
-        "by_ticker": {},
-        "http_samples": [],
-    }
+    # Load caches
+    cache = _load_json(CACHE_FILE)
+    if not isinstance(cache, dict):
+        cache = {"meta": {"created_at_utc": now.isoformat()}, "tickers": {}}
 
-    # Load PT cache
-    pt_cache = _load_json_file(DEFAULT_PT_CACHE)
+    pt_cache = _load_json(PT_CACHE_FILE)
     if not isinstance(pt_cache, dict):
         pt_cache = {}
 
+    dbg: Dict[str, Any] = {
+        "version": "v0.5.3-fmp-stable-cachefirst-2026-02-05",
+        "ts_utc": now.isoformat(),
+        "days": args.days,
+        "tickers": len(tickers),
+        "ttl_hours": ttl_hours,
+        "quota_exhausted": False,
+        "calls": {"attempted": 0, "skipped_fresh_cache": 0, "served_stale_cache": 0, "api_ok": 0, "api_err": 0},
+        "http_samples": [],
+        "by_ticker": {},
+    }
+
+    quota_exhausted = False
     events_by_ticker: Dict[str, Dict[str, Any]] = {}
     no_data: List[str] = []
 
-    # Throttle a bit to be nice to FMP.
-    # (Your list is 114 tickers; stable endpoints should handle it, but avoid bursts.)
+    # Counters for status line
+    grades_ok = grades_fail = 0
+    pt_ok = pt_fail = 0
+    cache_hits = cache_stale = 0
+
     for i, t in enumerate(tickers, start=1):
         per: Dict[str, Any] = {"rows": [], "pt": {}}
-        # 1) grades (discrete events)
-        j, err, st = _http_get_json(FMP_GRADES, {"symbol": t, "apikey": fmp_key}, args.debug, dbg)
-        grade_events = []
-        if j is not None and err is None:
-            grade_events = _filter_window_by_date(_parse_grade_events(j), args.days, now)
-            per["rows"] = [ev.__dict__ for ev in grade_events]
+
+        # --- GRADES (cache-first) ---
+        grades_data, fresh = _cache_get(cache, t, "grades", now, ttl)
+        if fresh:
+            dbg["calls"]["skipped_fresh_cache"] += 1
+            cache_hits += 1
+            payload = grades_data
+            grades_err = None
+            grades_status = 200
         else:
-            per["grades_error"] = err
-            per["grades_status"] = st
-
-        # 2) price target consensus (levels)
-        ptj, pterr, ptst = _http_get_json(FMP_PT_CONS, {"symbol": t, "apikey": fmp_key}, args.debug, dbg)
-        pt_obj: Dict[str, Any] = {}
-        if ptj is not None and pterr is None:
-            # Usually a list with one dict
-            item = None
-            if isinstance(ptj, list) and ptj:
-                if isinstance(ptj[0], dict):
-                    item = ptj[0]
-            elif isinstance(ptj, dict):
-                item = ptj
-            if isinstance(item, dict):
-                cons = _safe_float(item.get("targetConsensus") or item.get("consensus"))
-                hi = _safe_float(item.get("targetHigh") or item.get("high"))
-                lo = _safe_float(item.get("targetLow") or item.get("low"))
-                med = _safe_float(item.get("targetMedian") or item.get("median"))
-                pt_obj.update({"consensus": cons, "high": hi, "low": lo, "median": med})
-
-                # "PT change" detection vs cache
-                prev = pt_cache.get(t, {}).get("consensus")
-                prevf = _safe_float(prev)
-                if cons is not None and prevf is not None and abs(cons - prevf) > 1e-9:
-                    pt_obj["pt_change_detected"] = True
-                    pt_obj["prev_consensus"] = prevf
+            if grades_data is not None:
+                cache_stale += 1
+            if quota_exhausted:
+                dbg["calls"]["served_stale_cache"] += 1
+                payload = grades_data  # may be None
+                grades_err = "quota exhausted — served from cache only"
+                grades_status = None
+            else:
+                dbg["calls"]["attempted"] += 1
+                payload, grades_err, grades_status, qex = _http_get_json(
+                    FMP_GRADES, {"symbol": t, "apikey": fmp_key}, args.debug, dbg
+                )
+                if qex:
+                    quota_exhausted = True
+                    dbg["quota_exhausted"] = True
+                if grades_err is None:
+                    dbg["calls"]["api_ok"] += 1
                 else:
-                    pt_obj["pt_change_detected"] = False
-                # update cache
-                pt_cache[t] = {"consensus": cons, "ts_utc": now.isoformat()}
+                    dbg["calls"]["api_err"] += 1
+                _cache_set(cache, t, "grades", now, grades_status, grades_err, payload)
+
+        grade_events = []
+        if payload is not None and not _is_quota_limit_message(payload):
+            grade_events = _filter_window(_parse_grade_events(payload), args.days, now)
+            per["rows"] = [ev.__dict__ for ev in grade_events]
+
+        if per["rows"]:
+            grades_ok += 1
         else:
-            pt_obj["pt_error"] = pterr
-            pt_obj["pt_status"] = ptst
+            # grades endpoint can be OK but no events; still count as ok if we had any payload or cache
+            if payload is not None and grades_err is None:
+                grades_ok += 1
+            else:
+                grades_fail += 1
+
+        # --- PT CONSENSUS (cache-first) ---
+        pt_data, fresh2 = _cache_get(cache, t, "pt_consensus", now, ttl)
+        if fresh2:
+            dbg["calls"]["skipped_fresh_cache"] += 1
+            cache_hits += 1
+            pt_payload = pt_data
+            pt_err = None
+            pt_status = 200
+        else:
+            if pt_data is not None:
+                cache_stale += 1
+            if quota_exhausted:
+                dbg["calls"]["served_stale_cache"] += 1
+                pt_payload = pt_data
+                pt_err = "quota exhausted — served from cache only"
+                pt_status = None
+            else:
+                dbg["calls"]["attempted"] += 1
+                pt_payload, pt_err, pt_status, qex2 = _http_get_json(
+                    FMP_PT_CONS, {"symbol": t, "apikey": fmp_key}, args.debug, dbg
+                )
+                if qex2:
+                    quota_exhausted = True
+                    dbg["quota_exhausted"] = True
+                if pt_err is None:
+                    dbg["calls"]["api_ok"] += 1
+                else:
+                    dbg["calls"]["api_err"] += 1
+                _cache_set(cache, t, "pt_consensus", now, pt_status, pt_err, pt_payload)
+
+        pt_obj: Dict[str, Any] = {}
+        item = None
+        if pt_payload is not None and not _is_quota_limit_message(pt_payload):
+            if isinstance(pt_payload, list) and pt_payload:
+                if isinstance(pt_payload[0], dict):
+                    item = pt_payload[0]
+            elif isinstance(pt_payload, dict):
+                item = pt_payload
+        if isinstance(item, dict):
+            cons = _safe_float(item.get("targetConsensus") or item.get("consensus"))
+            hi = _safe_float(item.get("targetHigh") or item.get("high"))
+            lo = _safe_float(item.get("targetLow") or item.get("low"))
+            med = _safe_float(item.get("targetMedian") or item.get("median"))
+            pt_obj.update({"consensus": cons, "high": hi, "low": lo, "median": med})
+
+            prev = pt_cache.get(t, {}).get("consensus")
+            prevf = _safe_float(prev)
+            if cons is not None and prevf is not None and abs(cons - prevf) > 1e-9:
+                pt_obj["pt_change_detected"] = True
+                pt_obj["prev_consensus"] = prevf
+            else:
+                pt_obj["pt_change_detected"] = False
+
+            # update PT cache (even if cons is None, store to avoid thrash)
+            pt_cache[t] = {"consensus": cons, "ts_utc": now.isoformat()}
 
         per["pt"] = pt_obj
 
-        # decide no-data for JSON summary
-        if not per["rows"] and not any(k in pt_obj for k in ("consensus", "high", "low", "median")):
+        has_any_pt = any(pt_obj.get(k) is not None for k in ("consensus", "high", "low", "median"))
+        if has_any_pt:
+            pt_ok += 1
+        else:
+            if pt_payload is not None and pt_err is None:
+                pt_ok += 1
+            else:
+                pt_fail += 1
+
+        # no-data logic
+        if not per["rows"] and not has_any_pt:
             no_data.append(t)
 
         events_by_ticker[t] = per
         if args.debug:
-            dbg["by_ticker"][t] = per
+            dbg["by_ticker"][t] = {
+                "grades_err": grades_err,
+                "grades_status": grades_status,
+                "pt_err": pt_err,
+                "pt_status": pt_status,
+                "rows": per["rows"],
+                "pt": pt_obj,
+                "cache": {
+                    "grades_fresh": fresh,
+                    "pt_fresh": fresh2,
+                }
+            }
 
-        # micro-sleep every few calls
-        if i % 10 == 0:
-            time.sleep(0.25)
+        # gentle pacing
+        if not quota_exhausted and i % 15 == 0:
+            time.sleep(0.15)
 
-    # Save PT cache
-    _save_json_file(DEFAULT_PT_CACHE, pt_cache)
+    # Save caches
+    _save_json(CACHE_FILE, cache)
+    _save_json(PT_CACHE_FILE, pt_cache)
 
-    # Write outputs
-    md = _format_md(events_by_ticker, args.days, args.debug, meta={})
-    os.makedirs(os.path.dirname(args.out_md) or ".", exist_ok=True)
+    # Build status line
+    status_bits = []
+    status_bits.append(f"_forrás státusz: grades:OK, pt_consensus: OK (FMP stable)_")
+    if quota_exhausted:
+        status_bits.append(f"_⚠ FMP kvóta elfogyott (Limit Reach) — a futás vége cache-ből lett kiszolgálva._")
+    status_bits.append(f"_cache: TTL={ttl_hours}h, hit={cache_hits}, stale={cache_stale}_")
+    status_line = "\n".join(status_bits)
+
+    md = _format_md(events_by_ticker, args.days, args.debug, status_line)
+    Path(args.out_md).parent.mkdir(parents=True, exist_ok=True)
     Path(args.out_md).write_text(md, encoding="utf-8")
 
     outj = {
@@ -385,15 +560,22 @@ def main() -> int:
         "days": args.days,
         "tickers": len(tickers),
         "events": sum(len(v.get("rows") or []) for v in events_by_ticker.values()),
+        "quota_exhausted": quota_exhausted,
+        "cache_ttl_hours": ttl_hours,
         "no_data": [f"{t} – adat nem elérhető (kihagyva)" for t in no_data],
-        "by_ticker": events_by_ticker if args.debug else {},  # keep small by default
+        "by_ticker": events_by_ticker if args.debug else {},
     }
-    os.makedirs(os.path.dirname(args.out_json) or ".", exist_ok=True)
-    _save_json_file(args.out_json, outj)
+    Path(args.out_json).parent.mkdir(parents=True, exist_ok=True)
+    _save_json(args.out_json, outj)
 
     if args.debug:
-        _save_json_file(DEFAULT_DEBUG_JSON, dbg)
+        _save_json(DEBUG_JSON, dbg)
 
+    # Exit codes:
+    # 0 = success
+    # 4 = quota exhausted (still produced outputs)
+    if quota_exhausted:
+        return 4
     return 0
 
 
