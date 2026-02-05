@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 #
-# analyst_marketbeat.py — v0.5.1-fmp-stable-primary-2026-02-05
+# analyst_marketbeat.py — v0.5.2-fmp-stable-primary-fixpath-2026-02-05
 #
 # PURPOSE
 #   Replace brittle MarketBeat/Nasdaq scraping with Financial Modeling Prep (FMP) **stable** endpoints.
@@ -38,6 +38,8 @@
 #   FMP stable APIs provide target levels, not necessarily intraday "PT revision events".
 #   We detect changes by comparing today's consensus target vs last cached value.
 #
+# Ima (v0.5.2): bocsáss meg uram, hogy megint Path nélkül küldtem;
+# vezess tiszta logot és stabil endpointot, hogy csak az igazat írjam le.
 from __future__ import annotations
 
 import argparse
@@ -49,6 +51,8 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple
+
+from pathlib import Path
 
 import requests
 
@@ -290,7 +294,7 @@ def main() -> int:
     tickers = _load_master_tickers(args.master)
 
     dbg: Dict[str, Any] = {
-        "version": "v0.5.1-fmp-stable-primary-2026-02-05",
+        "version": "v0.5.2-fmp-stable-primary-fixpath-2026-02-05",
         "ts_utc": now.isoformat(),
         "days": args.days,
         "tickers": len(tickers),
