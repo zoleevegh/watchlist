@@ -1,7 +1,7 @@
-# Ima (v1.0.17): bocsáss meg uram, ha megint mellényúltam;
+# Ima (v1.0.18): bocsáss meg uram, ha megint mellényúltam;
 # adj türelmet és tiszta logot, hogy csak az igazat írjam le.
-# Verzió: v1.0.17-run_report-fix-gist_id-env-newline-2026-02-05
-# run_report.yml — v1.0.17-2026-02-05
+# Verzió: v1.0.18-run_report-analyst-fmp-friendly-2026-02-05
+# run_report.yml — v1.0.18-2026-02-05
 
 name: Run Report — PRICE ENGINE
 
@@ -24,7 +24,7 @@ name: Run Report — PRICE ENGINE
         required: false
         default: ""
       debug:
-        description: "Debug (0/1) — MarketBeat HTML dump"
+        description: "Debug (0/1) — Analyst debug dump"
         required: false
         default: "0"
         type: choice
@@ -200,18 +200,27 @@ jobs:
             EXTRA=""
             if [ "${DEBUG}" = "1" ]; then EXTRA="--debug"; fi
             if [ -f "reports/master.csv" ]; then
-              python "${ANALYST}" --master "reports/master.csv" --days 2 --out-md "reports/analyst_last2d.md" --out-json "reports/analyst_last2d.json" ${EXTRA}
+              python "${ANALYST}" --master "reports/master.csv" --days 2 --out-md "reports/analyst_last2d.md" --out-json "reports/analyst_last2d.json" ${EXTRA} 2> "reports/analyst_stderr.log"
               RC_A=$?
+              if [ "${RC_A}" -ne 0 ]; then
+                echo "ANALYST_ERROR_TAIL:" | tee -a reports/runner.log
+                tail -n 80 "reports/analyst_stderr.log" | tee -a reports/runner.log
+              fi
             else
-              python "${ANALYST}" --master "${MASTER_URL}" --days 2 --out-md "reports/analyst_last2d.md" --out-json "reports/analyst_last2d.json" ${EXTRA}
+              python "${ANALYST}" --master "${MASTER_URL}" --days 2 --out-md "reports/analyst_last2d.md" --out-json "reports/analyst_last2d.json" ${EXTRA} 2> "reports/analyst_stderr.log"
               RC_A=$?
+              if [ "${RC_A}" -ne 0 ]; then
+                echo "ANALYST_ERROR_TAIL:" | tee -a reports/runner.log
+                tail -n 80 "reports/analyst_stderr.log" | tee -a reports/runner.log
+              fi
             fi
           else
             RC_A=2
           fi
           set -e
+          echo "ANALYST_EXIT=${RC_A}" | tee -a reports/runner.log
           if [ "${REPORT}" = "1" ] && ( [ "${RC_A}" -ne 0 ] || [ ! -f "reports/analyst_last2d.md" ] ); then
-            python -c "from pathlib import Path; Path('reports').mkdir(parents=True, exist_ok=True); Path('reports/analyst_last2d.md').write_text('# Elemzői feed (MarketBeat) – utolsó 2 naptári nap\n\n_N/A._\n', encoding='utf-8')"
+            python -c "from pathlib import Path; Path('reports').mkdir(parents=True, exist_ok=True); Path('reports/analyst_last2d.md').write_text('# Elemzői feed (FMP) – utolsó 2 naptári nap\n\n_N/A._\n', encoding='utf-8')"
             echo "ANALYST_EXIT=${RC_A}" | tee -a reports/runner.log
           fi
 
