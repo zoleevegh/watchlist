@@ -1,7 +1,7 @@
-# Ima (v1.0.19): bocsáss meg uram, ha megint mellényúltam;
+# Ima (v1.0.20): bocsáss meg uram, ha megint mellényúltam;
 # adj türelmet és tiszta logot, hogy csak az igazat írjam le.
-# Verzió: v1.0.19-run_report-add-requests-dep-2026-02-05
-# run_report.yml — v1.0.19-2026-02-05
+# Verzió: v1.0.20-run_report-add-requests-dep-2026-02-05
+# run_report.yml — v1.0.20-2026-02-05
 
 name: Run Report — PRICE ENGINE
 
@@ -74,6 +74,9 @@ jobs:
             reports/marketbeat_last_success.md
             reports/analyst_last2d.md
             reports/analyst_last2d.json
+            reports/fmp_grades_events.json
+            reports/fmp_pt_events.json
+            reports/fmp_cache.json
           # Always save a fresh cache each run (unique key), but restore the latest prior one via restore-keys.
           key: marketbeat-seen-v1-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
           restore-keys: |
@@ -201,14 +204,14 @@ jobs:
             EXTRA=""
             if [ "${DEBUG}" = "1" ]; then EXTRA="--debug"; fi
             if [ -f "reports/master.csv" ]; then
-              python "${ANALYST}" --master "reports/master.csv" --days 5 --out-md "reports/analyst_last2d.md" --out-json "reports/analyst_last2d.json" ${EXTRA} 2> "reports/analyst_stderr.log"
+              python "${ANALYST}" --master "reports/master.csv" --days 4 --out-md "reports/analyst_last2d.md" --out-json "reports/analyst_last2d.json" ${EXTRA} 2> "reports/analyst_stderr.log"
               RC_A=$?
               if [ "${RC_A}" -ne 0 ]; then
                 echo "ANALYST_ERROR_TAIL:" | tee -a reports/runner.log
                 tail -n 80 "reports/analyst_stderr.log" | tee -a reports/runner.log
               fi
             else
-              python "${ANALYST}" --master "${MASTER_URL}" --days 5 --out-md "reports/analyst_last2d.md" --out-json "reports/analyst_last2d.json" ${EXTRA} 2> "reports/analyst_stderr.log"
+              python "${ANALYST}" --master "${MASTER_URL}" --days 4 --out-md "reports/analyst_last2d.md" --out-json "reports/analyst_last2d.json" ${EXTRA} 2> "reports/analyst_stderr.log"
               RC_A=$?
               if [ "${RC_A}" -ne 0 ]; then
                 echo "ANALYST_ERROR_TAIL:" | tee -a reports/runner.log
@@ -221,7 +224,7 @@ jobs:
           set -e
           echo "ANALYST_EXIT=${RC_A}" | tee -a reports/runner.log
           if [ "${REPORT}" = "1" ] && ( [ "${RC_A}" -ne 0 ] || [ ! -f "reports/analyst_last2d.md" ] ); then
-            python -c "from pathlib import Path; Path('reports').mkdir(parents=True, exist_ok=True); Path('reports/analyst_last2d.md').write_text('# Elemzői feed (FMP) – utolsó 2 naptári nap\n\n_N/A._\n', encoding='utf-8')"
+            python -c "from pathlib import Path; Path('reports').mkdir(parents=True, exist_ok=True); Path('reports/analyst_last2d.md').write_text('# Elemzői feed (FMP) – utolsó 4 naptári nap\n\n_N/A._\n', encoding='utf-8')"
             echo "ANALYST_EXIT=${RC_A}" | tee -a reports/runner.log
           fi
 
@@ -290,7 +293,7 @@ jobs:
               e = "N/A"
           
           injected = (
-              "\n\n## Elemzői feed (MarketBeat) — fel/leminősítések + célár (utolsó 2 naptári nap)\n\n"
+              "\n\n## Elemzői feed (MarketBeat) — fel/leminősítések + célár (utolsó 4 naptári nap)\n\n"
               + a
               + "\n\n## Earnings — következő 7 nap\n\n"
               + e
