@@ -405,6 +405,19 @@ def main() -> int:
     max_calls = int(os.getenv("FMP_MAX_CALLS", "1"))
     dbg["max_calls"] = max_calls
 
+
+    # Free-tier safety: grades-latest-news supports only small 'limit' on free plans.
+    # Keep default=10 and cap to 10 unless you explicitly override and your plan supports it.
+    try:
+        grades_limit = int(os.getenv("FMP_GRADES_LIMIT", "10"))
+    except Exception:
+        grades_limit = 10
+    if grades_limit < 1:
+        grades_limit = 10
+    if grades_limit > 10:
+        grades_limit = 10
+    dbg["grades_limit"] = grades_limit
+
     # --- GLOBAL GRADES FEED (low-call mode) ---
     # Fetch analyst grade events once (grades-latest-news) and filter by our MASTER tickers + rolling window.
     global_key = "__GLOBAL__"
