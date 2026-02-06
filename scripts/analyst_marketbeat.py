@@ -433,7 +433,7 @@ def main() -> int:
         else:
             dbg["calls"]["attempted"] += 1
             feed_payload, feed_err, feed_status, qex0 = _http_get_json(
-                FMP_GRADES_LATEST, {"page": 0, "limit": 1000, "apikey": fmp_key}, args.debug, dbg
+                FMP_GRADES_LATEST, {"page": 0, "limit": grades_limit, "apikey": fmp_key}, args.debug, dbg
             )
             if qex0:
                 quota_exhausted = True
@@ -496,8 +496,8 @@ def main() -> int:
                 pt_status = None
             else:
                 if dbg["calls"]["attempted"] >= max_calls:
-                    quota_exhausted = True
-                    dbg["quota_exhausted"] = True
+                    budget_exhausted = True
+                    dbg["budget_exhausted"] = True
                     dbg["calls"]["served_stale_cache"] += 1
                     pt_payload = pt_data
                     pt_err = "call budget exceeded — served from cache only"
@@ -583,8 +583,15 @@ def main() -> int:
     # Build status line
     status_bits = []
     status_bits.append(f"_forrás státusz: grades:OK, pt_consensus: OK (FMP stable)_")
+    # Explicit reason banners
     if quota_exhausted:
-        status_bits.append(f"_⚠ FMP kvóta elfogyott (Limit Reach) — a futás vége cache-ből lett kiszolgálva._")
+        status_bits.append(f"_⚠ FMP kvóta elfogyott (Limit Reach / 429) — a futás vége cache-ből lett kiszolgálva._")
+    elif budget_exhausted:
+        status_bits.append(f"_ℹ FMP hívás-keret elérve (FMP_MAX_CALLS={max_calls}) — a futás vége cache-ből lett kiszolgálva._")
+    # Plan/parameter limitation (e.g. grades-latest-news limit>10 on free plan)
+    gf = dbg.get('grades_feed') or {}
+    if gf.get('status') == 402:
+        status_bits.append("_⚠ FMP hozzáférés korlátozott (HTTP 402) — az endpoint paraméter/plan limit miatt nem ad adatot._")
     status_bits.append(f"_cache: TTL={ttl_hours}h, hit={cache_hits}, stale={cache_stale}_")
     status_line = "\n".join(status_bits)
 
