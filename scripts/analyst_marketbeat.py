@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 #
-# analyst_marketbeat.py — v0.5.5-fmp-grades-latest-budget1-fixqex2-2026-02-06
-# Ima (v0.5.5): bocsáss meg uram, ha túl sokat kérdeztem az FMP-t;
+# analyst_marketbeat.py — v0.5.6-fmp-grades-latest-budget1-fixqex2-2026-02-06
+# Ima (v0.5.6): bocsáss meg uram, ha túl sokat kérdeztem az FMP-t;
 # adj cache-t és józan kvótát, hogy ne legyen N/A a riportom.
 #
 # PURPOSE
@@ -560,14 +560,14 @@ def main() -> int:
         events_by_ticker[t] = per
         if args.debug:
             dbg["by_ticker"][t] = {
-                "grades_err": grades_err,
-                "grades_status": grades_status,
+                "grades_feed": dbg.get("grades_feed"),
+                "grades_events": len(per.get("rows") or []),
                 "pt_err": pt_err,
                 "pt_status": pt_status,
                 "rows": per["rows"],
                 "pt": pt_obj,
                 "cache": {
-                    "grades_fresh": fresh,
+                    "grades_fresh": False,
                     "pt_fresh": fresh2,
                 }
             }
