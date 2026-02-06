@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 #
-# analyst_marketbeat.py — v0.5.4-fmp-stable-cachefirst-exit0-2026-02-05
+# analyst_marketbeat.py — v0.6.0-fmp-lowcalls-grades-latest-news-2026-02-06
 # Ima (v0.5.4): bocsáss meg uram, ha túl sokat kérdeztem az FMP-t;
 # adj cache-t és józan kvótát, hogy ne legyen N/A a riportom.
 #
@@ -58,6 +58,7 @@ TIMEOUT = 25
 
 FMP_BASE = "https://financialmodelingprep.com/stable"
 FMP_GRADES = FMP_BASE + "/grades"
+FMP_GRADES_LATEST = FMP_BASE + "/grades-latest-news"
 FMP_PT_CONS = FMP_BASE + "/price-target-consensus"
 
 DEFAULT_OUT_MD = "reports/analyst_last2d.md"
@@ -72,6 +73,7 @@ DEFAULT_TTL_HOURS = 24
 
 @dataclass
 class GradeEvent:
+    symbol: str
     date: str  # YYYY-MM-DD
     grading_company: str
     action: str
@@ -142,7 +144,10 @@ def _parse_grade_events(payload: Any) -> List[GradeEvent]:
     for it in payload:
         if not isinstance(it, dict):
             continue
-        date = str(it.get("date") or "").strip()
+        sym = str(it.get("symbol") or it.get("ticker") or "").strip().upper()
+        date = str(it.get("date") or it.get("publishedDate") or it.get("published_date") or "").strip()
+        if not sym:
+            continue
         if not date:
             continue
         gc = str(it.get("gradingCompany") or it.get("grading_company") or "").strip() or "n/a"
@@ -151,6 +156,7 @@ def _parse_grade_events(payload: Any) -> List[GradeEvent]:
         new_g = it.get("newGrade")
         events.append(
             GradeEvent(
+                symbol=sym,
                 date=date[:10],
                 grading_company=gc,
                 action=action,
@@ -395,6 +401,60 @@ def main() -> int:
     events_by_ticker: Dict[str, Dict[str, Any]] = {}
     no_data: List[str] = []
 
+
+    max_calls = int(os.getenv("FMP_MAX_CALLS", "1"))
+    dbg["max_calls"] = max_calls
+
+    # --- GLOBAL GRADES FEED (low-call mode) ---
+    # Fetch analyst grade events once (grades-latest-news) and filter by our MASTER tickers + rolling window.
+    global_key = "__GLOBAL__"
+    grades_by_symbol: Dict[str, List[GradeEvent]] = {}
+
+    feed_payload, feed_err, feed_status = None, None, None
+    feed_data, feed_fresh = _cache_get(cache, global_key, "grades_latest_news", now, ttl)
+    if feed_fresh:
+        dbg["calls"]["skipped_fresh_cache"] += 1
+        feed_payload = feed_data
+        feed_status = 200
+        dbg["grades_feed"] = {"mode": "cache_fresh"}
+    else:
+        if dbg["calls"]["attempted"] >= max_calls:
+            quota_exhausted = True
+            dbg["quota_exhausted"] = True
+            dbg["calls"]["served_stale_cache"] += 1
+            feed_payload = feed_data
+            feed_err = "call budget exceeded — served from cache only"
+            dbg["grades_feed"] = {"mode": "cache_stale_budget"}
+        elif quota_exhausted:
+            dbg["calls"]["served_stale_cache"] += 1
+            feed_payload = feed_data
+            feed_err = "quota exhausted — served from cache only"
+            dbg["grades_feed"] = {"mode": "cache_stale_quota"}
+        else:
+            dbg["calls"]["attempted"] += 1
+            feed_payload, feed_err, feed_status, qex0 = _http_get_json(
+                FMP_GRADES_LATEST, {"page": 0, "limit": 1000, "apikey": fmp_key}, args.debug, dbg
+            )
+            if qex0:
+                quota_exhausted = True
+                dbg["quota_exhausted"] = True
+            if feed_err is None:
+                dbg["calls"]["api_ok"] += 1
+                dbg["grades_feed"] = {"mode": "api_ok", "status": feed_status}
+            else:
+                dbg["calls"]["api_err"] += 1
+                dbg["grades_feed"] = {"mode": "api_err", "status": feed_status, "err": feed_err}
+            _cache_set(cache, global_key, "grades_latest_news", now, feed_status, feed_err, feed_payload)
+
+    if feed_payload is not None and not _is_quota_limit_message(feed_payload):
+        events = _filter_window(_parse_grade_events(feed_payload), args.days, now)
+        for ev in events:
+            grades_by_symbol.setdefault(ev.symbol, []).append(ev)
+
+    # sort each list by date desc (string YYYY-MM-DD works)
+    for sym in list(grades_by_symbol.keys()):
+        grades_by_symbol[sym].sort(key=lambda e: e.date, reverse=True)
+
     # Counters for status line
     grades_ok = grades_fail = 0
     pt_ok = pt_fail = 0
@@ -403,51 +463,21 @@ def main() -> int:
     for i, t in enumerate(tickers, start=1):
         per: Dict[str, Any] = {"rows": [], "pt": {}}
 
-        # --- GRADES (cache-first) ---
-        grades_data, fresh = _cache_get(cache, t, "grades", now, ttl)
-        if fresh:
-            dbg["calls"]["skipped_fresh_cache"] += 1
-            cache_hits += 1
-            payload = grades_data
-            grades_err = None
-            grades_status = 200
-        else:
-            if grades_data is not None:
-                cache_stale += 1
-            if quota_exhausted:
-                dbg["calls"]["served_stale_cache"] += 1
-                payload = grades_data  # may be None
-                grades_err = "quota exhausted — served from cache only"
-                grades_status = None
-            else:
-                dbg["calls"]["attempted"] += 1
-                payload, grades_err, grades_status, qex = _http_get_json(
-                    FMP_GRADES, {"symbol": t, "apikey": fmp_key}, args.debug, dbg
-                )
-                if qex:
-                    quota_exhausted = True
-                    dbg["quota_exhausted"] = True
-                if grades_err is None:
-                    dbg["calls"]["api_ok"] += 1
-                else:
-                    dbg["calls"]["api_err"] += 1
-                _cache_set(cache, t, "grades", now, grades_status, grades_err, payload)
-
-        grade_events = []
-        if payload is not None and not _is_quota_limit_message(payload):
-            grade_events = _filter_window(_parse_grade_events(payload), args.days, now)
-            per["rows"] = [ev.__dict__ for ev in grade_events]
+        # --- GRADES (global feed; 0 per-ticker calls) ---
+        grade_events = grades_by_symbol.get(t, [])
+        per["rows"] = [ev.__dict__ for ev in grade_events]
 
         if per["rows"]:
             grades_ok += 1
         else:
-            # grades endpoint can be OK but no events; still count as ok if we had any payload or cache
-            if payload is not None and grades_err is None:
+            # Still OK if feed was available (we just had no events for this ticker)
+            if feed_payload is not None and feed_err is None:
                 grades_ok += 1
             else:
                 grades_fail += 1
 
-        # --- PT CONSENSUS (cache-first) ---
+        # --- PT CONSENSUS (cache-first; budget guarded) ---
+
         pt_data, fresh2 = _cache_get(cache, t, "pt_consensus", now, ttl)
         if fresh2:
             dbg["calls"]["skipped_fresh_cache"] += 1
@@ -464,10 +494,18 @@ def main() -> int:
                 pt_err = "quota exhausted — served from cache only"
                 pt_status = None
             else:
-                dbg["calls"]["attempted"] += 1
-                pt_payload, pt_err, pt_status, qex2 = _http_get_json(
-                    FMP_PT_CONS, {"symbol": t, "apikey": fmp_key}, args.debug, dbg
-                )
+                if dbg["calls"]["attempted"] >= max_calls:
+                    quota_exhausted = True
+                    dbg["quota_exhausted"] = True
+                    dbg["calls"]["served_stale_cache"] += 1
+                    pt_payload = pt_data
+                    pt_err = "call budget exceeded — served from cache only"
+                    pt_status = None
+                else:
+                    dbg["calls"]["attempted"] += 1
+                    pt_payload, pt_err, pt_status, qex2 = _http_get_json(
+                        FMP_PT_CONS, {"symbol": t, "apikey": fmp_key}, args.debug, dbg
+                    )
                 if qex2:
                     quota_exhausted = True
                     dbg["quota_exhausted"] = True
