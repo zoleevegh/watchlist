@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 #
-# analyst_marketbeat.py — v0.6.0-fmp-lowcalls-grades-latest-news-2026-02-06
-# Ima (v0.5.4): bocsáss meg uram, ha túl sokat kérdeztem az FMP-t;
+# analyst_marketbeat.py — v0.5.5-fmp-grades-latest-budget1-fixqex2-2026-02-06
+# Ima (v0.5.5): bocsáss meg uram, ha túl sokat kérdeztem az FMP-t;
 # adj cache-t és józan kvótát, hogy ne legyen N/A a riportom.
 #
 # PURPOSE
@@ -479,6 +479,7 @@ def main() -> int:
         # --- PT CONSENSUS (cache-first; budget guarded) ---
 
         pt_data, fresh2 = _cache_get(cache, t, "pt_consensus", now, ttl)
+        qex2 = False
         if fresh2:
             dbg["calls"]["skipped_fresh_cache"] += 1
             cache_hits += 1
