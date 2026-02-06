@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 #
-# analyst_marketbeat.py — v0.6.0-fmp-grades-eventcache-2026-02-06
+# analyst_marketbeat.py — v0.6.1-fmp+nasdaq-hu-nosource-2026-02-06
 # Ima (v0.5.6): bocsáss meg uram, ha túl sokat kérdeztem az FMP-t;
 # adj cache-t és józan kvótát, hogy ne legyen N/A a riportom.
 #
@@ -408,7 +408,7 @@ def _format_md(events_by_ticker: Dict[str, Dict[str, Any]], days: int, debug: bo
                 action = r.get("action") or "n/a"
                 firm = r.get("grading_company") or "n/a"
                 date = r.get("date") or "n/a"
-                lines.append(f"- {date} — {firm} — {action} | Ajánlás: {prev_g} → {new_g} | Forrás: FMP /stable/grades")
+                lines.append(f"- {date} — {firm} — {_hu_action(action)} | Ajánlás: {prev_g} → {new_g}")
                 any_rows += 1
         else:
             if debug:
@@ -427,7 +427,7 @@ def _format_md(events_by_ticker: Dict[str, Dict[str, Any]], days: int, debug: bo
             extra = ""
             if has_pt_delta and pt.get("prev_consensus") is not None and pt.get("consensus") is not None:
                 extra = f" | Δ PT: {pt['prev_consensus']:.2f} → {pt['consensus']:.2f}"
-            lines.append("- Célár-szint: " + ", ".join(parts) + extra + " | Forrás: FMP /stable/price-target-consensus")
+            lines.append("- Célár-szint: " + ", ".join(parts) + extra + " |  FMP /stable/price-target-consensus")
 
         lines.append("")
 
@@ -437,6 +437,95 @@ def _format_md(events_by_ticker: Dict[str, Dict[str, Any]], days: int, debug: bo
 
     return "\n".join(lines).rstrip() + "\n"
 
+
+
+# --- NASDAQ secondary source (limited use; optional) ---
+NASDAQ_CACHE_FILE = "reports/nasdaq_events.json"
+NASDAQ_USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"
+
+def _nasdaq_headers() -> Dict[str, str]:
+    return {
+        "User-Agent": NASDAQ_USER_AGENT,
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Origin": "https://www.nasdaq.com",
+        "Referer": "https://www.nasdaq.com/",
+        "Connection": "keep-alive",
+    }
+
+def _http_get_json_nasdaq(url: str, debug: bool, dbg: Dict[str, Any]) -> Tuple[Optional[Any], Optional[str], Optional[int]]:
+    try:
+        r = requests.get(url, headers=_nasdaq_headers(), timeout=HTTP_TIMEOUT)
+        status = r.status_code
+        if debug:
+            dbg.get("http_samples", []).append({"url": url, "status": status, "src": "nasdaq"})
+        if status != 200:
+            return None, f"HTTP {status}", status
+        return r.json(), None, status
+    except Exception as e:
+        return None, str(e), None
+
+def _parse_nasdaq_events(payload: Any) -> List[Dict[str, Any]]:
+    # Nasdaq payload structure varies; we try common paths that contain rows with date + action + firm
+    out: List[Dict[str, Any]] = []
+    if not payload:
+        return out
+
+    def walk(x: Any):
+        if isinstance(x, dict):
+            # common: {"data": {"rows":[...]}}
+            for k,v in x.items():
+                if k in ("rows","data","table","historical","history","items","recommendations","ratings"):
+                    walk(v)
+                else:
+                    walk(v)
+        elif isinstance(x, list):
+            # list of dict rows
+            for it in x:
+                if isinstance(it, dict):
+                    # look for date-ish
+                    dt = it.get("date") or it.get("asOfDate") or it.get("reportDate") or it.get("publicationDate")
+                    firm = it.get("brokerage") or it.get("broker") or it.get("firm") or it.get("analystFirm") or it.get("company") or it.get("source")
+                    action = it.get("action") or it.get("ratingAction") or it.get("type") or it.get("headline") or it.get("recommendation") or "rating"
+                    frm = it.get("from") or it.get("fromRating") or it.get("previousRating") or it.get("oldRating") or ""
+                    to = it.get("to") or it.get("toRating") or it.get("newRating") or it.get("rating") or ""
+                    if dt and (firm or action):
+                        d2 = _parse_date_yyyy_mm_dd(dt) or _parse_date_any(dt)
+                        if d2:
+                            out.append({
+                                "date": d2,
+                                "firm": str(firm) if firm else "Nasdaq",
+                                "action": str(action),
+                                "from_grade": str(frm) if frm is not None else "",
+                                "to_grade": str(to) if to is not None else "",
+                            })
+                else:
+                    walk(it)
+        # else ignore
+
+    walk(payload)
+    return out
+
+def _nasdaq_window_events_for_ticker(sym: str, days: int, now: datetime, debug: bool, dbg: Dict[str, Any]) -> List[Dict[str, Any]]:
+    # We call the ratings endpoint; it often includes recent actions.
+    url = f"https://api.nasdaq.com/api/analyst/{sym}/ratings"
+    payload, err, status = _http_get_json_nasdaq(url, debug, dbg)
+    if err is not None or payload is None:
+        return []
+    evs = _parse_nasdaq_events(payload)
+    # filter window
+    cutoff = (now - timedelta(days=max(1, days))).date()
+    out = []
+    for e in evs:
+        try:
+            d = datetime.strptime(e["date"], "%Y-%m-%d").date()
+        except Exception:
+            continue
+        if d >= cutoff and d <= now.date():
+            e["ticker"] = sym
+            out.append(e)
+    out.sort(key=lambda x: x.get("date",""), reverse=True)
+    return out
 
 def main() -> int:
     ap = argparse.ArgumentParser()
@@ -479,7 +568,7 @@ def main() -> int:
 
 
     dbg: Dict[str, Any] = {
-        "version": "v0.6.0-fmp-grades-eventcache-2026-02-06",
+        "version": "v0.6.1-fmp+nasdaq-hu-nosource-2026-02-06",
         "ts_utc": now.isoformat(),
         "days": args.days,
         "tickers": len(tickers),
@@ -575,6 +664,21 @@ def main() -> int:
     for sym in list(grades_by_symbol.keys()):
         grades_by_symbol[sym].sort(key=lambda e: e.date, reverse=True)
     
+
+
+    # --- NASDAQ secondary (limited): fetch recent actions for tickers that already have FMP grade events in window ---
+    nasdaq_events_by_symbol: Dict[str, List[Dict[str, Any]]] = {}
+    try:
+        nasdaq_max = int(os.getenv("NASDAQ_MAX_TICKERS", "30"))
+    except Exception:
+        nasdaq_max = 30
+    subset = [s for s in tickers if grades_by_symbol.get(s)]
+    subset = subset[:max(0, nasdaq_max)]
+    for sym in subset:
+        evs = _nasdaq_window_events_for_ticker(sym, args.days, now, args.debug, dbg)
+        if evs:
+            nasdaq_events_by_symbol[sym] = evs
+    dbg["nasdaq"] = {"enabled": True, "tickers_queried": len(subset), "tickers_with_events": len(nasdaq_events_by_symbol)}
     # Counters for status line
     grades_ok = grades_fail = 0
     pt_ok = pt_fail = 0
@@ -586,6 +690,18 @@ def main() -> int:
         # --- GRADES (global feed; 0 per-ticker calls) ---
         grade_events = grades_by_symbol.get(t, [])
         per["rows"] = [ev.__dict__ for ev in grade_events]
+        # NASDAQ secondary events (if any)
+        if "nasdaq_events_by_symbol" in locals():
+            for e in nasdaq_events_by_symbol.get(t, []):
+                per["rows"].append({
+                    "date": e.get("date",""),
+                    "firm": e.get("firm","Nasdaq"),
+                    "action": e.get("action",""),
+                    "from_grade": e.get("from_grade",""),
+                    "to_grade": e.get("to_grade",""),
+                })
+        # sort combined rows
+        per["rows"].sort(key=lambda r: (r.get("date","")), reverse=True)
 
         if per["rows"]:
             grades_ok += 1
