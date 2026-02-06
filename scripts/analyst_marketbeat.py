@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 #
-# analyst_marketbeat.py — v0.5.6-fmp-grades-latest-budget1-fixqex2-2026-02-06
+# analyst_marketbeat.py — v0.6.0-fmp-grades-eventcache-2026-02-06
 # Ima (v0.5.6): bocsáss meg uram, ha túl sokat kérdeztem az FMP-t;
 # adj cache-t és józan kvótát, hogy ne legyen N/A a riportom.
 #
@@ -65,6 +65,7 @@ DEFAULT_OUT_MD = "reports/analyst_last2d.md"
 DEFAULT_OUT_JSON = "reports/analyst_last2d.json"
 
 CACHE_FILE = "reports/fmp_cache.json"          # cache-first store (grades + pt-consensus)
+GRADES_EVENTS_FILE = "reports/fmp_grades_events.json"  # persistent event cache for grades-latest-news (dedup + first/last seen)
 PT_CACHE_FILE = "reports/fmp_pt_cache.json"    # separate PT cache for delta detection (kept)
 DEBUG_JSON = "reports/fmp_debug.json"
 
@@ -115,6 +116,92 @@ def _save_json(path: str, obj: Any) -> None:
     os.replace(tmp, path)
 
 
+
+def _grade_event_key(ev: GradeEvent) -> str:
+    # Stable dedup key for grades events.
+    return "|".join([
+        ev.symbol.upper(),
+        ev.date[:10],
+        (ev.grading_company or "n/a").strip().lower(),
+        (ev.action or "n/a").strip().lower(),
+        (ev.previous_grade or "").strip().lower(),
+        (ev.new_grade or "").strip().lower(),
+    ])
+
+
+def _load_grades_events_cache(path: str) -> Dict[str, Any]:
+    obj = _load_json(path)
+    if not isinstance(obj, dict):
+        return {"meta": {}, "events": {}}
+    if "events" not in obj or not isinstance(obj.get("events"), dict):
+        obj["events"] = {}
+    if "meta" not in obj or not isinstance(obj.get("meta"), dict):
+        obj["meta"] = {}
+    return obj
+
+
+def _prune_grades_events_cache(cache_obj: Dict[str, Any], now_utc: datetime, keep_days: int = 30) -> None:
+    # Remove events older than keep_days to avoid unbounded growth.
+    cutoff = now_utc.date() - timedelta(days=max(7, keep_days))
+    evs = cache_obj.get("events", {})
+    if not isinstance(evs, dict):
+        return
+    to_del = []
+    for k, v in evs.items():
+        try:
+            d = datetime.strptime(str(v.get("date", ""))[:10], "%Y-%m-%d").date()
+        except Exception:
+            continue
+        if d < cutoff:
+            to_del.append(k)
+    for k in to_del:
+        evs.pop(k, None)
+
+
+def _merge_grades_events_cache(cache_obj: Dict[str, Any], new_events: List[GradeEvent], now_utc: datetime) -> None:
+    evs = cache_obj.setdefault("events", {})
+    meta = cache_obj.setdefault("meta", {})
+    if "created_at_utc" not in meta:
+        meta["created_at_utc"] = now_utc.isoformat()
+    meta["updated_at_utc"] = now_utc.isoformat()
+    for ev in new_events:
+        key = _grade_event_key(ev)
+        rec = evs.get(key)
+        if not isinstance(rec, dict):
+            rec = {
+                "symbol": ev.symbol.upper(),
+                "date": ev.date[:10],
+                "grading_company": ev.grading_company,
+                "action": ev.action,
+                "previous_grade": ev.previous_grade,
+                "new_grade": ev.new_grade,
+                "first_seen_utc": now_utc.isoformat(),
+            }
+        rec["last_seen_utc"] = now_utc.isoformat()
+        evs[key] = rec
+    _prune_grades_events_cache(cache_obj, now_utc, keep_days=30)
+
+
+def _events_from_grades_cache(cache_obj: Dict[str, Any]) -> List[GradeEvent]:
+    out: List[GradeEvent] = []
+    evs = cache_obj.get("events", {})
+    if not isinstance(evs, dict):
+        return out
+    for rec in evs.values():
+        try:
+            out.append(
+                GradeEvent(
+                    symbol=str(rec.get("symbol", "")).strip().upper(),
+                    date=str(rec.get("date", "")).strip()[:10],
+                    grading_company=str(rec.get("grading_company", "n/a")),
+                    action=str(rec.get("action", "n/a")),
+                    previous_grade=(str(rec.get("previous_grade")).strip() if rec.get("previous_grade") is not None else None),
+                    new_grade=(str(rec.get("new_grade")).strip() if rec.get("new_grade") is not None else None),
+                )
+            )
+        except Exception:
+            continue
+    return out
 def _load_master_tickers(master_csv: str) -> List[str]:
     tickers: List[str] = []
     with open(master_csv, "r", encoding="utf-8", errors="ignore", newline="") as f:
@@ -168,8 +255,12 @@ def _parse_grade_events(payload: Any) -> List[GradeEvent]:
 
 
 def _filter_window(events: List[GradeEvent], days: int, now_utc: datetime) -> List[GradeEvent]:
+    # Calendar-day rolling window, but make Monday include prior Friday when days is small.
+    # Example: days=2 on Monday would otherwise miss Friday; bump to 3.
     if days <= 0:
         days = 1
+    if now_utc.weekday() == 0 and days < 3:  # Monday
+        days = 3
     start_date = (now_utc.date() - timedelta(days=days - 1))
     out: List[GradeEvent] = []
     for ev in events:
@@ -384,9 +475,11 @@ def main() -> int:
     pt_cache = _load_json(PT_CACHE_FILE)
     if not isinstance(pt_cache, dict):
         pt_cache = {}
+    grades_events_cache = _load_grades_events_cache(GRADES_EVENTS_FILE)
+
 
     dbg: Dict[str, Any] = {
-        "version": "v0.5.4-fmp-stable-cachefirst-exit0-2026-02-05",
+        "version": "v0.6.0-fmp-grades-eventcache-2026-02-06",
         "ts_utc": now.isoformat(),
         "days": args.days,
         "tickers": len(tickers),
@@ -458,16 +551,30 @@ def main() -> int:
                 dbg["calls"]["api_err"] += 1
                 dbg["grades_feed"] = {"mode": "api_err", "status": feed_status, "err": feed_err}
             _cache_set(cache, global_key, "grades_latest_news", now, feed_status, feed_err, feed_payload)
-
+    # Parse new events from feed and merge into persistent event cache, then serve window from the merged cache.
+    new_events_all: List[GradeEvent] = []
     if feed_payload is not None and not _is_quota_limit_message(feed_payload):
-        events = _filter_window(_parse_grade_events(feed_payload), args.days, now)
-        for ev in events:
+        new_events_all = _parse_grade_events(feed_payload)
+        _merge_grades_events_cache(grades_events_cache, new_events_all, now)
+        try:
+            Path(GRADES_EVENTS_FILE).parent.mkdir(parents=True, exist_ok=True)
+            _save_json(GRADES_EVENTS_FILE, grades_events_cache)
+        except Exception:
+            pass
+    
+    # Build grades_by_symbol from merged persistent cache (prevents "disappearing" events).
+    cached_events = _events_from_grades_cache(grades_events_cache)
+    window_events = _filter_window(cached_events, args.days, now)
+    
+    tickerset = set(tickers)
+    for ev in window_events:
+        if ev.symbol in tickerset:
             grades_by_symbol.setdefault(ev.symbol, []).append(ev)
-
+    
     # sort each list by date desc (string YYYY-MM-DD works)
     for sym in list(grades_by_symbol.keys()):
         grades_by_symbol[sym].sort(key=lambda e: e.date, reverse=True)
-
+    
     # Counters for status line
     grades_ok = grades_fail = 0
     pt_ok = pt_fail = 0
