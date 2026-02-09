@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 #
-# analyst_marketbeat.py — v0.6.2-fix-budget_exhausted-init-2026-02-09
-# Ima (v0.6.2): bocsáss meg uram, ha megint elszállt egy változó;
-# adj nekem default értéket minden ágba, hogy ne dőljön el a futás.
-# Ima (v0.5.6): bocsáss meg uram, ha túl sokat kérdeztem az FMP-t;
-# adj cache-t és józan kvótát, hogy ne legyen N/A a riportom.
+# analyst_marketbeat.py — v0.6.3-fmp+nasdaq-hu-nosource-2026-02-06
+# Ima (v0.6.3): bocsáss meg uram, hogy megint mellényúltam;
+# adj türelmet és tiszta logot, hogy csak az igazat írjam le.
 #
 # PURPOSE
 #   Analyst feed without MarketBeat (blocked) and without Nasdaq "event" dependency:
@@ -379,6 +377,34 @@ def _cache_set(cache: Dict[str, Any], ticker: str, key: str, now: datetime, stat
     }
 
 
+
+def _hu_action(action: Optional[str]) -> str:
+    """Best-effort HU translation for FMP 'action' field."""
+    if not action:
+        return ""
+    a = str(action).strip().lower()
+    mapping = {
+        "upgrade": "felminősítés",
+        "downgrade": "leminősítés",
+        "initiate": "elemzés indítása",
+        "initiated": "elemzés indítása",
+        "initiation": "elemzés indítása",
+        "reiterate": "megerősítés",
+        "reiterated": "megerősítés",
+        "maintain": "megerősítés",
+        "maintained": "megerősítés",
+        "reaffirm": "megerősítés",
+        "reaffirmed": "megerősítés",
+        "resume": "követés újraindítása",
+        "resumed": "követés újraindítása",
+        "suspend": "követés felfüggesztése",
+        "suspended": "követés felfüggesztése",
+        "target raised": "célár emelés",
+        "target lowered": "célár csökkentés",
+        "price target raised": "célár emelés",
+        "price target lowered": "célár csökkentés",
+    }
+    return mapping.get(a, action)
 def _format_md(events_by_ticker: Dict[str, Dict[str, Any]], days: int, debug: bool, status_line: str) -> str:
     lines: List[str] = []
     lines.append(f"## Elemzői feed (FMP stable) — fel/leminősítések + célár-szint (utolsó {days} naptári nap)")
@@ -570,20 +596,19 @@ def main() -> int:
 
 
     dbg: Dict[str, Any] = {
-        "version": "v0.6.2-fix-budget_exhausted-init-2026-02-09",
+        "version": "v0.6.1-fmp+nasdaq-hu-nosource-2026-02-06",
         "ts_utc": now.isoformat(),
         "days": args.days,
         "tickers": len(tickers),
         "ttl_hours": ttl_hours,
         "quota_exhausted": False,
-        "budget_exhausted": False,
         "calls": {"attempted": 0, "skipped_fresh_cache": 0, "served_stale_cache": 0, "api_ok": 0, "api_err": 0},
         "http_samples": [],
         "by_ticker": {},
     }
+    budget_exhausted = False  # always defined (guards fallback branches)
 
     quota_exhausted = False
-    budget_exhausted = False
     events_by_ticker: Dict[str, Dict[str, Any]] = {}
     no_data: List[str] = []
 
