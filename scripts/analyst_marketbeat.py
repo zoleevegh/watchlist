@@ -436,8 +436,18 @@ def _format_md(events_by_ticker: Dict[str, Dict[str, Any]], days: int, debug: bo
                 action = r.get("action") or "n/a"
                 firm = r.get("grading_company") or "n/a"
                 date = r.get("date") or "n/a"
+
+                # --- TISZTA "VÁLTOZATLAN" SOR ---
+                prev_norm = str(prev_g).strip().lower()
+                new_norm  = str(new_g).strip().lower()
+                if prev_norm == new_norm and new_norm not in ("n/a", "na", "none", ""):
+                lines.append(f"- {date} — {firm} — Ajánlás változatlan: {new_g}")
+                else:
                 lines.append(f"- {date} — {firm} — {_hu_action(action)} | Ajánlás: {prev_g} → {new_g}")
+        # --- /TISZTA "VÁLTOZATLAN" SOR ---
+
                 any_rows += 1
+
         else:
             if debug:
                 lines.append("- _nincs grade esemény az ablakban_")
