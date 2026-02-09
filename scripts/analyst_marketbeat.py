@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 #
-# analyst_marketbeat.py — v0.6.1-fmp+nasdaq-hu-nosource-2026-02-06
+# analyst_marketbeat.py — v0.6.5-fmp-gradeslatest-limitfix-budgetexhausted-2026-02-09
 # Ima (v0.5.6): bocsáss meg uram, ha túl sokat kérdeztem az FMP-t;
 # adj cache-t és józan kvótát, hogy ne legyen N/A a riportom.
 #
@@ -735,7 +735,7 @@ def main() -> int:
                 pt_status = None
             else:
                 if dbg["calls"]["attempted"] >= max_calls:
-                    budget_exhausted = True
+                    quota_exhausted = True
                     dbg["budget_exhausted"] = True
                     dbg["calls"]["served_stale_cache"] += 1
                     pt_payload = pt_data
@@ -825,7 +825,7 @@ def main() -> int:
     # Explicit reason banners
     if quota_exhausted:
         status_bits.append(f"_⚠ FMP kvóta elfogyott (Limit Reach / 429) — a futás vége cache-ből lett kiszolgálva._")
-    elif budget_exhausted:
+    elif quota_exhausted:
         status_bits.append(f"_ℹ FMP hívás-keret elérve (FMP_MAX_CALLS={max_calls}) — a futás vége cache-ből lett kiszolgálva._")
     # Plan/parameter limitation (e.g. grades-latest-news limit>10 on free plan)
     gf = dbg.get('grades_feed') or {}
