@@ -405,13 +405,13 @@ def _format_md(events_by_ticker: Dict[str, Dict[str, Any]], days: int, debug: bo
             for r in rows:
                 prev_g = r.get("previous_grade") or "n/a"
                 new_g = r.get("new_grade") or "n/a"
-                action = r.get("action") or "n/a"
                 firm = r.get("grading_company") or "n/a"
                 date = r.get("date") or "n/a"
-                if prev_g == new_g:
-                    lines.append(f"- {date} — {firm} — {_hu_action(action)} | Ajánlás változatlan ({new_g})")
-                else:
-                    lines.append(f"- {date} — {firm} — {_hu_action(action)} | Ajánlás: {prev_g} → {new_g}")
+
+                # csak tiszta „ajánlás változatlan” sor
+                lines.append(
+                    f"- {date} — {firm} | Ajánlás változatlan ({new_g})"
+                )
                 any_rows += 1
         else:
             if debug:
