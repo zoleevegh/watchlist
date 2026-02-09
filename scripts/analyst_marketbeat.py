@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 #
-# analyst_marketbeat.py — v0.6.1-fmp+nasdaq-hu-nosource-2026-02-06
+# analyst_marketbeat.py — v0.6.2-fmp-stable-gradeslatest-ptcons-2026-02-09
 # Ima (v0.5.6): bocsáss meg uram, ha túl sokat kérdeztem az FMP-t;
 # adj cache-t és józan kvótát, hogy ne legyen N/A a riportom.
 #
@@ -568,7 +568,7 @@ def main() -> int:
 
 
     dbg: Dict[str, Any] = {
-        "version": "v0.6.1-fmp+nasdaq-hu-nosource-2026-02-06",
+        "version": "v0.6.2-fmp-stable-gradeslatest-ptcons-2026-02-09",
         "ts_utc": now.isoformat(),
         "days": args.days,
         "tickers": len(tickers),
@@ -584,20 +584,20 @@ def main() -> int:
     no_data: List[str] = []
 
 
-    max_calls = int(os.getenv("FMP_MAX_CALLS", "1"))
+    max_calls = int(os.getenv("FMP_MAX_CALLS", "2"))
     dbg["max_calls"] = max_calls
 
 
-    # Free-tier safety: grades-latest-news supports only small 'limit' on free plans.
-    # Keep default=10 and cap to 10 unless you explicitly override and your plan supports it.
+    # GRADES FEED PAGE SIZE (one global call)
+    # Increase this to reduce the chance we miss your tickers. Does NOT increase call count.
     try:
-        grades_limit = int(os.getenv("FMP_GRADES_LIMIT", "10"))
+        grades_limit = int(os.getenv("FMP_GRADES_LIMIT", "200").strip())
     except Exception:
-        grades_limit = 10
-    if grades_limit < 1:
-        grades_limit = 10
-    if grades_limit > 10:
-        grades_limit = 10
+        grades_limit = 200
+    if grades_limit < 10:
+        grades_limit = 200
+    if grades_limit > 500:
+        grades_limit = 500
     dbg["grades_limit"] = grades_limit
 
     # --- GLOBAL GRADES FEED (low-call mode) ---
@@ -669,10 +669,12 @@ def main() -> int:
     # --- NASDAQ secondary (limited): fetch recent actions for tickers that already have FMP grade events in window ---
     nasdaq_events_by_symbol: Dict[str, List[Dict[str, Any]]] = {}
     try:
-        nasdaq_max = int(os.getenv("NASDAQ_MAX_TICKERS", "30"))
+        nasdaq_max = int(os.getenv("NASDAQ_MAX_TICKERS", "0"))
     except Exception:
         nasdaq_max = 30
     subset = [s for s in tickers if grades_by_symbol.get(s)]
+    if nasdaq_max <= 0:
+        subset = []
     subset = subset[:max(0, nasdaq_max)]
     for sym in subset:
         evs = _nasdaq_window_events_for_ticker(sym, args.days, now, args.debug, dbg)
