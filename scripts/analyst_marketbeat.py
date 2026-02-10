@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-analyst_benzinga.py — v0.1.0-benzinga-scrape-2026-02-10
+analyst_marketbeat.py — v0.1.1-benzinga-scrape-2026-02-10
 
 PURPOSE
 - Benzinga analyst ratings "per ticker" scraper (public HTML) with cache.
@@ -515,3 +515,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
