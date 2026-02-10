@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 #
-# analyst_marketbeat.py — v0.6.1-fmp+nasdaq-hu-nosource-2026-02-06
+# analyst_marketbeat.py — v0.6.8-fmp-stable-hu-terminology-2026-02-10
 # Ima (v0.5.6): bocsáss meg uram, ha túl sokat kérdeztem az FMP-t;
 # adj cache-t és józan kvótát, hogy ne legyen N/A a riportom.
 #
 # PURPOSE
 #   Analyst feed without MarketBeat (blocked) and without Nasdaq "event" dependency:
-#   - Rating actions (upgrade/downgrade/maintain) via FMP STABLE: /stable/grades?symbol=...
-#   - Price target levels via FMP STABLE: /stable/price-target-consensus?symbol=...
+#   - Elemzői ajánlások / minősítések (fel/leminősítés, megerősítés) FMP STABLE: /stable/grades-latest-news (globális feed, helyben ticker-szűrés)
+#   - Célár-szintek FMP STABLE: /stable/price-target-consensus?symbol=...
 #
 # KEY FEATURE (per your choice "2" = cache-first)
 #   - Cache-first + TTL to avoid burning FMP free-tier quota.
@@ -53,26 +53,6 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
-
-def _hu_action(action: str) -> str:
-    """Map FMP 'action' field to a short Hungarian label."""
-    if not action:
-        return "n/a"
-    a = str(action).strip().lower()
-    mapping = {
-        "upgrade": "felminősítés",
-        "downgrade": "leminősítés",
-        "initiated": "új lefedés",
-        "initiation": "új lefedés",
-        "reiterated": "megerősítés",
-        "reiterate": "megerősítés",
-        "maintained": "megerősítés",
-        "resumed": "újraindított lefedés",
-        "started": "új lefedés",
-        "raised": "céláremelés",
-        "lowered": "célárcsökkentés",
-    }
-    return mapping.get(a, a)
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 TIMEOUT = 25
 
@@ -397,9 +377,58 @@ def _cache_set(cache: Dict[str, Any], ticker: str, key: str, now: datetime, stat
     }
 
 
+
+def _hu_action(action: str) -> str:
+    """Map FMP action strings to Hungarian."""
+    a = (action or "").strip().lower()
+    mapping = {
+        "upgrade": "felminősítés",
+        "upgraded": "felminősítés",
+        "downgrade": "leminősítés",
+        "downgraded": "leminősítés",
+        "initiate": "elemzés indítása",
+        "initiated": "elemzés indítása",
+        "reiterate": "megerősítés",
+        "reiterated": "megerősítés",
+        "maintain": "megerősítés",
+        "maintained": "megerősítés",
+        "hold": "tartás",
+        "target raised": "célár emelés",
+        "target lowered": "célár csökkentés",
+        "raise": "emelés",
+        "lower": "csökkentés",
+        "": "n/a",
+        "n/a": "n/a",
+    }
+    return mapping.get(a, action or "n/a")
+
+def _hu_grade(grade: str) -> str:
+    """Map common rating words to Hungarian."""
+    g = (grade or "").strip()
+    gl = g.lower()
+    mapping = {
+        "buy": "Vétel",
+        "strong buy": "Erős vétel",
+        "overweight": "Felülsúlyozás",
+        "outperform": "Felülteljesítés",
+        "market outperform": "Felülteljesítés",
+        "positive": "Pozitív",
+        "hold": "Tartás",
+        "neutral": "Semleges",
+        "market perform": "Piaci teljesítmény",
+        "equal weight": "Súlyozás tartása",
+        "underweight": "Alulsúlyozás",
+        "underperform": "Alulteljesítés",
+        "reduce": "Csökkentés",
+        "sell": "Eladás",
+        "strong sell": "Erős eladás",
+        "": "n/a",
+        "n/a": "n/a",
+    }
+    return mapping.get(gl, g or "n/a")
 def _format_md(events_by_ticker: Dict[str, Dict[str, Any]], days: int, debug: bool, status_line: str) -> str:
     lines: List[str] = []
-    lines.append(f"## Elemzői feed (FMP stabil) — fel/leminősítések + célár-szint (utolsó {days} naptári nap)")
+    lines.append(f"## Elemzői feed (FMP stable) — fel/leminősítések + célár-szint (utolsó {days} naptári nap)")
     lines.append("")
     lines.append(status_line)
     lines.append("")
@@ -428,10 +457,13 @@ def _format_md(events_by_ticker: Dict[str, Dict[str, Any]], days: int, debug: bo
                 action = r.get("action") or "n/a"
                 firm = r.get("grading_company") or "n/a"
                 date = r.get("date") or "n/a"
-                if prev_g == new_g and new_g != "n/a":
-                    lines.append(f"- {date} — {firm} — {_hu_action(action)} | Ajánlás változatlan ({new_g})")
+                prev_hu = _hu_grade(prev_g)
+                new_hu = _hu_grade(new_g)
+                act_hu = _hu_action(action)
+                if (prev_g or "").strip().lower() == (new_g or "").strip().lower():
+                    lines.append(f"- {date} — {firm} — {act_hu} | Ajánlás változatlan ({new_hu})")
                 else:
-                    lines.append(f"- {date} — {firm} — {_hu_action(action)} | Ajánlás: {prev_g} → {new_g}")
+                    lines.append(f"- {date} — {firm} — {act_hu} | Ajánlás: {prev_hu} → {new_hu}")
                 any_rows += 1
         else:
             if debug:
@@ -439,18 +471,16 @@ def _format_md(events_by_ticker: Dict[str, Dict[str, Any]], days: int, debug: bo
 
         if pt and has_pt_numbers:
             parts = []
-            if pt.get("consensus") is not None:
-                parts.append(f"konszenzus: {pt['consensus']:.2f}")
             if pt.get("high") is not None:
                 parts.append(f"magas: {pt['high']:.2f}")
             if pt.get("low") is not None:
                 parts.append(f"alacsony: {pt['low']:.2f}")
             if pt.get("median") is not None:
-                parts.append(f"medián: {pt['median']:.2f}")
+                parts.append(f"konszenzus: {pt['median']:.2f}")
             extra = ""
-            if has_pt_delta and pt.get("prev_consensus") is not None and pt.get("consensus") is not None:
-                extra = f" | Δ PT: {pt['prev_consensus']:.2f} → {pt['consensus']:.2f}"
-            lines.append("- Célár-szint: " + ", ".join(parts) + extra + " |  FMP /stable/price-target-consensus")
+            if has_pt_delta and pt.get("prev_median") is not None and pt.get("median") is not None:
+                extra = f" | Δ célár: {pt['prev_median']:.2f} → {pt['median']:.2f}"
+            lines.append("- Célárak: " + ", ".join(parts) + extra)
 
         lines.append("")
 
@@ -564,7 +594,7 @@ def main() -> int:
         msg = "FMP_API_KEY missing"
         sys.stderr.write(msg + "\n")
         Path(args.out_md).parent.mkdir(parents=True, exist_ok=True)
-        Path(args.out_md).write_text("## Elemzői feed (FMP stabil)\n\n_FMP_API_KEY hiányzik._\n", encoding="utf-8")
+        Path(args.out_md).write_text("## Elemzői feed (FMP stable)\n\n_FMP_API_KEY hiányzik._\n", encoding="utf-8")
         Path(args.out_json).parent.mkdir(parents=True, exist_ok=True)
         _save_json(args.out_json, {"ok": False, "error": msg, "tickers": 0, "events": 0})
         return 3
@@ -608,7 +638,6 @@ def main() -> int:
 
 
     max_calls = int(os.getenv("FMP_MAX_CALLS", "1"))
-    budget_exhausted = False
     dbg["max_calls"] = max_calls
 
 
@@ -842,7 +871,7 @@ def main() -> int:
 
     # Build status line
     status_bits = []
-    status_bits.append(f"_forrás státusz: minősítések:OK, célár-konszenzus: OK (FMP stabil)_")
+    status_bits.append(f"_forrás státusz: grades:OK, pt_consensus: OK (FMP stable)_")
     # Explicit reason banners
     if quota_exhausted:
         status_bits.append(f"_⚠ FMP kvóta elfogyott (Limit Reach / 429) — a futás vége cache-ből lett kiszolgálva._")
@@ -852,7 +881,7 @@ def main() -> int:
     gf = dbg.get('grades_feed') or {}
     if gf.get('status') == 402:
         status_bits.append("_⚠ FMP hozzáférés korlátozott (HTTP 402) — az endpoint paraméter/plan limit miatt nem ad adatot._")
-    status_bits.append(f"_cache: TTL={ttl_hours}h, találat={cache_hits}, lejárt={cache_stale}_")
+    status_bits.append(f"_cache: TTL={ttl_hours}h, hit={cache_hits}, stale={cache_stale}_")
     status_line = "\n".join(status_bits)
 
     md = _format_md(events_by_ticker, args.days, args.debug, status_line)
