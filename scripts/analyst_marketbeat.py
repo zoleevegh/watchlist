@@ -1,701 +1,515 @@
 #!/usr/bin/env python3
-# analyst_marketbeat.py — v0.3.15-marketbeat-challengefix3-hu-2026-01-23
-# MarketBeat FREE analyst feed collector (CI-friendly).
-#
-# Ima (v0.3.15): bocsáss meg Uram, hogy megint bool-t hívtam függvényként.
-# Ima (v0.3.15): adj erőt, hogy egyetlen zárójelet se tegyek oda, ahová nem kell.
-# Changelog (v0.3.6):
-# - FIX: ratings pages have no explicit date column; previous logic dropped all rows.
-# - Parse tickers from ratings table (data-clean / stock URL) and treat event date as "run day (UTC)".
-# - Better empty-state messaging: "no fresh" only when source OK; otherwise "source blocked/unavailable" with HTTP codes.
-#
-# Changelog (v0.3.13):
-# - FIX: MarketBeat Cloudflare 'challenge' gyakran HTTP 200-zal jön; ezt detektáljuk és Jina proxy-val újrapróbáljuk.
-# - Ha a Jina is challenge-t ad, akkor korrekt 'blocked/challenge' státuszt írunk, nem félrevezető üres listát.
-#
-# Ima (2 sor):
-# Bocsáss meg Uram, mert balfék voltam, és 200-as challenget sikernek hittem.
-# Adj nekünk tiszta HTML-t, hogy a riport ne legyen N/A. Ámen.
-#
-# Verzió-szabály: bármely fájl módosításakor a verziószámot folytatólagosan kell növelni, kihagyás nélkül.
+# -*- coding: utf-8 -*-
+"""
+analyst_benzinga.py — v0.1.0-benzinga-scrape-2026-02-10
+
+PURPOSE
+- Benzinga analyst ratings "per ticker" scraper (public HTML) with cache.
+- Designed to be a drop-in replacement for the old MarketBeat analyst block generator in your PRICE ENGINE.
+
+WHAT IT DOES
+- Reads tickers from MASTER CSV (first column is assumed to include ticker symbols).
+- Fetches https://www.benzinga.com/quote/{TICKER}/analyst-ratings for each ticker (HTML).
+- Extracts the "Analyst Ratings" table rows (date, firm, action, rating change, price target change if present).
+- Filters rows to a rolling calendar window: today + previous (days-1) days (default: 4).
+- Writes:
+    - Markdown summary to --out-md
+    - JSON (optional) to --out-json
+- Uses a persistent cache file (default: reports/benzinga_events.json) to:
+    - avoid refetching within TTL
+    - retain recent events even if page rendering changes temporarily
+
+IMPORTANT LIMITATIONS
+- This is HTML scraping. If Benzinga changes markup, the parser may need an update.
+- Many quote pages are server-rendered enough to scrape; if a specific ticker returns "Loading..." only,
+  that ticker will be marked as "adat nem elérhető".
+
+CLI
+  --master <csv>
+  --days <int>             (default 4 = ma + előző 3 naptári nap)
+  --out-md <path>
+  --out-json <path>        (optional)
+  --cache <path>           (default reports/benzinga_events.json)
+  --cache-ttl-hours <int>  (default 24)
+  --sleep-ms <int>         (default 150) polite pacing
+  --debug                  (more verbose output to stderr)
+
+OUTPUT STYLE (HU)
+- Action and rating terminology is translated to Hungarian.
+- Only one “Ajánlás változatlan (…)” line is printed if prev==new, per your latest rule.
+- "Forrás:" is NOT printed.
+"""
 
 from __future__ import annotations
 
 import argparse
 import csv
-import datetime as dt
-import gzip
-import io
+import datetime as _dt
 import json
-import hashlib
-import random
 import re
-import html
+import sys
 import time
-import urllib.error
-import urllib.request
-from dataclasses import dataclass, asdict
-from http.cookiejar import CookieJar
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
+
+import requests
 
 
-VERSION = "v0.3.14-marketbeat-challengefix2-hu-2026-01-23"
-BASE = "https://www.marketbeat.com"
-
-# Magyar megnevezések a reporthoz
-ACTION_HU = {
-    "upgrade": "felminősítés",
-    "downgrade": "leminősítés",
-    "pt_change": "célár módosítás",
-}
-
-RATING_HU = {
-    "Strong Buy": "Erős vétel",
+# ----------------------------
+# HU terminology
+# ----------------------------
+_RATING_MAP = {
     "Buy": "Vétel",
-    "Outperform": "Felülteljesítés",
-    "Overweight": "Felülsúlyozás",
-    "Accumulate": "Gyűjtés",
-    "Positive": "Pozitív",
-    "Moderate Buy": "Mérsékelt vétel",
-    "Neutral": "Semleges",
+    "Strong Buy": "Erős vétel",
     "Hold": "Tartás",
-    "Equal-Weight": "Semleges súly",
-    "Market Perform": "Piaci teljesítés",
-    "In-Line": "Piaccal megegyező",
-    "Peer Perform": "Szektortársakkal azonos",
-    "Underperform": "Alulteljesítés",
-    "Underweight": "Alulsúlyozás",
-    "Reduce": "Csökkentés",
     "Sell": "Eladás",
     "Strong Sell": "Erős eladás",
+    "Neutral": "Semleges",
+    "Outperform": "Felülteljesítés",
+    "Underperform": "Alulteljesítés",
+    "Overweight": "Felülsúlyozás",
+    "Underweight": "Alulsúlyozás",
+    "Equal-Weight": "Semleges súly",
+    "Equal Weight": "Semleges súly",
+    "Market Perform": "Piaci teljesítés",
+    "Peer Perform": "Szektorszintű",
+    "Sector Perform": "Szektorszintű",
 }
 
-# MarketBeat "Today's" ratings lists (FREE).
-RATINGS_SOURCES: List[Tuple[str, str]] = [
-    ("upgrade", "/ratings/upgrades/"),
-    ("downgrade", "/ratings/downgrades/"),
-    ("pt_change", "/ratings/pricetargetchanges/"),
-]
+_ACTION_MAP = {
+    "Upgraded": "felminősítés",
+    "Downgraded": "leminősítés",
+    "Initiated": "kezdeményezés",
+    "Reiterated": "megerősítés",
+    "Maintains": "megerősítés",
+    "Reiterates": "megerősítés",
+    "Maintained": "megerősítés",
+    "Resumed": "újraindítás",
+    "Set": "célár megadás",
+    "Raised": "célár emelés",
+    "Lowered": "célár csökkentés",
+}
 
-UA = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/122.0.0.0 Safari/537.36"
-)
 
+def _hu_rating(s: str) -> str:
+    s = (s or "").strip()
+    return _RATING_MAP.get(s, s)
+
+
+def _hu_action(s: str) -> str:
+    s = (s or "").strip()
+    # Benzinga rows often have verbs like: "Reiterates", "Initiates", etc.
+    return _ACTION_MAP.get(s, s.lower() if s else "n/a")
+
+
+# ----------------------------
+# Models
+# ----------------------------
 @dataclass
-class AnalystEvent:
-    ticker: str
-    date: str  # ISO date YYYY-MM-DD (first seen date, cache-based)
+class Event:
+    symbol: str
+    date: str  # YYYY-MM-DD
     firm: str
     action: str
-    rating_from: Optional[str]
-    rating_to: Optional[str]
-    pt_from: Optional[float]
-    pt_to: Optional[float]
-    currency: str
-    source: str
-def _event_key(e: "AnalystEvent") -> str:
-    """
-    Stable key for de-dup across runs.
-    Note: action is already normalized HU text; rating strings are normalized too.
-    """
-    def f(x):
-        if x is None:
-            return ""
-        if isinstance(x, float):
-            return f"{x:.4f}"
-        return str(x).strip()
-
-    raw = "|".join([
-        e.ticker.upper().strip(),
-        f(e.firm),
-        f(e.action),
-        f(e.rating_from),
-        f(e.rating_to),
-        f(e.pt_from),
-        f(e.pt_to),
-    ])
-    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+    prev_rating: str
+    new_rating: str
+    pt_change: str  # e.g. "$130 → $160" or "n/a"
+    raw: Dict[str, Any]
 
 
-def load_seen_cache(path: Path) -> Dict[str, str]:
-    """
-    Returns mapping: event_key -> first_seen_date (YYYY-MM-DD).
-    """
-    try:
-        if path.exists():
-            obj = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(obj, dict):
-                # keep only sane ISO dates
-                out: Dict[str, str] = {}
-                for k, v in obj.items():
-                    if isinstance(k, str) and isinstance(v, str) and re.match(r"^\d{4}-\d{2}-\d{2}$", v):
-                        out[k] = v
-                return out
-    except Exception:
-        pass
-    return {}
+# ----------------------------
+# Helpers
+# ----------------------------
+def _today_utc() -> _dt.date:
+    return _dt.datetime.utcnow().date()
 
 
-def save_seen_cache(path: Path, cache: Dict[str, str]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(cache, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-
-
-def apply_seen_dates_and_filter(
-    events: List["AnalystEvent"],
-    days: int,
-    cache: Dict[str, str],
-    today_iso: str,
-) -> List["AnalystEvent"]:
-    """
-    - Assigns event.date from cache (first seen), otherwise today and stores into cache.
-    - Filters events to last N calendar days by first_seen date (inclusive).
-    """
-    if days < 1:
-        return []
-
-    today = dt.date.fromisoformat(today_iso)
-    out: List[AnalystEvent] = []
-    for e in events:
-        k = _event_key(e)
-        first = cache.get(k)
-        if not first:
-            cache[k] = today_iso
-            first = today_iso
-        e.date = first
-
-        try:
-            d = dt.date.fromisoformat(first)
-        except Exception:
-            d = today
-        delta = (today - d).days
-        if 0 <= delta <= (days - 1):
-            out.append(e)
-
-    return out
-
-rce_url: str
-
-
-def _log(msg: str) -> None:
-    now = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{now} UTC] {msg}", flush=True)
-
-
-def _make_opener() -> urllib.request.OpenerDirector:
-    cj = CookieJar()
-    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))
-    return opener
-
-
-def _decode_body(resp: urllib.response.addinfourl, raw: bytes) -> str:
-    enc = resp.headers.get("Content-Encoding", "").lower()
-    if "gzip" in enc:
-        try:
-            raw = gzip.decompress(raw)
-        except Exception:
-            # sometimes servers lie; best-effort
-            pass
-    # marketbeat is utf-8
-    return raw.decode("utf-8", errors="replace")
-
-
-def _is_challenge_page(html_text: str) -> bool:
-    """Detect Cloudflare / bot protection pages that may still return HTTP 200."""
-    if not html_text:
-        return False
-    h = html_text.lower()
-    # Common Cloudflare / bot-defense markers
-    markers = [
-        # Strong bot-defense markers (avoid generic 'captcha' which appears on normal pages as reCAPTCHA widgets)
-        "cf-challenge", "cloudflare", "attention required", "checking your browser",
-        "/cdn-cgi/challenge", "/cdn-cgi/", "verify you are human",
-        "just a moment", "browser verification", "cf-turnstile", "cf_chl_",
-    ]
-    return any(x in h for x in markers)
-
-
-
-def _jina_url(url: str) -> str:
-    # r.jina.ai can proxy-render HTML in CI environments.
-    # Format: https://r.jina.ai/http(s)://example.com/path
-    if url.startswith("https://"):
-        return "https://r.jina.ai/https://" + url[len("https://") :]
-    if url.startswith("http://"):
-        return "https://r.jina.ai/http://" + url[len("http://") :]
-    return "https://r.jina.ai/https://" + url
-
-
-def _http_get(
-    opener: urllib.request.OpenerDirector,
-    url: str,
-    timeout: int,
-    debug_dir: Optional[Path],
-    tag: str,
-    *,
-    allow_jina_fallback: bool = True,
-    max_tries: int = 3,
-) -> Tuple[int, str]:
-    headers = {
-        "User-Agent": UA,
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip",
-        "Connection": "close",
-        "DNT": "1",
-        "Upgrade-Insecure-Requests": "1",
-    }
-
-    last_status = 0
-    last_text = ""
-    for attempt in range(1, max_tries + 1):
-        try:
-            req = urllib.request.Request(url, headers=headers, method="GET")
-            with opener.open(req, timeout=timeout) as resp:
-                raw = resp.read()
-                status = getattr(resp, "status", 200)
-                text = _decode_body(resp, raw)
-                last_status, last_text = status, text
-        except urllib.error.HTTPError as e:
-            status = int(getattr(e, "code", 0) or 0)
-            try:
-                raw = e.read()
-            except Exception:
-                raw = b""
-            text = raw.decode("utf-8", errors="replace") if raw else ""
-            last_status, last_text = status, text
-        except Exception as e:
-            last_status, last_text = 0, f"EXC: {type(e).__name__}: {e}"
-
-        if debug_dir:
-            debug_dir.mkdir(parents=True, exist_ok=True)
-            (debug_dir / f"{tag}_direct_{attempt}.status.txt").write_text(str(last_status), encoding="utf-8")
-            (debug_dir / f"{tag}_direct_{attempt}.html").write_text(last_text, encoding="utf-8")
-
-        # Success (but MarketBeat may return Cloudflare 'challenge' with HTTP 200)
-        if 200 <= last_status < 300:
-            if allow_jina_fallback and _is_challenge_page(last_text):
-                # Try Jina-rendered proxy once to bypass 200-challenge.
-                jurl = _jina_url(url)
-                try:
-                    req = urllib.request.Request(
-                        jurl,
-                        headers={"User-Agent": UA, "Accept-Encoding": "gzip", "Accept": "text/html,*/*"},
-                        method="GET",
-                    )
-                    with opener.open(req, timeout=timeout) as resp:
-                        raw = resp.read()
-                        status = int(getattr(resp, "status", 200))
-                        text = _decode_body(resp, raw)
-                        if debug_dir:
-                            debug_dir.mkdir(parents=True, exist_ok=True)
-                            (debug_dir / f"{tag}_jina_on_200.status.txt").write_text(str(status), encoding="utf-8")
-                            (debug_dir / f"{tag}_jina_on_200.html").write_text(text, encoding="utf-8")
-                        if 200 <= status < 300 and not _is_challenge_page(text):
-                            return status, text
-                except Exception:
-                    pass
-            return last_status, last_text
-
-        # Retry on 403/429/5xx with backoff+jitter
-        if last_status in (403, 429) or last_status >= 500 or last_status == 0:
-            time.sleep(0.8 + random.random() * 0.9)
-            continue
-
-        # Other 4xx: don't spin
-        break
-
-    # Jina fallback if still blocked and enabled
-    if allow_jina_fallback and last_status in (0, 403, 429):
-        jurl = _jina_url(url)
-        try:
-            req = urllib.request.Request(jurl, headers={"User-Agent": UA, "Accept-Encoding": "gzip"}, method="GET")
-            with opener.open(req, timeout=timeout) as resp:
-                raw = resp.read()
-                status = getattr(resp, "status", 200)
-                text = _decode_body(resp, raw)
-                if debug_dir:
-                    (debug_dir / f"{tag}_jina.status.txt").write_text(str(status), encoding="utf-8")
-                    (debug_dir / f"{tag}_jina.html").write_text(text, encoding="utf-8")
-                return int(status), text
-        except Exception as e:
-            if debug_dir:
-                (debug_dir / f"{tag}_jina.status.txt").write_text("0", encoding="utf-8")
-                (debug_dir / f"{tag}_jina.html").write_text(f"EXC: {type(e).__name__}: {e}", encoding="utf-8")
-            return 0, f"EXC: {type(e).__name__}: {e}"
-
-    return last_status, last_text
-
-
-def _warmup_session(opener: urllib.request.OpenerDirector, timeout: int, debug_dir: Optional[Path]) -> int:
-    status, _ = _http_get(opener, BASE + "/", timeout, debug_dir, "warmup_home", allow_jina_fallback=False, max_tries=2)
-    return status
-
-
-# Back-compat alias (in case older main() calls warmup_session)
-def warmup_session(opener: urllib.request.OpenerDirector, timeout: int, debug_dir: Optional[Path]) -> int:
-    return _warmup_session(opener, timeout, debug_dir)
-
-
-def _clean_text(s: str) -> str:
-    return re.sub(r"\s+", " ", s).strip()
-
-
-
-def _clean_firm(s: str) -> str:
-    """Remove MarketBeat paywall boilerplate that sometimes gets injected into the firm cell."""
+def _parse_date_mmddyyyy(s: str) -> Optional[str]:
     s = (s or "").strip()
-    s = re.sub(r"\s+Subscribe to MarketBeat.*$", "", s, flags=re.IGNORECASE).strip()
-    s = re.sub(r"\s+Visit MarketBeat.*$", "", s, flags=re.IGNORECASE).strip()
-    s = re.sub(r"\s+\|\s*MarketBeat.*$", "", s, flags=re.IGNORECASE).strip()
-    s = re.sub(r"\s{2,}", " ", s).strip()
-    return s
-
-def _parse_money(s: str) -> Optional[float]:
-    s = s.strip()
-    m = re.search(r"(-?\d+(?:\.\d+)?)", s.replace(",", ""))
+    m = re.match(r"^(\d{2})/(\d{2})/(\d{4})$", s)
     if not m:
         return None
+    mm, dd, yyyy = map(int, m.groups())
     try:
-        return float(m.group(1))
-    except Exception:
+        d = _dt.date(yyyy, mm, dd)
+    except ValueError:
         return None
+    return d.isoformat()
 
 
-def _split_arrow(s: str) -> Tuple[Optional[str], Optional[str]]:
-    s = _clean_text(s)
-    if not s:
-        return None, None
-    # normalize separators
-    for sep in ["➝", "→", "»", "->"]:
-        if sep in s:
-            parts = [p.strip() for p in s.split(sep)]
-            if len(parts) >= 2:
-                return (parts[0] or None), (parts[1] or None)
-    return (s or None), None
+def _in_window(iso_date: str, start: _dt.date, end: _dt.date) -> bool:
+    try:
+        d = _dt.date.fromisoformat(iso_date)
+    except Exception:
+        return False
+    return start <= d <= end
 
 
-def _action_hu(kind: str, pt_from: float | None, pt_to: float | None) -> str:
-    """Adjon magyar, nem-hibrid eseménytípust."""
-    if kind == "upgrade":
-        return "Felminősítés"
-    if kind == "downgrade":
-        return "Leminősítés"
-    if kind == "pt_change":
-        if pt_from is not None and pt_to is not None:
-            if pt_to > pt_from:
-                return "Célár emelés"
-            if pt_to < pt_from:
-                return "Célár csökkentés"
-        return "Célár frissítés"
-    return "Elemzői frissítés"
-
-
-
-def _extract_events_from_ratings_page(
-    html_text: str,
-    kind: str,
-    master_set: set,
-    asof_date: str,
-    source: str,
-) -> List[AnalystEvent]:
-    # NOTE: We intentionally avoid external deps to keep GH Actions lean.
-    # MarketBeat ratings pages contain a sortable table with rows referencing tickers via:
-    # - data-clean="TICKER|Company"
-    # - or stock link /stocks/EXCHANGE/TICKER/
-    #
-    # We parse rows with regex + tag stripping. This is robust enough for our use.
-    if not html_text:
-        return []
-
-    # Locate rows (best-effort)
-    rows = re.findall(r"<tr[^>]*>(.*?)</tr>", html_text, flags=re.IGNORECASE | re.DOTALL)
-    if not rows:
-        return []
-
-    def _strip_tags(s: str) -> str:
-        s = re.sub(r"<script[\s\S]*?</script>", " ", s, flags=re.IGNORECASE)
-        s = re.sub(r"<style[\s\S]*?</style>", " ", s, flags=re.IGNORECASE)
-        s = re.sub(r"<[^>]+>", " ", s)
-        s = html.unescape(s)
-        s = re.sub(r"\s+", " ", s).strip()
-        return s
-
-    events: List[AnalystEvent] = []
-
-    for row_html in rows:
-        # Grab td cells
-        tds = re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", row_html, flags=re.IGNORECASE | re.DOTALL)
-        if len(tds) < 6:
-            continue
-
-        # Ticker: prefer data-clean attribute in the first cell
-        ticker = ""
-        m_dc = re.search(r'data-clean="(?P<t>[A-Z0-9\.\-]+)\|', tds[0], flags=re.IGNORECASE)
-        if m_dc:
-            ticker = m_dc.group("t").upper().strip()
-        if not ticker:
-            m2 = re.search(r"/stocks/[A-Z0-9]+/(?P<t>[A-Z0-9\.\-]+)/", row_html, flags=re.IGNORECASE)
-            if m2:
-                ticker = m2.group("t").upper().strip()
-
-        if not ticker or ticker not in master_set:
-            continue
-
-        # Column order observed:
-        # 0 Company, 1 Action, 2 Brokerage, 3 Analyst, 4 Current Price, 5 Price Target, 6 Rating, 7 Details (optional)
-        company_cell = _strip_tags(tds[0])
-        action_cell = _strip_tags(tds[1]) if len(tds) > 1 else ""
-        brokerage_cell = _strip_tags(tds[2]) if len(tds) > 2 else ""
-        firm = _clean_firm(_clean_text(brokerage_cell) or "—")
-
-        pt_cell = _strip_tags(tds[5]) if len(tds) >= 6 else ""
-        rating_cell = _strip_tags(tds[6]) if len(tds) >= 7 else ""
-
-        # Parse PT (may be single value or arrow)
-        pt_from = pt_to = None
-        if pt_cell:
-            pf, pt = _split_arrow(pt_cell)
-            if pt is None:
-                pt_to = _parse_money(pf or "")
-            else:
-                pt_from = _parse_money(pf or "")
-                pt_to = _parse_money(pt or "")
-
-        # Parse Rating (single or arrow)
-        rating_from = rating_to = None
-        if rating_cell:
-            rf, rt = _split_arrow(rating_cell)
-            if rt is None:
-                rating_to = rf
-            else:
-                rating_from, rating_to = rf, rt
-
-        # Source URL: prefer stock page if present
-        stock_url = ""
-        m_href = re.search(r'href="(?P<h>[^"]*/stocks/[^"]+)"', row_html, flags=re.IGNORECASE)
-        if m_href:
-            href = m_href.group("h")
-            if href.startswith("http"):
-                stock_url = href
-            else:
-                stock_url = BASE + href
-        src_url = stock_url or source
-
-        events.append(
-            AnalystEvent(
-                ticker=ticker,
-                date=asof_date,
-                firm=firm,
-                action=_action_hu(kind, pt_from, pt_to),
-                rating_from=rating_from,
-                rating_to=rating_to,
-                pt_from=pt_from,
-                pt_to=pt_to,
-                currency="USD",
-                source=src_url,
-            )
-        )
-
-    return events
-
-
-
-def fetch_events_from_ratings_pages(
-    master_tickers: List[str],
-    days: int,
-    timeout: int,
-    sleep_s: float,
-    debug_dir: Optional[Path],
-) -> Tuple[List[AnalystEvent], Dict[str, int]]:
-    # Note: MarketBeat "Today's" ratings pages do NOT expose per-row timestamps in the table.
-    # We treat the event date as "run day UTC" and rely on the source being a real-time list.
-    opener = _make_opener()
-
-    statuses: Dict[str, int] = {}
-    warm = _warmup_session(opener, timeout, debug_dir)
-    statuses["warmup_home"] = warm
-    _log(f"WARMUP home: HTTP {warm}")
-
-    master_set = {t.upper() for t in master_tickers}
-    asof_date = dt.datetime.utcnow().date().isoformat()
-
-    out: List[AnalystEvent] = []
-    seen: set = set()
-
-    for kind, path in RATINGS_SOURCES:
-        url = BASE + path
-        status, page_html = _http_get(opener, url, timeout, debug_dir, f"ratings_{kind}", allow_jina_fallback=True, max_tries=3)
-        statuses[f"ratings_{kind}"] = status
-        if status >= 400 or status == 0:
-            _log(f"RATINGS {kind}: HTTP {status} (skip)")
-            time.sleep(sleep_s)
-            continue
-        if _is_challenge_page(page_html):
-            _log(f"RATINGS {kind}: HTTP {status} (blocked/challenge) (skip)")
-            time.sleep(sleep_s)
-            continue
-
-        events = _extract_events_from_ratings_page(page_html, kind, master_set, asof_date, url)
-        for e in events:
-            k = (e.ticker, e.firm, e.action, e.rating_from, e.rating_to, e.pt_from, e.pt_to, e.source)
-            if k in seen:
-                continue
-            seen.add(k)
-            out.append(e)
-
-        time.sleep(sleep_s)
-
-    # days param is kept for label/compat; asof_date is always today UTC.
-    # If someone calls with days<1, return nothing.
-    if days < 1:
-        out = []
-
-    return out, statuses
-
-
-def read_master_tickers(master_csv: Path) -> List[str]:
-    # Read CSV and return unique tickers (best-effort on column name).
-    raw = master_csv.read_text(encoding="utf-8", errors="replace").splitlines()
-    reader = csv.DictReader(raw)
-    if not reader.fieldnames:
-        return []
-    # find likely ticker column
-    cols = [c.strip() for c in reader.fieldnames if c]
-    key = None
-    for cand in ["ticker", "symbol", "TICKER", "Symbol", "Ticker"]:
-        if cand in cols:
-            key = cand
-            break
-    if key is None:
-        # fallback: first column
-        key = cols[0]
+def _load_master_tickers(master_csv: Path) -> List[str]:
+    if not master_csv.exists():
+        raise FileNotFoundError(f"MASTER CSV not found: {master_csv}")
     tickers: List[str] = []
-    for row in reader:
-        t = (row.get(key) or "").strip().upper()
-        # allow "PKN.WA" etc but you later filter out elsewhere if needed
-        if t and re.fullmatch(r"[A-Z0-9\.\-]+", t):
-            tickers.append(t)
-    # uniq preserve order
-    seen=set()
-    out=[]
+    with master_csv.open("r", encoding="utf-8", newline="") as f:
+        reader = csv.reader(f)
+        for i, row in enumerate(reader):
+            if not row:
+                continue
+            t = (row[0] or "").strip()
+            if i == 0 and t.lower() in ("ticker", "symbol"):
+                continue
+            if not t:
+                continue
+            # Normalize: keep dots (e.g., BRK.B) as-is
+            tickers.append(t.upper())
+    # De-dup preserve order
+    seen = set()
+    out = []
     for t in tickers:
         if t not in seen:
-            seen.add(t); out.append(t)
+            seen.add(t)
+            out.append(t)
     return out
 
 
-def write_outputs(
-    out_md: Path,
-    out_json: Optional[Path],
-    events: List[AnalystEvent],
-    days: int,
-    source_status: Dict[str, int],
-) -> None:
-    now = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-    lines: List[str] = []
-    lines.append(f"# Elemzői feed (fel/leminősítés + célár) — utolsó {days} naptári nap (első észlelés alapján)")
-    lines.append("")
-    lines.append(f"Verzió: {VERSION}")
-    lines.append(f"Generálva (UTC): {now}")
-    lines.append("")
+def _read_json(path: Path) -> Dict[str, Any]:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
 
-    any_fail = any((k.startswith("ratings_") and (v >= 400 or v == 0)) for k, v in source_status.items())
-    if not events:
-        if any_fail:
-            # show clear source error, not "no events"
-            parts=[]
-            for k,v in sorted(source_status.items()):
-                if k.startswith("ratings_"):
-                    parts.append(f"{k.replace('ratings_','')}={v}")
-            msg = ", ".join(parts) if parts else "unknown"
-            lines.append(f"_MarketBeat forrás nem elérhető / blokkolva, ezért nem tudtam friss analyst eseményeket lekérni._ (HTTP: {msg})")
-        else:
-            lines.append(f"_Nincs friss (≤{days} naptári nap) fel/leminősítés vagy célár-frissítés a forrásban, vagy a forrás challenge-t ad (HTTP 200)._\n_(Ha challenge-re gyanakszol, nézd meg a debug HTML-eket.)_")
-    else:
-        by: Dict[str, List[AnalystEvent]] = {}
-        for e in events:
-            by.setdefault(e.ticker, []).append(e)
-        for t in sorted(by.keys()):
-            lines.append(f"## {t}")
-            for e in sorted(by[t], key=lambda x: x.date, reverse=True):
-                parts = [f"- {e.date} — {e.firm} — {e.action}"]
-                if e.rating_from or e.rating_to:
-                    rf = RATING_HU.get(e.rating_from, e.rating_from) if e.rating_from else "—"
-                    rt = RATING_HU.get(e.rating_to, e.rating_to) if e.rating_to else "—"
-                    parts.append(f"Ajánlás: {rf} → {rt}")
-                if e.pt_from is not None or e.pt_to is not None:
-                    if e.pt_from is not None and e.pt_to is not None:
-                        parts.append(f"Célár: {e.currency} {e.pt_from:.2f} → {e.pt_to:.2f}")
-                    elif e.pt_to is not None:
-                        parts.append(f"Célár: {e.currency} {e.pt_to:.2f}")
-                parts.append(f"Forrás: {e.source}")
-                lines.append(" | ".join(parts))
-            lines.append("")
 
-    out_md.parent.mkdir(parents=True, exist_ok=True)
-    out_md.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+def _write_json(path: Path, obj: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    if out_json:
-        out_json.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "version": VERSION,
-            "generated_utc": now,
-            "days": days,
-            "count": len(events),
-            "source_status": source_status,
-            "events": [asdict(e) for e in events],
+
+def _requests_session() -> requests.Session:
+    s = requests.Session()
+    s.headers.update(
+        {
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9,hu;q=0.8",
         }
-        out_json.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    )
+    return s
+
+
+# ----------------------------
+# Benzinga HTML parsing
+# ----------------------------
+# We scrape rows from the "Analyst Ratings" table.
+# In practice, Benzinga quote pages usually contain a table with columns like:
+# Date | Action | Firm | Price Target Change | Previous/Current Rating
+#
+# The markup can shift; therefore we:
+# - first try to locate the table by the presence of multiple mm/dd/yyyy dates
+# - then parse each <tr> for cells
+#
+_DATE_RE = re.compile(r"\b\d{2}/\d{2}/\d{4}\b")
+_TAG_RE = re.compile(r"<[^>]+>")
+_WS_RE = re.compile(r"\s+")
+
+
+def _strip_html(s: str) -> str:
+    s = _TAG_RE.sub(" ", s)
+    s = s.replace("&nbsp;", " ").replace("&amp;", "&").replace("&#39;", "'").replace("&quot;", '"')
+    s = _WS_RE.sub(" ", s).strip()
+    return s
+
+
+def _extract_table_rows(html: str) -> List[List[str]]:
+    # Find all <tr>...</tr> blocks; then extract <td>...</td> / <th>...</th>
+    rows: List[List[str]] = []
+    for tr in re.findall(r"(?is)<tr[^>]*>(.*?)</tr>", html):
+        cells = re.findall(r"(?is)<t[dh][^>]*>(.*?)</t[dh]>", tr)
+        if not cells:
+            continue
+        txt_cells = [_strip_html(c) for c in cells]
+        # Heuristic: keep rows that contain a date
+        if any(_DATE_RE.search(c) for c in txt_cells):
+            rows.append(txt_cells)
+    return rows
+
+
+def _parse_events_from_rows(symbol: str, rows: List[List[str]], debug: bool = False) -> List[Event]:
+    events: List[Event] = []
+    for cells in rows:
+        # Try to locate a date in the row
+        date_cell = next((c for c in cells if _DATE_RE.search(c)), "")
+        m = _DATE_RE.search(date_cell)
+        if not m:
+            continue
+        iso = _parse_date_mmddyyyy(m.group(0))
+        if not iso:
+            continue
+
+        # Best-effort mapping from row text:
+        # Common patterns:
+        # [Date, Company, Current Price, Upside/Down, Analyst, Price Target Change, Previous/Current Rating]
+        # or on quote pages:
+        # [Date, Action, Analyst/Firm, Price Target Change, Previous / Current Rating]
+        #
+        joined = " | ".join(cells)
+
+        # Action verb
+        action = "n/a"
+        for k in _ACTION_MAP.keys():
+            if re.search(rf"\b{k}\b", joined, flags=re.IGNORECASE):
+                action = k
+                break
+
+        # Firm: attempt to find a known firm cell (often one of the middle cells with letters)
+        firm = "n/a"
+        firm_candidates = [c for c in cells if c and c.lower() not in ("date", "action", "company")]
+        # pick the longest alpha-ish candidate excluding price/ratings
+        scored: List[Tuple[int, str]] = []
+        for c in firm_candidates:
+            if "$" in c or "%" in c:
+                continue
+            if "→" in c or "->" in c:
+                continue
+            if re.search(r"\b(buy|hold|sell|outperform|overweight|neutral|underperform|underweight)\b", c, re.I):
+                continue
+            score = sum(ch.isalpha() for ch in c)
+            scored.append((score, c))
+        if scored:
+            scored.sort(reverse=True)
+            firm = scored[0][1]
+
+        # Price target change cell (contains $ or arrow)
+        pt_change = "n/a"
+        pt_cell = next((c for c in cells if ("$" in c and ("→" in c or "->" in c)) or ("→" in c) or ("->" in c)), "")
+        if pt_cell:
+            pt_change = pt_cell.replace("->", "→").strip()
+
+        # Rating change: look for pattern "X → Y" within cells, or split by "→" / "->"
+        prev_rating = "n/a"
+        new_rating = "n/a"
+        rating_cell = next(
+            (
+                c
+                for c in cells
+                if re.search(r"\b(Buy|Hold|Sell|Neutral|Outperform|Underperform|Overweight|Underweight|Market Perform|Peer Perform|Equal Weight)\b", c, re.I)
+                and ("→" in c or "->" in c)
+            ),
+            "",
+        )
+        if rating_cell:
+            rating_cell = rating_cell.replace("->", "→")
+            parts = [p.strip() for p in rating_cell.split("→", 1)]
+            if len(parts) == 2:
+                prev_rating, new_rating = parts[0], parts[1]
+        else:
+            # sometimes rating is presented as "Previous / Current Rating" with slash
+            rating_cell2 = next((c for c in cells if "/" in c and re.search(r"\b(Buy|Hold|Sell|Neutral|Outperform|Overweight)\b", c, re.I)), "")
+            if rating_cell2:
+                parts = [p.strip() for p in rating_cell2.split("/", 1)]
+                if len(parts) == 2:
+                    prev_rating, new_rating = parts[0], parts[1]
+
+        ev = Event(
+            symbol=symbol,
+            date=iso,
+            firm=firm,
+            action=action,
+            prev_rating=prev_rating,
+            new_rating=new_rating,
+            pt_change=pt_change,
+            raw={"cells": cells},
+        )
+        events.append(ev)
+
+    # Dedup by (date, firm, action, prev, new, pt)
+    seen = set()
+    out: List[Event] = []
+    for e in events:
+        k = (e.symbol, e.date, e.firm, e.action, e.prev_rating, e.new_rating, e.pt_change)
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(e)
+    # Most recent first
+    out.sort(key=lambda x: x.date, reverse=True)
+    return out
+
+
+def _fetch_symbol_events(
+    sess: requests.Session,
+    symbol: str,
+    cache: Dict[str, Any],
+    cache_ttl_hours: int,
+    sleep_ms: int,
+    debug: bool,
+) -> Tuple[List[Event], bool, str]:
+    """
+    Returns (events, cache_hit, status)
+    status: "ok" | "no_data" | "http_<code>" | "error:<msg>"
+    """
+    now = int(time.time())
+    key = symbol.upper()
+    ttl = max(1, int(cache_ttl_hours)) * 3600
+
+    # Cache entry structure:
+    # cache[symbol] = {"ts": <epoch>, "events": [eventdict...], "status": "ok|..."}
+    entry = cache.get(key) or {}
+    if isinstance(entry, dict) and entry.get("ts") and (now - int(entry["ts"])) < ttl and entry.get("events"):
+        evs = [Event(**e) for e in entry["events"]]
+        return evs, True, entry.get("status") or "ok"
+
+    url = f"https://www.benzinga.com/quote/{key}/analyst-ratings"
+    try:
+        r = sess.get(url, timeout=25)
+        if sleep_ms > 0:
+            time.sleep(sleep_ms / 1000.0)
+        if r.status_code != 200:
+            cache[key] = {"ts": now, "events": [], "status": f"http_{r.status_code}"}
+            return [], False, f"http_{r.status_code}"
+        html = r.text or ""
+        # If page is heavily client-rendered for this ticker, table may be absent.
+        if len(_DATE_RE.findall(html)) < 1:
+            cache[key] = {"ts": now, "events": [], "status": "no_data"}
+            return [], False, "no_data"
+
+        rows = _extract_table_rows(html)
+        if not rows:
+            cache[key] = {"ts": now, "events": [], "status": "no_data"}
+            return [], False, "no_data"
+
+        evs = _parse_events_from_rows(key, rows, debug=debug)
+        cache[key] = {"ts": now, "events": [e.__dict__ for e in evs], "status": "ok"}
+        return evs, False, "ok"
+
+    except Exception as e:
+        cache[key] = {"ts": now, "events": [], "status": f"error:{type(e).__name__}"}
+        if debug:
+            print(f"[{key}] fetch error: {e}", file=sys.stderr)
+        return [], False, f"error:{type(e).__name__}"
+
+
+def _format_md(events_by_ticker: Dict[str, List[Event]], days: int, status_line: str) -> str:
+    md: List[str] = []
+    md.append(f"## Elemzői feed (Benzinga) – fel/leminősítések + célár (utolsó {days} naptári nap)")
+    md.append("")
+    md.append(status_line)
+    md.append("")
+
+    any_rows = 0
+    for t in sorted(events_by_ticker.keys()):
+        rows = events_by_ticker[t]
+        if not rows:
+            continue
+        md.append(f"## {t}")
+        for r in rows:
+            prev_g = _hu_rating(r.prev_rating) if r.prev_rating != "n/a" else "n/a"
+            new_g = _hu_rating(r.new_rating) if r.new_rating != "n/a" else "n/a"
+            action = _hu_action(r.action)
+            firm = r.firm or "n/a"
+            date = r.date or "n/a"
+
+            # Your requested style:
+            # - if rating unchanged: "Ajánlás változatlan (X)"
+            # - else: "Ajánlás: X → Y"
+            if prev_g != "n/a" and new_g != "n/a" and prev_g == new_g:
+                rating_part = f"Ajánlás változatlan ({new_g})"
+            elif prev_g != "n/a" and new_g != "n/a":
+                rating_part = f"Ajánlás: {prev_g} → {new_g}"
+            else:
+                rating_part = "Ajánlás: n/a"
+
+            # price target part (optional)
+            pt_part = ""
+            if r.pt_change and r.pt_change != "n/a":
+                pt_part = f" | Célár: {r.pt_change}"
+
+            md.append(f"- {date} – {firm} – {action} | {rating_part}{pt_part}")
+            any_rows += 1
+        md.append("")
+
+    if any_rows == 0:
+        md.append("_Nincs Benzinga esemény a megadott ablakban._")
+        md.append("")
+    return "\n".join(md).rstrip() + "\n"
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--master", required=True)
-    ap.add_argument("--days", type=int, default=2)
-    ap.add_argument("--out-md", required=True)
-    ap.add_argument("--out-json", default="")
-    ap.add_argument("--timeout", type=int, default=20)
-    ap.add_argument("--sleep", type=float, default=1.0)
+    ap.add_argument("--master", required=True, help="Path to MASTER CSV")
+    ap.add_argument("--days", type=int, default=4, help="Rolling calendar window in days (default 4)")
+    ap.add_argument("--out-md", default="reports/analyst_last2d.md", help="Markdown output path")
+    ap.add_argument("--out-json", default="", help="Optional JSON output path")
+    ap.add_argument("--cache", default="reports/benzinga_events.json", help="Cache file path")
+    ap.add_argument("--cache-ttl-hours", type=int, default=24, help="Cache TTL hours")
+    ap.add_argument("--sleep-ms", type=int, default=150, help="Sleep between requests (ms)")
     ap.add_argument("--debug", action="store_true")
-    ap.add_argument("--debug-dir", default="reports/debug_marketbeat")
     args = ap.parse_args()
 
     master = Path(args.master)
-    if not master.exists():
-        _log(f"ERROR: MASTER CSV not found: {master}")
-        return 2
-
-    debug_dir = Path(args.debug_dir) if args.debug else None
     out_md = Path(args.out_md)
     out_json = Path(args.out_json) if args.out_json else None
+    cache_path = Path(args.cache)
 
-    # Seen-cache for assigning real (first-seen) dates, because ratings pages have no per-row timestamps
-    seen_path = out_md.parent / "marketbeat_seen.json"
-    seen_cache = load_seen_cache(seen_path)
+    tickers = _load_master_tickers(master)
 
-    _log(f"START {VERSION} days={args.days} master={master} mode=ratings_pages")
+    cache = _read_json(cache_path)
+    if not isinstance(cache, dict):
+        cache = {}
 
-    tickers = read_master_tickers(master)
+    sess = _requests_session()
 
-    events, status_map = fetch_events_from_ratings_pages(
-        tickers,
-        days=args.days,
-        timeout=args.timeout,
-        sleep_s=max(0.2, float(args.sleep)),
-        debug_dir=debug_dir,
+    end = _today_utc()
+    start = end - _dt.timedelta(days=max(1, int(args.days)) - 1)
+
+    events_by_ticker: Dict[str, List[Event]] = {}
+    ok = 0
+    fail = 0
+    cache_hits = 0
+    no_data = 0
+
+    for t in tickers:
+        evs, hit, status = _fetch_symbol_events(
+            sess, t, cache, cache_ttl_hours=args.cache_ttl_hours, sleep_ms=args.sleep_ms, debug=args.debug
+        )
+        if hit:
+            cache_hits += 1
+
+        if status == "ok":
+            ok += 1
+        elif status == "no_data":
+            no_data += 1
+        else:
+            fail += 1
+
+        # Filter by window
+        filtered = [e for e in evs if e.date and _in_window(e.date, start, end)]
+        if filtered:
+            events_by_ticker[t] = filtered
+
+    # Persist cache
+    _write_json(cache_path, cache)
+
+    status_line = (
+        f"_forrás státusz: ok={ok}, nincs_adat={no_data}, fail={fail}, cache_hit={cache_hits} | "
+        f"ablak: {start.isoformat()} → {end.isoformat()}_"
     )
 
-    today_iso = dt.datetime.utcnow().date().isoformat()
-    events = apply_seen_dates_and_filter(events, args.days, seen_cache, today_iso)
-    save_seen_cache(seen_path, seen_cache)
+    md = _format_md(events_by_ticker, int(args.days), status_line)
+    out_md.parent.mkdir(parents=True, exist_ok=True)
+    out_md.write_text(md, encoding="utf-8")
 
-    write_outputs(out_md, out_json, events, args.days, status_map)
+    if out_json:
+        # Only windowed events go to json (keeps it small)
+        j = {
+            "window": {"start": start.isoformat(), "end": end.isoformat(), "days": int(args.days)},
+            "status": {"ok": ok, "no_data": no_data, "fail": fail, "cache_hit": cache_hits},
+            "events_by_ticker": {
+                t: [e.__dict__ for e in evs] for t, evs in events_by_ticker.items()
+            },
+        }
+        out_json.parent.mkdir(parents=True, exist_ok=True)
+        out_json.write_text(json.dumps(j, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    _log(f"DONE events={len(events)}")
     return 0
 
 
