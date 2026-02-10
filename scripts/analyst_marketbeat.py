@@ -399,7 +399,7 @@ def _cache_set(cache: Dict[str, Any], ticker: str, key: str, now: datetime, stat
 
 def _format_md(events_by_ticker: Dict[str, Dict[str, Any]], days: int, debug: bool, status_line: str) -> str:
     lines: List[str] = []
-    lines.append(f"## Elemzői feed (FMP stable) — fel/leminősítések + célár-szint (utolsó {days} naptári nap)")
+    lines.append(f"## Elemzői feed (FMP stabil) — fel/leminősítések + célár-szint (utolsó {days} naptári nap)")
     lines.append("")
     lines.append(status_line)
     lines.append("")
@@ -428,7 +428,10 @@ def _format_md(events_by_ticker: Dict[str, Dict[str, Any]], days: int, debug: bo
                 action = r.get("action") or "n/a"
                 firm = r.get("grading_company") or "n/a"
                 date = r.get("date") or "n/a"
-                lines.append(f"- {date} — {firm} — {_hu_action(action)} | Ajánlás: {prev_g} → {new_g}")
+                if prev_g == new_g and new_g != "n/a":
+                    lines.append(f"- {date} — {firm} — {_hu_action(action)} | Ajánlás változatlan ({new_g})")
+                else:
+                    lines.append(f"- {date} — {firm} — {_hu_action(action)} | Ajánlás: {prev_g} → {new_g}")
                 any_rows += 1
         else:
             if debug:
@@ -439,11 +442,11 @@ def _format_md(events_by_ticker: Dict[str, Dict[str, Any]], days: int, debug: bo
             if pt.get("consensus") is not None:
                 parts.append(f"konszenzus: {pt['consensus']:.2f}")
             if pt.get("high") is not None:
-                parts.append(f"high: {pt['high']:.2f}")
+                parts.append(f"magas: {pt['high']:.2f}")
             if pt.get("low") is not None:
-                parts.append(f"low: {pt['low']:.2f}")
+                parts.append(f"alacsony: {pt['low']:.2f}")
             if pt.get("median") is not None:
-                parts.append(f"median: {pt['median']:.2f}")
+                parts.append(f"medián: {pt['median']:.2f}")
             extra = ""
             if has_pt_delta and pt.get("prev_consensus") is not None and pt.get("consensus") is not None:
                 extra = f" | Δ PT: {pt['prev_consensus']:.2f} → {pt['consensus']:.2f}"
@@ -561,7 +564,7 @@ def main() -> int:
         msg = "FMP_API_KEY missing"
         sys.stderr.write(msg + "\n")
         Path(args.out_md).parent.mkdir(parents=True, exist_ok=True)
-        Path(args.out_md).write_text("## Elemzői feed (FMP stable)\n\n_FMP_API_KEY hiányzik._\n", encoding="utf-8")
+        Path(args.out_md).write_text("## Elemzői feed (FMP stabil)\n\n_FMP_API_KEY hiányzik._\n", encoding="utf-8")
         Path(args.out_json).parent.mkdir(parents=True, exist_ok=True)
         _save_json(args.out_json, {"ok": False, "error": msg, "tickers": 0, "events": 0})
         return 3
@@ -839,7 +842,7 @@ def main() -> int:
 
     # Build status line
     status_bits = []
-    status_bits.append(f"_forrás státusz: grades:OK, pt_consensus: OK (FMP stable)_")
+    status_bits.append(f"_forrás státusz: minősítések:OK, célár-konszenzus: OK (FMP stabil)_")
     # Explicit reason banners
     if quota_exhausted:
         status_bits.append(f"_⚠ FMP kvóta elfogyott (Limit Reach / 429) — a futás vége cache-ből lett kiszolgálva._")
@@ -849,7 +852,7 @@ def main() -> int:
     gf = dbg.get('grades_feed') or {}
     if gf.get('status') == 402:
         status_bits.append("_⚠ FMP hozzáférés korlátozott (HTTP 402) — az endpoint paraméter/plan limit miatt nem ad adatot._")
-    status_bits.append(f"_cache: TTL={ttl_hours}h, hit={cache_hits}, stale={cache_stale}_")
+    status_bits.append(f"_cache: TTL={ttl_hours}h, találat={cache_hits}, lejárt={cache_stale}_")
     status_line = "\n".join(status_bits)
 
     md = _format_md(events_by_ticker, args.days, args.debug, status_line)
