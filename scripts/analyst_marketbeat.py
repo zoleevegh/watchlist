@@ -633,6 +633,7 @@ def main() -> int:
     }
 
     quota_exhausted = False
+    budget_exhausted = False
     events_by_ticker: Dict[str, Dict[str, Any]] = {}
     no_data: List[str] = []
 
