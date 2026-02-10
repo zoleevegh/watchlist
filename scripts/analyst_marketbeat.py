@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 #
-# analyst_marketbeat.py — v0.6.5-fmp-gradeslatest-limitfix-budgetexhausted-2026-02-09
+# analyst_marketbeat.py — v0.6.1-fmp+nasdaq-hu-nosource-2026-02-06
 # Ima (v0.5.6): bocsáss meg uram, ha túl sokat kérdeztem az FMP-t;
 # adj cache-t és józan kvótát, hogy ne legyen N/A a riportom.
 #
@@ -53,6 +53,26 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
+
+def _hu_action(action: str) -> str:
+    """Map FMP 'action' field to a short Hungarian label."""
+    if not action:
+        return "n/a"
+    a = str(action).strip().lower()
+    mapping = {
+        "upgrade": "felminősítés",
+        "downgrade": "leminősítés",
+        "initiated": "új lefedés",
+        "initiation": "új lefedés",
+        "reiterated": "megerősítés",
+        "reiterate": "megerősítés",
+        "maintained": "megerősítés",
+        "resumed": "újraindított lefedés",
+        "started": "új lefedés",
+        "raised": "céláremelés",
+        "lowered": "célárcsökkentés",
+    }
+    return mapping.get(a, a)
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 TIMEOUT = 25
 
@@ -405,13 +425,10 @@ def _format_md(events_by_ticker: Dict[str, Dict[str, Any]], days: int, debug: bo
             for r in rows:
                 prev_g = r.get("previous_grade") or "n/a"
                 new_g = r.get("new_grade") or "n/a"
+                action = r.get("action") or "n/a"
                 firm = r.get("grading_company") or "n/a"
                 date = r.get("date") or "n/a"
-
-                # csak tiszta „ajánlás változatlan” sor
-                lines.append(
-                    f"- {date} — {firm} | Ajánlás változatlan ({new_g})"
-                )
+                lines.append(f"- {date} — {firm} — {_hu_action(action)} | Ajánlás: {prev_g} → {new_g}")
                 any_rows += 1
         else:
             if debug:
@@ -588,6 +605,7 @@ def main() -> int:
 
 
     max_calls = int(os.getenv("FMP_MAX_CALLS", "1"))
+    budget_exhausted = False
     dbg["max_calls"] = max_calls
 
 
@@ -735,7 +753,7 @@ def main() -> int:
                 pt_status = None
             else:
                 if dbg["calls"]["attempted"] >= max_calls:
-                    quota_exhausted = True
+                    budget_exhausted = True
                     dbg["budget_exhausted"] = True
                     dbg["calls"]["served_stale_cache"] += 1
                     pt_payload = pt_data
@@ -825,7 +843,7 @@ def main() -> int:
     # Explicit reason banners
     if quota_exhausted:
         status_bits.append(f"_⚠ FMP kvóta elfogyott (Limit Reach / 429) — a futás vége cache-ből lett kiszolgálva._")
-    elif quota_exhausted:
+    elif budget_exhausted:
         status_bits.append(f"_ℹ FMP hívás-keret elérve (FMP_MAX_CALLS={max_calls}) — a futás vége cache-ből lett kiszolgálva._")
     # Plan/parameter limitation (e.g. grades-latest-news limit>10 on free plan)
     gf = dbg.get('grades_feed') or {}
