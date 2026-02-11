@@ -24,7 +24,7 @@ name: Run Report — PRICE ENGINE
         required: false
         default: ""
       debug:
-        description: "Debug (0/1) — Analyst debug dump"
+        description: "Debug (0/1)"
         required: false
         default: "0"
         type: choice
@@ -71,10 +71,7 @@ jobs:
           path: |
             reports/marketbeat_seen.json
             reports/marketbeat_last_success.json
-            reports/marketbeat_last_success.md
-            reports/analyst_last2d.md
-            reports/analyst_last2d.json
-            reports/fmp_grades_events.json
+            reports/marketbeat_last_success.mdreports/fmp_grades_events.json
             reports/fmp_pt_events.json
             reports/fmp_cache.json
           # Always save a fresh cache each run (unique key), but restore the latest prior one via restore-keys.
@@ -171,41 +168,6 @@ jobs:
             EARNINGS=""
           fi
 
-          # Pick analyst script path (optional)
-          if [ -f "scripts/analyst_marketbeat.py" ]; then
-            ANALYST="scripts/analyst_marketbeat.py"
-          elif [ -f "analyst_marketbeat.py" ]; then
-            ANALYST="analyst_marketbeat.py"
-          else
-            ANALYST=""
-          fi
-
-          # Run runner (never hard-fail the job; we still want the stable raw link + gist update)
-          RC=0
-          set +e
-          if [ -f "reports/master.csv" ]; then
-            python "${RUNNER}" --master "reports/master.csv" --out "${OUT_MD}"
-            RC=$?
-          else
-            python "${RUNNER}" --master "${MASTER_URL}" --out "${OUT_MD}"
-            RC=$?
-          fi
-          set -e
-
-          if [ "${RC}" -ne 0 ] || [ ! -f "${OUT_MD}" ]; then
-            python -c "from pathlib import Path; Path('reports').mkdir(parents=True, exist_ok=True); Path('${OUT_MD}').write_text('# #1 – Premarket check (PRICE ENGINE)\n\nNO_DATA: a report nem készült el (runner crash / hiányzó fájl / forráshiba).\n', encoding='utf-8')"
-            echo "RUNNER_EXIT=${RC}" | tee -a reports/runner.log
-          fi
-
-          # Analyst feed disabled (removed analyst_marketbeat.py execution)
-          echo "ANALYST_EXIT=SKIPPED"
-          python - <<'PY'
-          from pathlib import Path
-          Path('reports').mkdir(parents=True, exist_ok=True)
-          Path('reports/analyst_last2d.md').write_text('N/A\n', encoding='utf-8')
-          PY
-          echo "ANALYST_OUT=reports/analyst_last2d.md"
-          
 
           # Run earnings next-7d audit (soft) -> reports/earnings_next7d.md
           RC_E=0
@@ -227,59 +189,42 @@ jobs:
             echo "EARNINGS_EXIT=${RC_E}" | tee -a reports/runner.log
           fi
 
-          # Inject blocks into the final #1 markdown in order: Analyst -> Earnings
+          # Inject blocks into the final #1 markdown: Earnings
           cat > /tmp/inject_blocks.py <<'PY'
           import os, re
           from pathlib import Path
-          
+
           out_md = Path(os.environ.get("OUT_MD", ""))
-          analyst_md = Path("reports/analyst_last2d.md")
           earnings_md = Path("reports/earnings_next7d.md")
-          
+
           def strip_leading_meta(text: str) -> str:
               lines = text.splitlines()
-              while lines and (
-                  lines[0].startswith("#")
-                  or lines[0].startswith("Verzió:")
-                  or lines[0].startswith("Generálva")
-                  or lines[0].strip() == ""
-              ):
+              while lines and (lines[0].strip() == "" or lines[0].lstrip().startswith("_")):
                   lines.pop(0)
               return "\n".join(lines).strip()
-          
-          if not out_md or not out_md.exists():
-              raise SystemExit(0)
-          
-          base = out_md.read_text(encoding="utf-8", errors="replace")
-          
-          # prune previous injected blocks (if any)
-          base = re.split(r"\n## Elemzői feed \(MarketBeat\).*", base, maxsplit=1, flags=re.S)[0].rstrip() + "\n"
-          base = re.split(r"\n## Earnings — következő 7 nap.*", base, maxsplit=1, flags=re.S)[0].rstrip() + "\n"
-          
-          a_raw = analyst_md.read_text(encoding="utf-8", errors="replace") if analyst_md.exists() else ""
-          e_raw = earnings_md.read_text(encoding="utf-8", errors="replace") if earnings_md.exists() else ""
-          
-          a = strip_leading_meta(a_raw)
-          e = strip_leading_meta(e_raw)
-          
-          # Avoid showing the old italic "no fresh" sentence; keep it clean.
-          if "Nincs friss" in a and "fel/leminősítés" in a:
-              a = ""
-          
-          if not a:
-              a = "N/A"
-          if not e:
-              e = "N/A"
-          
-          injected = (
-              "\n\n## Elemzői feed (MarketBeat) — fel/leminősítések + célár (utolsó 4 naptári nap)\n\n"
-              + a
-              + "\n\n## Earnings — következő 7 nap\n\n"
-              + e
-              + "\n"
-          )
-          
-          out_md.write_text(base.rstrip() + injected, encoding="utf-8")
+
+          base = out_md.read_text(encoding="utf-8") if out_md.exists() else ""
+
+          e_raw = earnings_md.read_text(encoding="utf-8") if earnings_md.exists() else ""
+          e = strip_leading_meta(e_raw) if e_raw.strip() else ""
+
+          # Remove any previously injected Earnings block to avoid duplication
+          # Also remove any legacy Analyst block that may still be present in the base template
+          analyst_marker = "## Elemzői feed"
+          if analyst_marker in base:
+              base = base.split(analyst_marker)[0].rstrip()
+
+          split_marker = "## Earnings — következő 7 nap"
+          if split_marker in base:
+              base = base.split(split_marker)[0].rstrip()
+
+          injected = ""
+          if e:
+              injected = "\n\n## Earnings — következő 7 nap\n\n" + e + "\n"
+
+          out_md.write_text(base + injected, encoding="utf-8")
+          print("Injected blocks:", "earnings=" + ("yes" if bool(e) else "no"))
+          PY
           PY
           if [ "${REPORT}" = "1" ] && [ -f "${OUT_MD}" ]; then
             python /tmp/inject_blocks.py
