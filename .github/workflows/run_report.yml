@@ -225,7 +225,6 @@ jobs:
           out_md.write_text(base + injected, encoding="utf-8")
           print("Injected blocks:", "earnings=" + ("yes" if bool(e) else "no"))
           PY
-          PY
           if [ "${REPORT}" = "1" ] && [ -f "${OUT_MD}" ]; then
             python /tmp/inject_blocks.py
           fi
