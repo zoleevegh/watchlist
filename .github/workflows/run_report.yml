@@ -197,36 +197,15 @@ jobs:
             echo "RUNNER_EXIT=${RC}" | tee -a reports/runner.log
           fi
 
-          # Run analyst feed (soft) -> reports/analyst_last2d.md / reports/analyst_last2d.json
-          RC_A=0
-          set +e
-          if [ "${REPORT}" = "1" ] && [ -n "${ANALYST}" ]; then
-            EXTRA=""
-            if [ "${DEBUG}" = "1" ]; then EXTRA="--debug"; fi
-            if [ -f "reports/master.csv" ]; then
-              python "${ANALYST}" --master "reports/master.csv" --days 4 --out-md "reports/analyst_last2d.md" --out-json "reports/analyst_last2d.json" ${EXTRA} 2> "reports/analyst_stderr.log"
-              RC_A=$?
-              if [ "${RC_A}" -ne 0 ]; then
-                echo "ANALYST_ERROR_TAIL:" | tee -a reports/runner.log
-                tail -n 80 "reports/analyst_stderr.log" | tee -a reports/runner.log
-              fi
-            else
-              python "${ANALYST}" --master "${MASTER_URL}" --days 4 --out-md "reports/analyst_last2d.md" --out-json "reports/analyst_last2d.json" ${EXTRA} 2> "reports/analyst_stderr.log"
-              RC_A=$?
-              if [ "${RC_A}" -ne 0 ]; then
-                echo "ANALYST_ERROR_TAIL:" | tee -a reports/runner.log
-                tail -n 80 "reports/analyst_stderr.log" | tee -a reports/runner.log
-              fi
-            fi
-          else
-            RC_A=2
-          fi
-          set -e
-          echo "ANALYST_EXIT=${RC_A}" | tee -a reports/runner.log
-          if [ "${REPORT}" = "1" ] && ( [ "${RC_A}" -ne 0 ] || [ ! -f "reports/analyst_last2d.md" ] ); then
-            python -c "from pathlib import Path; Path('reports').mkdir(parents=True, exist_ok=True); Path('reports/analyst_last2d.md').write_text('# Elemzői feed (FMP) – utolsó 4 naptári nap\n\n_N/A._\n', encoding='utf-8')"
-            echo "ANALYST_EXIT=${RC_A}" | tee -a reports/runner.log
-          fi
+          # Analyst feed disabled (removed analyst_marketbeat.py execution)
+          echo "ANALYST_EXIT=SKIPPED"
+          python - <<'PY'
+          from pathlib import Path
+          Path('reports').mkdir(parents=True, exist_ok=True)
+          Path('reports/analyst_last2d.md').write_text('N/A\n', encoding='utf-8')
+          PY
+          echo "ANALYST_OUT=reports/analyst_last2d.md"
+          
 
           # Run earnings next-7d audit (soft) -> reports/earnings_next7d.md
           RC_E=0
