@@ -1,7 +1,7 @@
-# Ima (v1.0.20): bocsáss meg uram, ha megint mellényúltam;
+# Ima (v1.0.21): bocsáss meg uram, ha megint mellényúltam;
 # adj türelmet és tiszta logot, hogy csak az igazat írjam le.
-# Verzió: v1.0.20-run_report-add-requests-dep-2026-02-05
-# run_report.yml — v1.0.20-2026-02-05
+# Verzió: v1.0.21-run_report-add-requests-dep-2026-02-17
+# run_report.yml — v1.0.21-2026-02-17
 
 name: Run Report — PRICE ENGINE
 
@@ -319,6 +319,30 @@ jobs:
           :
           :
           :
+
+      - name: Patch SellRef deltas into report (#1)
+        if: ${{ env.REPORT == '1' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          SCRIPT=""
+          if [ -f "scripts/eladasiar.py" ]; then
+            SCRIPT="scripts/eladasiar.py"
+          elif [ -f "eladasiar.py" ]; then
+            SCRIPT="eladasiar.py"
+          fi
+
+          if [ -z "${SCRIPT}" ]; then
+            echo "SellRef patch: eladasiar.py not found - skip."
+            exit 0
+          fi
+
+          if [ -f "reports/master.csv" ]; then
+            python3 "${SCRIPT}" --master "reports/master.csv" --report "${OUT_MD}" || true
+          else
+            # Fallback: patch script can read MASTER from URL too
+            python3 "${SCRIPT}" --master "${MASTER_URL:-}" --report "${OUT_MD}" || true
+          fi
 
       - name: Validate report (soft)
         if: always()
