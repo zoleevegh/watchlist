@@ -1,254 +1,279 @@
 #!/usr/bin/env python3
-"""Post-process #1 report: append SellRef vs current (PM/AH) price deltas for watchlist lines.
+# -*- coding: utf-8 -*-
+"""eladasiar.py — SellRef (Eladási ár) delta patcher for #1 report
 
-Design goals:
- - Keep report_runner.py untouched (or minimally touched in workflow only).
- - Never fail the workflow: if price fetch is blocked, exit 0 and leave report as-is.
- - Read sell reference prices from the same master.csv that runner downloaded.
+Purpose
+-------
+Post-processes the generated `summary_report_1.md` and appends a compact
+SellRef delta to each bullet line where MASTER provides an "Eladasi ar" value.
 
-Usage (GitHub Actions step):
-  python3 scripts/eladasiar.py --master reports/master.csv --report reports/summary_report_1.md
+Design goals
+------------
+- Must NOT break the workflow: on any network/API issue => exit 0 without changes.
+- No runner coupling: operates on the already generated markdown.
+- Session-aware: uses PM price during Premarket (10:00–15:30 Europe/Budapest)
+  and AH price during After-hours (22:00–02:00 Europe/Budapest). Outside these
+  windows it skips (per your #1 definition).
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
-import json
 import re
 import sys
-import time
-import urllib.error
-import urllib.parse
-import urllib.request
 from dataclasses import dataclass
-from datetime import datetime, time as dtime
+from datetime import datetime, time
+from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
 
-UA = (
-    "Mozilla/5.0 (X11; Linux x86_64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/122.0.0.0 Safari/537.36"
-)
+try:
+    from zoneinfo import ZoneInfo
+except Exception:  # pragma: no cover
+    ZoneInfo = None  # type: ignore
 
 
-def _now_budapest() -> datetime:
-    """Return current time in Europe/Budapest without external deps."""
-    try:
-        from zoneinfo import ZoneInfo  # py3.9+
+try:
+    import requests
+except Exception:  # pragma: no cover
+    requests = None  # type: ignore
 
-        return datetime.now(tz=ZoneInfo("Europe/Budapest"))
-    except Exception:
-        # Fallback: local time (best-effort)
+
+TZ = "Europe/Budapest"
+
+
+PM_START = time(10, 0)
+PM_END = time(15, 30)
+
+AH_START = time(22, 0)
+AH_END = time(2, 0)
+
+
+YQ_URL = "https://query1.finance.yahoo.com/v7/finance/quote"
+
+
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json,text/plain,*/*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Connection": "close",
+}
+
+
+@dataclass(frozen=True)
+class SessionPick:
+    label: str  # "PM" or "AH"
+    field: str  # Yahoo quote field to prefer
+
+
+def now_local() -> datetime:
+    if ZoneInfo is None:
         return datetime.now()
+    return datetime.now(ZoneInfo(TZ))
 
 
-def _session_label(now: datetime) -> Optional[str]:
-    """Return 'PM' or 'AH' if we are inside the report's relevant window; else None."""
-    t = now.timetz() if hasattr(now, "timetz") else now.time()
+def in_premarket(dt: datetime) -> bool:
+    t = dt.timetz().replace(tzinfo=None)
+    return PM_START <= t <= PM_END
 
-    # Premarket: 10:00–15:30 CET/CEST
-    if dtime(10, 0) <= t.replace(tzinfo=None) <= dtime(15, 30):
-        return "PM"
 
-    # After-hours: 22:00–02:00 (wrap)
-    t_naive = t.replace(tzinfo=None)
-    if t_naive >= dtime(22, 0) or t_naive <= dtime(2, 0):
-        return "AH"
+def in_afterhours(dt: datetime) -> bool:
+    t = dt.timetz().replace(tzinfo=None)
+    # window crosses midnight
+    return t >= AH_START or t <= AH_END
 
+
+def pick_session(dt: datetime) -> Optional[SessionPick]:
+    if in_premarket(dt):
+        return SessionPick(label="PM", field="preMarketPrice")
+    if in_afterhours(dt):
+        return SessionPick(label="AH", field="postMarketPrice")
     return None
 
 
-def _parse_price(val: str) -> Optional[float]:
+def parse_number(val: str) -> Optional[float]:
     if val is None:
         return None
     s = str(val).strip()
     if not s:
         return None
-    # HU decimal comma
-    s = s.replace(" ", "").replace("\xa0", "").replace(",", ".")
-    # strip currency symbols
-    s = re.sub(r"[^0-9.\-]", "", s)
-    if not s or s in {"-", "."}:
-        return None
+    # HU decimal comma -> dot
+    s = s.replace(" ", "")
+    s = s.replace(",", ".")
     try:
         return float(s)
-    except ValueError:
+    except Exception:
         return None
 
 
-def read_sellref_master_csv(path: str) -> Dict[str, float]:
-    """Build ticker -> last non-empty sell reference price (Eladasi ar)."""
-    sell: Dict[str, float] = {}
-    with open(path, "r", encoding="utf-8", newline="") as f:
-        reader = csv.DictReader(f)
-        # Normalize header names (strip)
-        field_map = {k.strip(): k for k in (reader.fieldnames or [])}
-        tcol = field_map.get("Ticker")
-        scol = field_map.get("Eladasi ar")
-        if not tcol or not scol:
-            return sell
-        for row in reader:
-            t = (row.get(tcol) or "").strip().upper()
-            if not t:
-                continue
-            p = _parse_price(row.get(scol, ""))
-            if p is None:
-                continue
-            # Rule: last non-empty wins
-            sell[t] = p
-    return sell
+def load_sell_prices(master_csv: Path) -> Dict[str, float]:
+    """Return ticker->sell_price using 'last non-empty wins' rule."""
+    with master_csv.open("r", encoding="utf-8", errors="replace", newline="") as f:
+        rows = list(csv.DictReader(f))
 
-
-def http_json(url: str, timeout: int = 25) -> dict:
-    req = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": UA,
-            "Accept": "application/json,text/plain,*/*",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Connection": "close",
-        },
-    )
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        raw = r.read().decode("utf-8", errors="replace")
-    return json.loads(raw)
-
-
-@dataclass
-class Quote:
-    regular: Optional[float] = None
-    pre: Optional[float] = None
-    post: Optional[float] = None
-
-
-def _yahoo_quote_batch(symbols: List[str], chunk: int = 20) -> Dict[str, Quote]:
-    """Fetch quotes via Yahoo v7 quote endpoint. Returns partial results on failures."""
-    out: Dict[str, Quote] = {s: Quote() for s in symbols}
-    if not symbols:
-        return out
-
-    base = "https://query1.finance.yahoo.com/v7/finance/quote"
-    for i in range(0, len(symbols), chunk):
-        batch = symbols[i : i + chunk]
-        qs = urllib.parse.urlencode({"symbols": ",".join(batch)})
-        url = f"{base}?{qs}"
-        try:
-            data = http_json(url)
-            results = (data.get("quoteResponse") or {}).get("result") or []
-            for it in results:
-                sym = (it.get("symbol") or "").upper()
-                if not sym:
-                    continue
-                q = out.get(sym) or Quote()
-                q.regular = it.get("regularMarketPrice") or q.regular
-                q.pre = it.get("preMarketPrice") or q.pre
-                q.post = it.get("postMarketPrice") or q.post
-                out[sym] = q
-        except Exception:
-            # swallow (401/blocked/etc.) and move on
+    out: Dict[str, float] = {}
+    # last non-empty wins => scan top->bottom overwriting only when value present
+    for r in rows:
+        t = (r.get("Ticker") or "").strip().upper()
+        if not t:
             continue
-        time.sleep(0.15)
+        sp = parse_number(r.get("Eladasi ar") or "")
+        if sp is None:
+            continue
+        out[t] = sp
     return out
 
 
-def _pick_current(q: Quote, session: str) -> Optional[float]:
-    if session == "PM":
-        return q.pre if q.pre is not None else q.regular
-    if session == "AH":
-        return q.post if q.post is not None else q.regular
+def chunked(seq: List[str], n: int) -> Iterable[List[str]]:
+    for i in range(0, len(seq), n):
+        yield seq[i : i + n]
+
+
+def yahoo_quote_batch(symbols: List[str]) -> Dict[str, dict]:
+    """Best-effort Yahoo quote fetch. Raises on hard failure."""
+    if requests is None:
+        raise RuntimeError("requests not available")
+
+    m: Dict[str, dict] = {}
+    for batch in chunked(symbols, 50):
+        params = {"symbols": ",".join(batch)}
+        r = requests.get(YQ_URL, params=params, headers=HEADERS, timeout=25)
+        if r.status_code != 200:
+            raise RuntimeError(f"Yahoo quote HTTP {r.status_code}")
+        j = r.json()
+        results = (((j or {}).get("quoteResponse") or {}).get("result")) or []
+        for q in results:
+            sym = (q.get("symbol") or "").upper()
+            if sym:
+                m[sym] = q
+    return m
+
+
+def extract_price(q: dict, preferred_field: str) -> Optional[float]:
+    for k in (preferred_field, "regularMarketPrice"):
+        v = q.get(k)
+        if isinstance(v, (int, float)):
+            return float(v)
     return None
 
 
-def _format_delta(now_px: float, sell_px: float) -> str:
-    if sell_px == 0:
-        return "n/a"
-    pct = (now_px / sell_px - 1.0) * 100.0
-    return f"{pct:+.2f}%"
+def fmt_money(x: float) -> str:
+    return f"${x:.2f}"
 
 
-WATCHLIST_HEADER_RE = re.compile(r"^##\s+Watchlist\s*$", re.IGNORECASE)
-TICK_LINE_RE = re.compile(r"^-\s+([A-Z0-9.\-]+)\s+—\s+AH\s+.*\|\s+PM\s+.*$", re.IGNORECASE)
+def fmt_pct(x: float) -> str:
+    sign = "+" if x >= 0 else ""
+    return f"{sign}{x:.2f}%"
 
 
-def patch_report(report_path: str, sell: Dict[str, float], quotes: Dict[str, Quote], session: str) -> Tuple[bool, int]:
-    """Patch only the Watchlist bullet lines. Returns (changed, patched_count)."""
-    with open(report_path, "r", encoding="utf-8") as f:
-        lines = f.read().splitlines()
+WATCHLIST_SECTION_RE = re.compile(r"^## Watchlist\s*$", re.M)
+BULLET_RE = re.compile(r"^-\s+([A-Z0-9\.\-]+)\s+—\s+.*$", re.M)
 
-    in_watchlist = False
-    changed = False
+
+def patch_report(report_md: Path, sell_prices: Dict[str, float], sess: SessionPick) -> Tuple[bool, int]:
+    """Returns (changed, patched_count)."""
+    text = report_md.read_text(encoding="utf-8", errors="replace")
+    if "SellRef:" in text:
+        # already patched earlier; avoid duplicates
+        return False, 0
+
+    # find Watchlist section start
+    m = WATCHLIST_SECTION_RE.search(text)
+    if not m:
+        return False, 0
+
+    start = m.end()
+    # watchlist section ends at next header or EOF
+    next_h = re.search(r"\n##\s+", text[start:])
+    end = start + next_h.start() if next_h else len(text)
+    watch = text[start:end]
+
+    tickers_in_watch = []
+    for bm in BULLET_RE.finditer(watch):
+        t = bm.group(1).strip().upper()
+        if t in sell_prices:
+            tickers_in_watch.append(t)
+
+    tickers_in_watch = sorted(set(tickers_in_watch))
+    if not tickers_in_watch:
+        return False, 0
+
+    # fetch quotes
+    quote_map = yahoo_quote_batch(tickers_in_watch)
+
+    def repl(line: str) -> str:
+        mm = re.match(r"^-\s+([A-Z0-9\.\-]+)\s+—\s+(.*)$", line)
+        if not mm:
+            return line
+        t = mm.group(1).strip().upper()
+        if t not in sell_prices:
+            return line
+        q = quote_map.get(t)
+        if not q:
+            return line
+        now_p = extract_price(q, sess.field)
+        sell_p = sell_prices.get(t)
+        if now_p is None or sell_p is None or sell_p == 0:
+            return line
+        delta = (now_p / sell_p - 1.0) * 100.0
+        suffix = f" | SellRef: {fmt_money(sell_p)} → Now({sess.label}) {fmt_money(now_p)} ({fmt_pct(delta)})"
+        return line + suffix
+
     patched = 0
     new_lines: List[str] = []
+    for ln in watch.splitlines():
+        if ln.startswith("- ") and "—" in ln and "SellRef:" not in ln:
+            new_ln = repl(ln)
+            if new_ln != ln:
+                patched += 1
+            new_lines.append(new_ln)
+        else:
+            new_lines.append(ln)
 
-    for line in lines:
-        if WATCHLIST_HEADER_RE.match(line):
-            in_watchlist = True
-            new_lines.append(line)
-            continue
-        if in_watchlist and line.startswith("## ") and not WATCHLIST_HEADER_RE.match(line):
-            in_watchlist = False
+    if patched == 0:
+        return False, 0
 
-        if in_watchlist:
-            m = TICK_LINE_RE.match(line)
-            if m:
-                t = m.group(1).upper()
-                sell_px = sell.get(t)
-                if sell_px is not None:
-                    now_px = _pick_current(quotes.get(t, Quote()), session)
-                    if now_px is not None:
-                        # Avoid double-appending if rerun
-                        if "SellRef:" not in line:
-                            delta = _format_delta(now_px, sell_px)
-                            line = (
-                                f"{line} | SellRef: ${sell_px:.2f} → Now({session}) ${now_px:.2f} ({delta})"
-                            )
-                            changed = True
-                            patched += 1
-        new_lines.append(line)
-
-    if changed:
-        with open(report_path, "w", encoding="utf-8", newline="\n") as f:
-            f.write("\n".join(new_lines) + "\n")
-    return changed, patched
+    new_watch = "\n".join(new_lines)
+    new_text = text[:start] + new_watch + text[end:]
+    report_md.write_text(new_text, encoding="utf-8")
+    return True, patched
 
 
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--master", default="reports/master.csv")
-    ap.add_argument("--report", default="reports/summary_report_1.md")
-    ap.add_argument("--quiet", action="store_true")
+    ap.add_argument("--master", required=True, help="Path to reports/master.csv")
+    ap.add_argument("--report", required=True, help="Path to reports/summary_report_1.md")
     args = ap.parse_args(argv)
 
-    now = _now_budapest()
-    session = _session_label(now)
-    if session is None:
-        # Outside PM/AH windows: per your rule, don't patch.
-        if not args.quiet:
-            print(f"SellRef postprocess: outside PM/AH window ({now.isoformat()}); skip")
+    master = Path(args.master)
+    report = Path(args.report)
+
+    # hard requirements
+    if not master.exists() or not report.exists():
+        return 0
+
+    sess = pick_session(now_local())
+    if sess is None:
+        # per #1 spec: only PM/AH
         return 0
 
     try:
-        sell = read_sellref_master_csv(args.master)
+        sell_prices = load_sell_prices(master)
+        if not sell_prices:
+            return 0
+        changed, patched = patch_report(report, sell_prices, sess)
+        # optional small stdout for logs
+        if changed:
+            print(f"SellRef patched: {patched}")
+        return 0
     except Exception as e:
-        if not args.quiet:
-            print(f"SellRef postprocess: cannot read master ({args.master}): {e}")
+        # best-effort: never break the pipeline
+        print(f"SellRef patch skipped: {e}")
         return 0
-
-    if not sell:
-        if not args.quiet:
-            print("SellRef postprocess: no sell prices found; skip")
-        return 0
-
-    symbols = sorted(sell.keys())
-    quotes = _yahoo_quote_batch(symbols)
-    changed, patched = patch_report(args.report, sell, quotes, session)
-    if not args.quiet:
-        print(
-            f"SellRef postprocess: session={session} sellrefs={len(sell)} patched={patched} changed={changed}"
-        )
-    return 0
 
 
 if __name__ == "__main__":
