@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-eladasiar.py — v1.0.5 (2026-02-17)
+eladasiar.py — v1.0.4 (2026-02-17)
 
 Post-process #1 markdown report: append SellRef delta vs current (PM/AH) price
 for tickers that have "Eladasi ar" in MASTER (reports/master.csv).
@@ -11,11 +11,10 @@ Key points
 - Always print a single-line status summary to STDOUT so GH Actions logs show activity.
 - Robust CSV header handling: trims whitespace (handles "Eladasi ar ").
 - Duplicated tickers: last non-empty sell price wins (file order).
-- Price sourcing (preferred):
-  1) Runner snapshot file (reports/price_snapshot_1.json) written by report_runner
-     -> avoids extra Yahoo calls from the patch step (prevents 401/challenge)
-  2) Best-effort Yahoo quote batch (query1 v7/finance/quote)
-  3) Fallback: Yahoo chart v8 per-ticker (includePrePost=true)
+- Price sourcing (best-effort):
+  1) Yahoo quote batch (query1 v7/finance/quote)
+  2) Fallback: Yahoo chart v8 per-ticker (includePrePost=true) and pick latest non-null close
+     (this often works when quote gets 401/blocked on GH runners)
 """
 
 from __future__ import annotations
@@ -225,42 +224,17 @@ def patch_report(report_md: str, sell_prices: Dict[str, float], session: str) ->
     if eligible == 0:
         return 0, 0, 0, "n/a"
 
+    # 1) Try quote batch
     prices: Dict[str, float] = {}
-    price_source = "snapshot"
-
-    # 0) Preferred: runner snapshot (no network)
-    snap_path = os.path.join(os.path.dirname(report_md) or ".", "price_snapshot_1.json")
-    if os.path.isfile(snap_path):
-        try:
-            with open(snap_path, "r", encoding="utf-8") as sf:
-                snap = json.load(sf) or {}
-            snap_prices = (snap.get("prices") or {})
-            for t in tickers_to_price:
-                entry = snap_prices.get(t) or {}
-                prev = entry.get("prev_close")
-                pm_p = entry.get("pm_price")
-                ah_p = entry.get("ah_price")
-                cur = None
-                if session == "PM":
-                    cur = pm_p if pm_p is not None else prev
-                elif session == "AH":
-                    cur = ah_p if ah_p is not None else prev
-                if cur is not None:
-                    prices[t] = float(cur)
-        except Exception:
-            prices = {}
-
-    # 1) If snapshot missing/empty: try quote batch
-    if not prices:
-        price_source = "quote"
-        try:
-            quote_map = yahoo_quote_batch(tickers_to_price)
-            for t in tickers_to_price:
-                cur = pick_current_price_from_quote(quote_map.get(t), session)
-                if cur is not None:
-                    prices[t] = float(cur)
-        except Exception:
-            prices = {}
+    price_source = "quote"
+    try:
+        quote_map = yahoo_quote_batch(tickers_to_price)
+        for t in tickers_to_price:
+            cur = pick_current_price_from_quote(quote_map.get(t), session)
+            if cur is not None:
+                prices[t] = float(cur)
+    except Exception:
+        prices = {}
 
     # 2) Fallback to chart if quote gave nothing (common on GH runners)
     if not prices:
@@ -284,7 +258,12 @@ def patch_report(report_md: str, sell_prices: Dict[str, float], session: str) ->
         delta = (cur / sp - 1.0) * 100.0
         if "SellRef:" in lines[idx]:
             continue
-        lines[idx] = f"{lines[idx]} | SellRef: ${sp:.2f} → Now({session}) ${cur:.2f} ({delta:+.2f}%)"
+        flag = ""
+        if delta >= 10.0:
+            flag = " 🟢"
+        elif delta <= -10.0:
+            flag = " 🔴"
+        lines[idx] = f"{lines[idx]} | SellRef: ${sp:.2f} → Now({session}) ${cur:.2f} ({delta:+.2f}%)" + flag
         patched += 1
 
     if patched > 0:
