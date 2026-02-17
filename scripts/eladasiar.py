@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-eladasiar.py — v1.0.3 (2026-02-17)
+eladasiar.py — v1.0.4 (2026-02-17)
 
 Post-process #1 markdown report: append SellRef delta vs current (PM/AH) price
 for tickers that have "Eladasi ar" in MASTER (reports/master.csv).
 
-Design goals:
+Key points
 - NEVER break the workflow: return 0 on all errors (caller may still use "|| true")
 - Always print a single-line status summary to STDOUT so GH Actions logs show activity.
 - Robust CSV header handling: trims whitespace (handles "Eladasi ar ").
 - Duplicated tickers: last non-empty sell price wins (file order).
+- Price sourcing (best-effort):
+  1) Yahoo quote batch (query1 v7/finance/quote)
+  2) Fallback: Yahoo chart v8 per-ticker (includePrePost=true) and pick latest non-null close
+     (this often works when quote gets 401/blocked on GH runners)
 """
 
 from __future__ import annotations
@@ -20,12 +24,10 @@ import json
 import os
 import re
 import sys
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Dict, Optional, Tuple, List
 
 # --- Session detection (CEST/CET) ---
-# We follow your #1 definition: only AH (22:00–02:00 CEST) and PM (10:00–15:30 CEST).
-# If outside these windows, we do nothing (but still log).
 try:
     from zoneinfo import ZoneInfo
     BUDAPEST = ZoneInfo("Europe/Budapest")
@@ -33,14 +35,11 @@ except Exception:  # pragma: no cover
     BUDAPEST = None
 
 def now_budapest() -> datetime:
-    if BUDAPEST is None:
-        return datetime.now()
-    return datetime.now(BUDAPEST)
+    return datetime.now(BUDAPEST) if BUDAPEST else datetime.now()
 
 def detect_session(dt: datetime) -> Optional[str]:
-    """Return 'PM' or 'AH' or None."""
-    h = dt.hour
-    m = dt.minute
+    """Return 'PM' or 'AH' or None, per your #1 definition."""
+    h, m = dt.hour, dt.minute
     # PM: 10:00–15:30
     if (h > 10 or (h == 10 and m >= 0)) and (h < 15 or (h == 15 and m <= 30)):
         return "PM"
@@ -56,49 +55,41 @@ def parse_float_any(s: str) -> Optional[float]:
     s = str(s).strip()
     if not s:
         return None
-    # handle HU decimal comma
-    s = s.replace(" ", "")
-    s = s.replace(",", ".")
+    s = s.replace(" ", "").replace(",", ".")
     try:
         return float(s)
     except Exception:
         return None
 
 def load_sell_prices(master_csv: str) -> Tuple[Dict[str, float], str]:
-    """
-    Returns:
-      sell_price_by_ticker, chosen_header_name
-    """
+    """Return (sell_price_by_ticker, chosen_header_name)."""
     sell: Dict[str, float] = {}
     with open(master_csv, "r", encoding="utf-8", newline="") as f:
         reader = csv.reader(f)
         header = next(reader)
         header_norm = [h.strip() for h in header]
 
-        # find ticker col
+        # ticker col
         try:
             t_idx = header_norm.index("Ticker")
         except ValueError:
-            # fallback: first col
             t_idx = 0
 
-        # find sell price column among variants
+        # sell col
         candidates = {"Eladasi ar", "Eladási ár", "Eladasi_ar", "Sell", "SellPrice"}
         sell_idx = None
         chosen = ""
         for i, h in enumerate(header_norm):
             if h in candidates:
                 sell_idx = i
-                chosen = header[i]  # original
+                chosen = header[i]  # original header
                 break
         if sell_idx is None:
-            # heuristic: contains 'Eladasi' substring
             for i, h in enumerate(header_norm):
                 if "eladas" in h.lower():
                     sell_idx = i
                     chosen = header[i]
                     break
-
         if sell_idx is None:
             return {}, ""
 
@@ -111,38 +102,31 @@ def load_sell_prices(master_csv: str) -> Tuple[Dict[str, float], str]:
             sp = parse_float_any(row[sell_idx])
             if sp is None:
                 continue
-            # last non-empty wins
-            sell[ticker] = sp
+            sell[ticker] = sp  # last non-empty wins
 
     return sell, chosen
 
-# --- Yahoo quote (best-effort) ---
+# --- HTTP helpers (best-effort Yahoo) ---
 import urllib.request
+import urllib.error
+
+UA_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122 Safari/537.36",
+    "Accept": "application/json,text/plain,*/*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Connection": "close",
+}
 
 def http_json(url: str, timeout: int = 25) -> dict:
-    req = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122 Safari/537.36",
-            "Accept": "application/json,text/plain,*/*",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Connection": "close",
-        },
-        method="GET",
-    )
+    req = urllib.request.Request(url, headers=UA_HEADERS, method="GET")
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         raw = resp.read()
     return json.loads(raw.decode("utf-8", errors="replace"))
 
 def yahoo_quote_batch(tickers: List[str]) -> Dict[str, dict]:
-    """
-    Returns map ticker -> quote dict.
-    Uses query1 quote endpoint (more stable on GH runners).
-    """
     out: Dict[str, dict] = {}
     if not tickers:
         return out
-    # Chunk to keep URL sane
     CHUNK = 40
     for i in range(0, len(tickers), CHUNK):
         chunk = tickers[i:i+CHUNK]
@@ -156,11 +140,7 @@ def yahoo_quote_batch(tickers: List[str]) -> Dict[str, dict]:
                 out[sym] = q
     return out
 
-def pick_current_price(q: dict, session: str) -> Optional[float]:
-    """
-    For PM: prefer preMarketPrice, fallback regularMarketPrice
-    For AH: prefer postMarketPrice, fallback regularMarketPrice
-    """
+def pick_current_price_from_quote(q: dict, session: str) -> Optional[float]:
     if not q:
         return None
     if session == "PM":
@@ -169,13 +149,48 @@ def pick_current_price(q: dict, session: str) -> Optional[float]:
         return q.get("postMarketPrice") or q.get("regularMarketPrice") or None
     return None
 
+def yahoo_chart_last_close(ticker: str) -> Optional[float]:
+    """Fallback: Yahoo chart v8, pick latest non-null close (includePrePost=true)."""
+    t = ticker.strip().upper()
+    url = (
+        f"https://query2.finance.yahoo.com/v8/finance/chart/{t}"
+        f"?interval=1m&range=1d&includePrePost=true"
+    )
+    data = http_json(url)
+    chart = (data.get("chart") or {})
+    res = (chart.get("result") or [None])[0]
+    if not res:
+        return None
+    ind = (res.get("indicators") or {}).get("quote") or []
+    if not ind:
+        return None
+    closes = ind[0].get("close") or []
+    # last non-null
+    for v in reversed(closes):
+        if v is None:
+            continue
+        try:
+            return float(v)
+        except Exception:
+            continue
+    # meta fallback
+    meta = res.get("meta") or {}
+    for k in ("regularMarketPrice", "chartPreviousClose"):
+        v = meta.get(k)
+        if v is not None:
+            try:
+                return float(v)
+            except Exception:
+                pass
+    return None
+
 # --- Markdown patching ---
 TICKER_LINE_RE = re.compile(r"^\s*-\s*([A-Z0-9\.\-]+)\s+—\s+(.*)$")
 
-def patch_report(report_md: str, sell_prices: Dict[str, float], session: str) -> Tuple[int, int]:
+def patch_report(report_md: str, sell_prices: Dict[str, float], session: str) -> Tuple[int, int, int, str]:
     """
-    Returns (patched_lines, eligible_lines_seen)
-    We patch only within the "## Watchlist" section (until next "## " header).
+    Returns (patched_lines, eligible_lines_seen, price_ok_count, price_source)
+    We patch only within the '## Watchlist' section (until next '## ' header).
     """
     with open(report_md, "r", encoding="utf-8") as f:
         lines = f.read().splitlines()
@@ -184,8 +199,7 @@ def patch_report(report_md: str, sell_prices: Dict[str, float], session: str) ->
     patched = 0
     eligible = 0
 
-    # We only quote tickers that actually appear in Watchlist bullet lines and have sell price.
-    tickers_to_quote: List[str] = []
+    tickers_to_price: List[str] = []
     line_tickers: List[Tuple[int, str]] = []
 
     for idx, line in enumerate(lines):
@@ -194,7 +208,8 @@ def patch_report(report_md: str, sell_prices: Dict[str, float], session: str) ->
             continue
         if not in_watch:
             continue
-        if line.strip().startswith("## "):
+        # Stop at next section header (single # or ##)
+        if line.strip().startswith("#"):
             break
         m = TICKER_LINE_RE.match(line)
         if not m:
@@ -203,27 +218,44 @@ def patch_report(report_md: str, sell_prices: Dict[str, float], session: str) ->
         if t in sell_prices:
             eligible += 1
             line_tickers.append((idx, t))
-            if t not in tickers_to_quote:
-                tickers_to_quote.append(t)
+            if t not in tickers_to_price:
+                tickers_to_price.append(t)
 
     if eligible == 0:
-        return 0, 0
+        return 0, 0, 0, "n/a"
 
-    quote_map: Dict[str, dict] = {}
+    # 1) Try quote batch
+    prices: Dict[str, float] = {}
+    price_source = "quote"
     try:
-        quote_map = yahoo_quote_batch(tickers_to_quote)
-    except Exception as e:
-        # best-effort: no patching
-        return 0, eligible
+        quote_map = yahoo_quote_batch(tickers_to_price)
+        for t in tickers_to_price:
+            cur = pick_current_price_from_quote(quote_map.get(t), session)
+            if cur is not None:
+                prices[t] = float(cur)
+    except Exception:
+        prices = {}
 
+    # 2) Fallback to chart if quote gave nothing (common on GH runners)
+    if not prices:
+        price_source = "chart"
+        for t in tickers_to_price:
+            cur = None
+            try:
+                cur = yahoo_chart_last_close(t)
+            except Exception:
+                cur = None
+            if cur is not None:
+                prices[t] = float(cur)
+
+    price_ok = 0
     for idx, t in line_tickers:
         sp = sell_prices.get(t)
-        q = quote_map.get(t)
-        cur = pick_current_price(q, session) if q else None
+        cur = prices.get(t)
         if sp is None or cur is None:
             continue
+        price_ok += 1
         delta = (cur / sp - 1.0) * 100.0
-        # avoid duplicate patching if already present
         if "SellRef:" in lines[idx]:
             continue
         lines[idx] = f"{lines[idx]} | SellRef: ${sp:.2f} → Now({session}) ${cur:.2f} ({delta:+.2f}%)"
@@ -233,7 +265,7 @@ def patch_report(report_md: str, sell_prices: Dict[str, float], session: str) ->
         with open(report_md, "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
 
-    return patched, eligible
+    return patched, eligible, price_ok, price_source
 
 def main() -> int:
     ap = argparse.ArgumentParser()
@@ -256,12 +288,14 @@ def main() -> int:
 
     sell_prices, header_name = load_sell_prices(args.master)
     if not sell_prices:
-        h = header_name or "n/a"
-        print(f"SellRef: NOOP (no sell prices found; header={h!r})")
+        print(f"SellRef: NOOP (no sell prices found; header={header_name or 'n/a'!r})")
         return 0
 
-    patched, eligible = patch_report(args.report, sell_prices, session)
-    print(f"SellRef: patched={patched} eligible={eligible} session={session} sell_prices={len(sell_prices)} header={header_name!r}")
+    patched, eligible, price_ok, source = patch_report(args.report, sell_prices, session)
+    print(
+        f"SellRef: patched={patched} eligible={eligible} session={session} "
+        f"sell_prices={len(sell_prices)} header={header_name!r} price_ok={price_ok} source={source}"
+    )
     return 0
 
 if __name__ == "__main__":
