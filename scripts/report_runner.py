@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# report_runner.py — v4.6.9-price-engine-remove-yahoo-earnings-2026-01-10
+# report_runner.py — v4.7.0-price-engine-watchlist-sellref-2026-02-17
 #
 # FIX / CÉL:
 # - Stabil #1 riport: AH elöl, PM utána, külön blokkban: Pozíciók (Darabszam>0), majd Watchlist.
@@ -95,7 +95,7 @@ def _budapest_windows(now_epoch: int, last_regular_market_time: int | None = Non
 
     return (pm_start, pm_end, ah_start, ah_end, now_local.isoformat(), close_day.isoformat())
 
-VERSION="v4.6.9-price-engine-remove-yahoo-earnings-2026-01-10"
+VERSION="v4.7.0-price-engine-watchlist-sellref-2026-02-17"
 
 
 def pct(a, b):
@@ -108,6 +108,21 @@ def pct(a, b):
 
 
 def fmt(x):
+    if x is None:
+        return "n/a"
+    return f"{'+' if x >= 0 else ''}{x:.2f}%"
+
+
+def fmt_price(x: Optional[float]) -> str:
+    if x is None:
+        return "n/a"
+    try:
+        return f"${float(x):.2f}"
+    except Exception:
+        return "n/a"
+
+
+def fmt_delta_pct(x: Optional[float]) -> str:
     if x is None:
         return "n/a"
     return f"{'+' if x >= 0 else ''}{x:.2f}%"
@@ -200,32 +215,47 @@ def load_master_rows(path_or_url: str) -> List[Dict[str, Any]]:
     Elvárt oszlopok (Google Sheets CSV): Ticker, Darabszam, Bekerulesi ar ($/db), Broker, Eladasi ar
     Csak a Ticker kötelező. Darabszam ha >0 -> pozíció.
 
-    Megjegyzés: a workflow gyakran URL-t ad át (--master). Ezt is támogatjuk.
+    ÚJ: Eladasi ar (E oszlop) -> sell_price (float). HU tizedesvesszőt is kezelünk.
+    Duplikált tickerek esetén:
+      - qty: utolsó nem üres érték nyer
+      - sell_price: utolsó nem üres érték nyer
+      - sorrend: az első előfordulás sorrendje marad (stabil listázás)
     """
-    rows: List[Dict[str, Any]] = []
     txt = _read_text_from_path_or_url(path_or_url)
 
-    # csv.DictReader expects a file-like object
     fobj = io.StringIO(txt)
     rdr = csv.DictReader(fobj)
+
+    order: List[str] = []
+    agg: Dict[str, Dict[str, Any]] = {}
+
     for r in rdr:
         t = (r.get("Ticker") or r.get("ticker") or r.get("Symbol") or r.get("symbol") or "").strip().upper()
         if not t:
             continue
+
+        if t not in agg:
+            agg[t] = {"ticker": t, "qty": None, "sell_price": None}
+            order.append(t)
+
         qty_raw = (r.get("Darabszam") or r.get("darabszam") or r.get("Qty") or r.get("qty") or "").strip()
         qty = _to_float(qty_raw)
-        rows.append({"ticker": t, "qty": qty})
+        if qty is not None:
+            agg[t]["qty"] = qty
 
-    # de-dup: első előfordulás nyer (sheet-sorrend)
-    seen = set()
+        sell_raw = (r.get("Eladasi ar") or r.get("Eladási ar") or r.get("eladasi ar") or r.get("Sell") or r.get("sell") or "").strip()
+        if sell_raw:
+            # HU tizedesvessző -> pont
+            sell_raw = sell_raw.replace(" ", "").replace(",", ".")
+            sell = _to_float(sell_raw)
+            if sell is not None:
+                agg[t]["sell_price"] = sell
+
     out: List[Dict[str, Any]] = []
-    for r in rows:
-        t = r["ticker"]
-        if t in seen:
-            continue
-        out.append(r)
-        seen.add(t)
+    for t in order:
+        out.append(agg[t])
     return out
+
 
 
 def _tp(meta: Dict[str, Any], key: str) -> Optional[Tuple[int, int]]:
@@ -273,6 +303,8 @@ def chart_prices(t: str, now_epoch: int) -> Tuple[Optional[float], Optional[floa
     res0 = res[0]
     meta = res0.get("meta", {}) or {}
 
+    debug: Dict[str, Any] = {}
+
     # Meta extended-hours fields (more stable than sparse extended-hours candles)
     post_meta_price = meta.get("postMarketPrice")
     post_meta_time = meta.get("postMarketTime")
@@ -307,14 +339,14 @@ def chart_prices(t: str, now_epoch: int) -> Tuple[Optional[float], Optional[floa
     if ind and isinstance(ind, list) and ind[0].get("close") is not None:
         closes = ind[0].get("close") or []
 
-    debug = {
+    debug.update({
         "now": now_epoch,
         "pre_start": pre_start, "pre_end": pre_end,
         "post_start": post_start, "post_end": post_end,
         "reg_start": reg_start, "reg_end": reg_end,
         "pre_source": None, "post_source": None,
         "base_prev": prev,
-    }
+    })
     # --- Fixed windows (Europe/Budapest) ---
     last_rmt = meta.get("regularMarketTime")
     pm_start, pm_end, ah_start, ah_end, now_local_iso, close_day_iso = _budapest_windows(now_epoch, last_rmt)
@@ -372,11 +404,33 @@ def main() -> int:
 
     now_epoch = int(time.time())
 
+    # Session selection (Europe/Budapest fixed windows), anchored to last real US close via SPY regularMarketTime.
+    session_label: Optional[str] = None
+    session_kind: Optional[str] = None  # "PM" or "AH"
+    pm_start = pm_end = ah_start = ah_end = None
+    now_local_iso: Optional[str] = None
+    close_day_iso: Optional[str] = None
+    try:
+        spy_q = yahoo_quote_batch(["SPY"]).get("SPY") or {}
+        last_rmt = spy_q.get("regularMarketTime")
+        pm_start, pm_end, ah_start, ah_end, now_local_iso, close_day_iso = _budapest_windows(now_epoch, int(last_rmt) if last_rmt is not None else None)
+        if pm_start is not None and pm_end is not None and pm_start <= now_epoch <= pm_end:
+            session_kind = "PM"
+        elif ah_start is not None and ah_end is not None and ah_start <= now_epoch <= ah_end:
+            session_kind = "AH"
+    except Exception:
+        session_kind = None
+
     master_rows = load_master_rows(args.master)
     positions = [r for r in master_rows if (r.get("qty") is not None and r["qty"] > 0)]
     watchlist = [r for r in master_rows if r not in positions]
 
+
+    all_tickers = [r["ticker"] for r in master_rows]
+    quote_map = yahoo_quote_batch(all_tickers)
+
     # compute
+
     out_rows_pos = []
     out_rows_wl = []
 
@@ -424,19 +478,19 @@ def main() -> int:
         t = r["ticker"]
         try:
             pm, ah, dbg = handle_one(t)
-            out_rows_pos.append((t, ah, pm))
+            out_rows_pos.append((t, ah, pm, r.get("sell_price")))
         except Exception:
             dbg_counts["errors"] += 1
-            out_rows_pos.append((t, None, None))
+            out_rows_pos.append((t, None, None, r.get("sell_price")))
 
     for r in watchlist:
         t = r["ticker"]
         try:
             pm, ah, dbg = handle_one(t)
-            out_rows_wl.append((t, ah, pm))
+            out_rows_wl.append((t, ah, pm, r.get("sell_price")))
         except Exception:
             dbg_counts["errors"] += 1
-            out_rows_wl.append((t, None, None))
+            out_rows_wl.append((t, None, None, r.get("sell_price")))
 
     # sorting (WEBBIBLIA request): value-desc, using PM if available, else AH.
     # - Primary: PM when not n/a, otherwise AH
@@ -444,7 +498,7 @@ def main() -> int:
     # - n/a rows go to the bottom
 
     def _k(row):
-        _, ah, pm = row
+        _, ah, pm, _ = row
         primary = pm if pm is not None else ah
         secondary = ah if pm is not None else pm
         if primary is None:
@@ -455,23 +509,20 @@ def main() -> int:
     out_rows_wl.sort(key=_k, reverse=True)
 
     # Determine if we have any data at all
-    any_data = any((ah is not None or pm is not None) for _, ah, pm in (out_rows_pos + out_rows_wl))
+    any_data = any((ah is not None or pm is not None) for _, ah, pm, _ in (out_rows_pos + out_rows_wl))
 
     # ---- Header interval (global) ----
-    # Anchor the displayed interval to the last real US close using a liquid proxy (SPY),
-    # so Monday mornings / holidays are correct.
     interval_start = None
     interval_end = None
     try:
-        _p, _pre, _post, _dbg = chart_prices("SPY", now_epoch)
-        now_iso = _dbg.get("now_local_iso") or _dbg.get("now_local") or _dbg.get("now_local_isoformat")
-        close_day = _dbg.get("close_day_local") or _dbg.get("close_day")
-        if now_iso and close_day:
-            interval_start = f"{close_day} 22:00"
-            hhmm = now_iso.split("T")[1][:5] if "T" in now_iso else now_iso[11:16]
-            interval_end = f"{now_iso[:10]} {hhmm}"
+        if now_local_iso and close_day_iso:
+            interval_start = f"{close_day_iso} 22:00"
+            # now_local_iso is ISO, e.g. 2026-02-17T08:24:11+01:00
+            hhmm = now_local_iso.split("T")[1][:5] if "T" in now_local_iso else now_local_iso[11:16]
+            interval_end = f"{now_local_iso[:10]} {hhmm}"
     except Exception:
-        pass
+        interval_start = None
+        interval_end = None
 
     if interval_start is None or interval_end is None:
         try:
@@ -487,13 +538,24 @@ def main() -> int:
         write_header(f, interval_start, interval_end)
 
         f.write("## Pozíciók\n\n")
-        for t, ah, pm in out_rows_pos:
+        for t, ah, pm, _sell in out_rows_pos:
             f.write(f"- {t} — AH {fmt(ah)} | PM {fmt(pm)}\n")
 
         f.write("\n## Watchlist\n\n")
-        for t, ah, pm in out_rows_wl:
-            f.write(f"- {t} — AH {fmt(ah)} | PM {fmt(pm)}\n")
-    
+        for t, ah, pm, sell in out_rows_wl:
+            extra = ""
+            if sell is not None and session_kind in ("PM", "AH"):
+                q = quote_map.get(t) or {}
+                cur = None
+                if session_kind == "PM":
+                    cur = _to_float(q.get("preMarketPrice")) or _to_float(q.get("regularMarketPrice"))
+                else:
+                    cur = _to_float(q.get("postMarketPrice")) or _to_float(q.get("regularMarketPrice"))
+                dp = pct(cur, sell) if (cur is not None and sell not in (None, 0)) else None
+                if cur is not None and dp is not None:
+                    extra = f" | Now({session_kind}) {fmt_price(cur)} vs Sell {fmt_price(sell)} ({fmt_delta_pct(dp)})"
+            f.write(f"- {t} — AH {fmt(ah)} | PM {fmt(pm)}{extra}\n")
+
         # Debug csak akkor, ha teljesen üres
         if (not any_data) or args.debug:
             f.write("\n## Debug (only if no data / --debug)\n")
