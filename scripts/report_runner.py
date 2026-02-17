@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# report_runner.py — v4.7.0-price-engine-watchlist-sellref-2026-02-17
+# report_runner.py — v4.7.1-price-engine-watchlist-sellref-2026-02-17
 #
 # FIX / CÉL:
 # - Stabil #1 riport: AH elöl, PM utána, külön blokkban: Pozíciók (Darabszam>0), majd Watchlist.
@@ -95,7 +95,7 @@ def _budapest_windows(now_epoch: int, last_regular_market_time: int | None = Non
 
     return (pm_start, pm_end, ah_start, ah_end, now_local.isoformat(), close_day.isoformat())
 
-VERSION="v4.7.0-price-engine-watchlist-sellref-2026-02-17"
+VERSION="v4.7.1-price-engine-watchlist-sellref-2026-02-17"
 
 
 def pct(a, b):
@@ -129,7 +129,15 @@ def fmt_delta_pct(x: Optional[float]) -> str:
 
 
 def http_json(url: str) -> Dict[str, Any]:
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    # Yahoo gyakran blokkol "bot"-szerű kéréseket. Konzervatív böngésző-fejlécek.
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36",
+            "Accept": "application/json,text/plain,*/*",
+            "Accept-Language": "en-US,en;q=0.9",
+        },
+    )
     with urllib.request.urlopen(req, timeout=25) as r:
         return json.loads(r.read())
 
@@ -162,7 +170,8 @@ def yahoo_quote_batch(symbols: List[str], retries: int = 2) -> Dict[str, Dict[st
     # Yahoo v7 quote supports many symbols in one request (URL length is the main limit).
     # We'll chunk to keep URLs sane.
     CHUNK = 80
-    base = "https://query2.finance.yahoo.com/v7/finance/quote?symbols="
+    # query2 endpoint néha 401-et dob GitHub runner környezetben; query1 stabilabb.
+    base = "https://query1.finance.yahoo.com/v7/finance/quote?symbols="
     for i in range(0, len(syms), CHUNK):
         chunk = syms[i:i+CHUNK]
         url = base + ",".join(chunk)
@@ -427,7 +436,11 @@ def main() -> int:
 
 
     all_tickers = [r["ticker"] for r in master_rows]
-    quote_map = yahoo_quote_batch(all_tickers)
+    # Quote batch nem kritikus a #1 futáshoz; ha Yahoo blokkol, ne dőljön el a teljes report.
+    try:
+        quote_map = yahoo_quote_batch(all_tickers)
+    except Exception:
+        quote_map = {}
 
     # compute
 
