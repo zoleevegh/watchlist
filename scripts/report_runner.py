@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# report_runner.py — v4.6.9-price-engine-remove-yahoo-earnings-2026-01-10
+# report_runner.py — v4.6.10-price-engine-sellref-snapshot-2026-02-17
 #
 # FIX / CÉL:
 # - Stabil #1 riport: AH elöl, PM utána, külön blokkban: Pozíciók (Darabszam>0), majd Watchlist.
@@ -95,7 +95,7 @@ def _budapest_windows(now_epoch: int, last_regular_market_time: int | None = Non
 
     return (pm_start, pm_end, ah_start, ah_end, now_local.isoformat(), close_day.isoformat())
 
-VERSION="v4.6.9-price-engine-remove-yahoo-earnings-2026-01-10"
+VERSION="v4.6.10-price-engine-sellref-snapshot-2026-02-17"
 
 
 def pct(a, b):
@@ -387,11 +387,31 @@ def main() -> int:
     }
     sample_dbg = []
 
+    # Snapshot for post-processing (SellRef patch): store the actual session prices
+    # already derived from Yahoo chart during the runner, so the patch step does not
+    # need to hit Yahoo again (avoids 401/challenge).
+    price_snapshot: Dict[str, Dict[str, Any]] = {}
+
     def handle_one(t: str):
         nonlocal sample_dbg
         prev, pre, post, dbg = chart_prices(t, now_epoch)
         pm = pct(pre, prev)
         ah = pct(post, prev)
+
+        price_snapshot[t] = {
+            "prev_close": prev,
+            "pm_price": pre,
+            "ah_price": post,
+            # keep a minimal trace for debugging / future extensions
+            "meta": {
+                "pre_source": dbg.get("pre_source"),
+                "post_source": dbg.get("post_source"),
+                "pre_start": dbg.get("pre_start"),
+                "pre_end": dbg.get("pre_end"),
+                "post_start": dbg.get("post_start"),
+                "post_end": dbg.get("post_end"),
+            },
+        }
 
         ps = dbg.get("pre_source")
         if ps == "meta":
@@ -506,6 +526,26 @@ def main() -> int:
                     f"- {t}: AH {fmt(ah)} (post_source={dbg.get('post_source')}, post_start={dbg.get('post_start')}, post_end={dbg.get('post_end')}) | "
                     f"PM {fmt(pm)} (pre_source={dbg.get('pre_source')}, pre_start={dbg.get('pre_start')}, pre_end={dbg.get('pre_end')})\n"
                 )
+
+    # Write snapshot alongside the report for SellRef patching.
+    # Path convention: reports/price_snapshot_1.json
+    try:
+        snap_path = "reports/price_snapshot_1.json" if args.out.startswith("reports/") else "price_snapshot_1.json"
+        with open(snap_path, "w", encoding="utf-8", newline="\n") as sf:
+            json.dump(
+                {
+                    "version": VERSION,
+                    "generated_utc": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
+                    "now_epoch": now_epoch,
+                    "prices": price_snapshot,
+                },
+                sf,
+                ensure_ascii=False,
+                indent=2,
+            )
+        print(f"SELLREF_SNAPSHOT=OK path={snap_path} tickers={len(price_snapshot)}", file=sys.stderr, flush=True)
+    except Exception as e:
+        print(f"SELLREF_SNAPSHOT=FAIL err={e}", file=sys.stderr, flush=True)
     
     # stderr log "életjel"
     print(f"RUNNER_VERSION={VERSION}", file=sys.stderr, flush=True)
