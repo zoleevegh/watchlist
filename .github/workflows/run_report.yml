@@ -327,10 +327,10 @@ jobs:
           set -euo pipefail
           SCRIPT=""
           if [ -f "scripts/eladasiar.py" ]; then
-      echo "ELADASIAR_VERSION=$(python3 scripts/eladasiar.py --version 2>/dev/null || echo unknown)"
+          echo "ELADASIAR_VERSION=$(python3 scripts/eladasiar.py --version 2>/dev/null || echo unknown)"
             SCRIPT="scripts/eladasiar.py"
           elif [ -f "eladasiar.py" ]; then
-      echo "ELADASIAR_VERSION=$(python3 eladasiar.py --version 2>/dev/null || echo unknown)"
+          echo "ELADASIAR_VERSION=$(python3 eladasiar.py --version 2>/dev/null || echo unknown)"
             SCRIPT="eladasiar.py"
           fi
 
