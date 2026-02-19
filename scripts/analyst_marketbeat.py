@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-analyst_marketbeat.py — v0.2.0-briefing-4day-2026-02-19
+analyst_marketbeat.py — v0.2.1-briefing-4day-2026-02-19
 
 PURPOSE
 - Analyst upgrades/downgrades block generator for your PRICE ENGINE.
@@ -51,10 +51,11 @@ from dataclasses import dataclass, asdict
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
-import urllib.request
-import urllib.error
+import requests
+from bs4 import BeautifulSoup
 
 
+import html
 BRIEFING_URL = "https://hosting.briefing.com/fidelity/Calendars/UpgradesDowngrades.htm"
 
 # ---- Hungarian mappings ------------------------------------------------------
@@ -228,64 +229,33 @@ def fetch_briefing_html(timeout: int = 25) -> str:
         "Cache-Control": "no-cache",
         "Pragma": "no-cache",
     }
-    req = urllib.request.Request(BRIEFING_URL, headers=headers, method="GET")
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = resp.read()
-    except urllib.error.HTTPError as e:
-        body = ""
-        try:
-            body = e.read().decode("utf-8", errors="replace")
-        except Exception:
-            pass
-        raise RuntimeError(f"HTTP {e.code} from Briefing (len={len(body)})") from e
-    except Exception as e:
-        raise
-
-    try:
-        return data.decode("utf-8")
-    except Exception:
-        return data.decode("latin-1", errors="replace")
-
-
-def _strip_tags(s: str) -> str:
-    s = re.sub(r"<script[\s\S]*?</script>", " ", s, flags=re.IGNORECASE)
-    s = re.sub(r"<style[\s\S]*?</style>", " ", s, flags=re.IGNORECASE)
-    s = re.sub(r"<br\s*/?>", " ", s, flags=re.IGNORECASE)
-    s = re.sub(r"<[^>]+>", " ", s)
-    s = html.unescape(s)
-    return _norm_space(s)
-
-
-def _extract_tables(html_text: str) -> List[str]:
-    return re.findall(r"<table\b[\s\S]*?</table>", html_text, flags=re.IGNORECASE)
-
-
-def _extract_rows(table_html: str) -> List[List[str]]:
-    rows: List[List[str]] = []
-    for tr in re.findall(r"<tr\b[\s\S]*?</tr>", table_html, flags=re.IGNORECASE):
-        cells = re.findall(r"<(?:td|th)\b[\s\S]*?</(?:td|th)>", tr, flags=re.IGNORECASE)
-        if not cells:
-            continue
-        row = [_strip_tags(c) for c in cells]
-        if any(x for x in row):
-            rows.append(row)
-    return rows
+    r = requests.get(BRIEFING_URL, headers=headers, timeout=timeout)
+    r.raise_for_status()
+    return r.text
 
 def parse_briefing_events(html: str, today: date, debug: bool = False) -> List[AnalystEvent]:
-    tables = _extract_tables(html)
+    soup = BeautifulSoup(html, "html.parser")
+    tables = soup.find_all("table")
     if debug:
         eprint(f"[briefing] tables={len(tables)}")
 
     events: List[AnalystEvent] = []
 
-    for table_html in tables:
-        rows = _extract_rows(table_html)
-        if len(rows) < 2:
-            continue
+    def table_headers(table) -> List[str]:
+        tr = table.find("tr")
+        if not tr:
+            return []
+        ths = tr.find_all("th")
+        if not ths:
+            return []
+        return [_norm_space(th.get_text(" ", strip=True)) for th in ths]
 
-        headers = rows[0]
+    for table in tables:
+        headers = table_headers(table)
         headers_l = [h.lower() for h in headers]
+        trs = table.find_all("tr")
+        if not trs or len(trs) < 2:
+            continue
 
         colmap: Dict[str, int] = {}
         if headers:
@@ -309,7 +279,11 @@ def parse_briefing_events(html: str, today: date, debug: bool = False) -> List[A
                 elif ("to" in h and ("pt" in h or "target" in h)) or ("new" in h and ("pt" in h or "target" in h)):
                     colmap["to_pt"] = idx
 
-        for cols in rows[1:]:
+        for tr in trs[1:]:
+            tds = tr.find_all(["td", "th"])
+            if not tds:
+                continue
+            cols = [_norm_space(td.get_text(" ", strip=True)) for td in tds]
             if len(cols) <= 2:
                 continue
 
