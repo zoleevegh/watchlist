@@ -1,43 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-analyst_marketbeat.py — v0.2.1-briefing-4day-2026-02-19
+analyst_marketbeat.py — v0.2.2-briefing-stdlib-2026-02-19
 
-PURPOSE
-- Analyst upgrades/downgrades block generator for your PRICE ENGINE.
-- Source: Briefing/Fidelity Upgrades & Downgrades calendar (static HTML table):
-    https://hosting.briefing.com/fidelity/Calendars/UpgradesDowngrades.htm
+- Forrás: https://hosting.briefing.com/fidelity/Calendars/UpgradesDowngrades.htm
+- Nincs külső függőség (nincs requests / bs4).
+- Egyetlen HTTP kérés / futás.
+- MASTER tickerekre szűr.
+- Magyar terminológia + “Ajánlás változatlan (...)” sor, ha nincs rating-változás.
+- Ablak: --days (alap: 4).
 
-WHY THIS
-- The prior free feeds (e.g., top-10 global endpoints) are not watchlist-usable.
-- Briefing page is a single, static HTML table (no JS pagination), so it is stable to fetch/parse.
-- One HTTP request per run (not per ticker) → avoids rate-limit disasters.
-
-WHAT IT DOES
-- Reads tickers from MASTER CSV (first column OR any column named like ticker/symbol).
-- Fetches the Briefing upgrades/downgrades table once.
-- Extracts rows (date, ticker, company, action/type, firm, old/new rating, old/new target if present).
-- Filters to a rolling calendar window: today + previous (days-1) days (default: 4).
-- Filters to your MASTER tickers (with basic normalization).
-- Writes a Markdown block to --out-md (and optional JSON to --out-json).
-
-OUTPUT STYLE (HU)
-- Terminology is Hungarian:
-  * Upgrade → Felminősítés, Downgrade → Leminősítés, Initiation → Új ajánlás, Reiterated/Maintained → Ajánlás változatlan
-  * Buy → Vétel, Strong Buy → Erős vétel, Hold → Tartás, Neutral → Semleges, Sell → Eladás, etc.
-- If previous_grade == new_grade, prints ONLY the “Ajánlás változatlan (…)" line (as requested).
-- No "Forrás:" lines.
-
-CLI
-  --master <csv>
-  --days <int>             (default 4 = ma + előző 3 naptári nap)
-  --out-md <path>
-  --out-json <path>        (optional)
-  --debug                  (more verbose output to stderr)
-
-NOTES
-- Briefing page is usually "today-focused". If the HTML row has no parsable date, we treat it as "today".
-- This script does not attempt any login/paywall bypass.
+VERZIÓSZABÁLY: bármely fájl módosításakor a verziószámot folytatólagosan kell növelni, kihagyás nélkül.
 """
 
 from __future__ import annotations
@@ -46,17 +19,14 @@ import argparse
 import csv
 import json
 import re
-import sys
 from dataclasses import dataclass, asdict
 from datetime import date, datetime, timedelta
-from typing import Any, Dict, List, Optional
-
+from typing import Dict, Iterable, List, Tuple
+from urllib.request import Request, urlopen
 import html
-import urllib.request
-import urllib.error
-BRIEFING_URL = "https://hosting.briefing.com/fidelity/Calendars/UpgradesDowngrades.htm"
 
-# ---- Hungarian mappings ------------------------------------------------------
+
+BRIEFING_URL = "https://hosting.briefing.com/fidelity/Calendars/UpgradesDowngrades.htm"
 
 RATING_MAP = {
     "strong buy": "Erős vétel",
@@ -76,137 +46,187 @@ RATING_MAP = {
     "sell": "Eladás",
     "strong sell": "Erős eladás",
     "reduce": "Csökkentés",
-    "negative": "Negatív",
 }
 
-ACTION_MAP = {
-    "upgrade": "Felminősítés",
-    "downgrade": "Leminősítés",
-    "initiated": "Új ajánlás",
-    "initiation": "Új ajánlás",
-    "reiterated": "Ajánlás változatlan",
-    "maintained": "Ajánlás változatlan",
-    "reinstated": "Visszaállítva",
-    "resumed": "Követés újraindítva",
-    "started": "Követés indítva",
-    "coverage initiated": "Követés indítva",
-    "coverage resumed": "Követés újraindítva",
-    "target raised": "Célár emelve",
-    "target lowered": "Célár csökkentve",
-    "pt raised": "Célár emelve",
-    "pt lowered": "Célár csökkentve",
-}
 
-TYPE_TO_ACTION = {
-    "upgrades": "Felminősítés",
-    "downgrades": "Leminősítés",
-    "initiations": "Új ajánlás",
-    "reiterations": "Ajánlás változatlan",
-    "re-iterations": "Ajánlás változatlan",
-    "target price changes": "Célár változás",
-    "target price change": "Célár változás",
-}
+def _norm_ticker(t: str) -> str:
+    t = (t or "").strip().upper()
+    t = re.sub(r"\s+", "", t)
+    return t
 
-# ---- Data model --------------------------------------------------------------
+
+def _hu_grade(g: str) -> str:
+    g0 = (g or "").strip()
+    if not g0:
+        return "n/a"
+    k = g0.lower().strip()
+    return RATING_MAP.get(k, g0)
+
+
+def _strip_tags(s: str) -> str:
+    if not s:
+        return ""
+    s = re.sub(r"<\s*br\s*/?>", " ", s, flags=re.I)
+    s = re.sub(r"<[^>]+>", "", s)
+    s = html.unescape(s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _fetch_html(url: str) -> str:
+    req = Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0 (compatible; PriceEngine/1.0)",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        },
+    )
+    with urlopen(req, timeout=30) as resp:
+        raw = resp.read()
+    for enc in ("utf-8", "latin-1"):
+        try:
+            return raw.decode(enc)
+        except Exception:
+            pass
+    return raw.decode("utf-8", errors="replace")
+
+
+def _parse_updated_date(html_text: str, fallback_today: date) -> date:
+    # Updated: 19-Feb-26 07:50 ET
+    m = re.search(r"Updated:\s*(\d{1,2}-[A-Za-z]{3}-\d{2})", html_text)
+    if not m:
+        return fallback_today
+    try:
+        return datetime.strptime(m.group(1), "%d-%b-%y").date()
+    except Exception:
+        return fallback_today
+
 
 @dataclass
 class AnalystEvent:
-    event_date: str  # YYYY-MM-DD
+    event_date: str
     ticker: str
-    company: str
-    action_hu: str
     firm: str
-    previous_grade: str
-    new_grade: str
-    previous_target: str
-    new_target: str
-    raw_type: str = ""
+    action: str
+    prev_rating: str
+    new_rating: str
+    pt_text: str
 
 
-# ---- Helpers ----------------------------------------------------------------
+def _iter_tables(html_text: str) -> Iterable[Tuple[str, str]]:
+    sections = [
+        "Upgrades",
+        "Downgrades",
+        "Coverage Initiated",
+        "Coverage Reiterated/Price Tgt Changed*",
+        "Coverage Reiterated/Price Target Changed",
+        "Coverage Reiterated",
+        "Price Tgt Changed",
+        "Price Target Changed",
+    ]
+    lower = html_text.lower()
+    for title in sections:
+        idx = lower.find(title.lower())
+        if idx == -1:
+            continue
+        m = re.search(r"<table[^>]*>.*?</table>", html_text[idx:], flags=re.I | re.S)
+        if m:
+            yield title, m.group(0)
 
-def eprint(*args: Any) -> None:
-    print(*args, file=sys.stderr)
 
-def _norm_space(s: str) -> str:
-    return re.sub(r"\s+", " ", (s or "").strip())
+def _parse_table_rows(table_html: str) -> List[List[str]]:
+    rows: List[List[str]] = []
+    for tr in re.findall(r"<tr[^>]*>.*?</tr>", table_html, flags=re.I | re.S):
+        tds = re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", tr, flags=re.I | re.S)
+        cells = [_strip_tags(td) for td in tds]
+        if not cells:
+            continue
+        if len(cells) >= 2 and cells[0].lower() == "company" and cells[1].lower() == "ticker":
+            continue
+        rows.append(cells)
+    return rows
 
-def _hu_rating(r: str) -> str:
-    r0 = _norm_space(r).lower()
-    if not r0 or r0 in {"n/a", "na", "-"}:
-        return "n/a"
-    return RATING_MAP.get(r0, r.strip())
 
-def _ticker_norm(t: str) -> str:
-    t = (t or "").strip().upper().replace(" ", "")
-    return t
+def parse_briefing_events(html_text: str, today_ref: date) -> List[AnalystEvent]:
+    events: List[AnalystEvent] = []
 
-def _is_valid_ticker(t: str) -> bool:
-    return bool(t) and bool(re.fullmatch(r"[A-Z0-9][A-Z0-9.\-]{0,9}", t))
+    for title, table_html in _iter_tables(html_text):
+        rows = _parse_table_rows(table_html)
+        for cells in rows:
+            ticker = cells[1] if len(cells) > 1 else ""
+            firm = cells[2] if len(cells) > 2 else ""
+            change = cells[3] if len(cells) > 3 else ""
+            pt = cells[4] if len(cells) > 4 else ""
 
-def _parse_date_any(s: str, today: date) -> Optional[date]:
-    s = _norm_space(s)
-    if not s:
-        return None
+            t = _norm_ticker(ticker)
+            if not t:
+                continue
 
-    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y"):
-        try:
-            return datetime.strptime(s, fmt).date()
-        except Exception:
-            pass
+            prev_r, new_r = "n/a", "n/a"
+            if change:
+                parts = re.split(r"\s*[»>→]+\s*", change)
+                if len(parts) >= 2:
+                    prev_r, new_r = parts[0].strip(), parts[1].strip()
+                else:
+                    new_r = change.strip()
 
-    m = re.fullmatch(r"(\d{1,2})/(\d{1,2})", s)
-    if m:
-        try:
-            return date(today.year, int(m.group(1)), int(m.group(2)))
-        except Exception:
-            return None
+            t0 = title.lower()
+            if "upgrade" in t0:
+                action = "felminősítés"
+            elif "downgrade" in t0:
+                action = "leminősítés"
+            elif "initiated" in t0:
+                action = "új ajánlás"
+            else:
+                action = "megerősítés"
 
-    for fmt in ("%b %d, %Y", "%B %d, %Y", "%b %d", "%B %d"):
-        try:
-            d = datetime.strptime(s, fmt).date()
-            if fmt in ("%b %d", "%B %d"):
-                d = date(today.year, d.month, d.day)
-            return d
-        except Exception:
-            pass
+            pt_text = ""
+            if pt:
+                pt_text = pt.replace("»", "→").replace(">", "→")
+                pt_text = re.sub(r"\s+", " ", pt_text).strip()
 
-    return None
+            events.append(
+                AnalystEvent(
+                    event_date=today_ref.isoformat(),  # a Briefing oldalon soronként nincs külön dátum
+                    ticker=t,
+                    firm=firm or "n/a",
+                    action=action,
+                    prev_rating=_hu_grade(prev_r),
+                    new_rating=_hu_grade(new_r),
+                    pt_text=pt_text,
+                )
+            )
 
-def read_master_tickers(csv_path: str, debug: bool = False) -> List[str]:
-    tickers: List[str] = []
-    with open(csv_path, "r", encoding="utf-8", newline="") as f:
+    return events
+
+
+def read_master_tickers(master_csv: str) -> List[str]:
+    with open(master_csv, "r", encoding="utf-8", newline="") as f:
         sample = f.read(4096)
         f.seek(0)
-        try:
-            dialect = csv.Sniffer().sniff(sample) if sample.strip() else csv.excel
-        except Exception:
-            dialect = csv.excel
+        dialect = csv.Sniffer().sniff(sample, delimiters=",;\t")
         reader = csv.reader(f, dialect)
         rows = list(reader)
 
     if not rows:
-        return tickers
+        return []
 
     header = [c.strip().lower() for c in rows[0]]
-    ticker_col_idx = None
-    for i, name in enumerate(header):
-        if name in {"ticker", "symbol", "tickers"}:
-            ticker_col_idx = i
-            break
+    idxs = [i for i, c in enumerate(header) if c in ("ticker", "symbol", "tickers")]
 
-    start_row = 1 if ticker_col_idx is not None else 0
-    if ticker_col_idx is None:
-        ticker_col_idx = 0
-
-    for r in rows[start_row:]:
-        if not r or ticker_col_idx >= len(r):
+    tickers: List[str] = []
+    for r in rows[1:]:
+        if not r:
             continue
-        t = _ticker_norm(r[ticker_col_idx])
-        if t == "PKN.WA":
-            continue
-        if _is_valid_ticker(t):
-            tickers.append(t)
+        if idxs:
+            for i in idxs:
+                if i < len(r):
+                    t = _norm_ticker(r[i])
+                    if t:
+                        tickers.append(t)
+        else:
+            t = _norm_ticker(r[0])
+            if t:
+                tickers.append(t)
 
     seen = set()
     out: List[str] = []
@@ -214,242 +234,92 @@ def read_master_tickers(csv_path: str, debug: bool = False) -> List[str]:
         if t not in seen:
             seen.add(t)
             out.append(t)
-    if debug:
-        eprint(f"[master] tickers={len(out)}")
     return out
 
-def fetch_briefing_html(timeout: int = 25) -> str:
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                      "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Cache-Control": "no-cache",
-        "Pragma": "no-cache",
-    }
-    r = requests.get(BRIEFING_URL, headers=headers, timeout=timeout)
-    r.raise_for_status()
-    return r.text
 
-def _strip_tags(s: str) -> str:
-    if s is None:
-        return ""
-    s = re.sub(r"<[^>]+>", "", s)
-    s = html.unescape(s)
-    return " ".join(s.split()).strip()
-
-
-def _parse_updated_date(page_html: str) -> Optional[date]:
-    # Example: "Updated: 19-Feb-26 07:50 ET"
-    m = re.search(r"Updated:\s*([0-9]{1,2}-[A-Za-z]{3}-[0-9]{2})", page_html)
-    if not m:
-        return None
-    ds = m.group(1)
-    try:
-        return datetime.strptime(ds, "%d-%b-%y").date()
-    except Exception:
-        return None
-
-
-def _find_section_table(page_html: str, section_title: str) -> Optional[str]:
-    pat = re.compile(rf"{re.escape(section_title)}[\s\S]*?(<table[\s\S]*?</table>)", re.IGNORECASE)
-    m = pat.search(page_html)
-    return m.group(1) if m else None
-
-
-def _extract_table_rows(table_html: str) -> List[List[str]]:
-    rows: List[List[str]] = []
-    for tr in re.findall(r"<tr[\s\S]*?</tr>", table_html, flags=re.IGNORECASE):
-        if re.search(r"<th", tr, flags=re.IGNORECASE):
-            continue
-        tds = re.findall(r"<td[\s\S]*?</td>", tr, flags=re.IGNORECASE)
-        if not tds:
-            continue
-        cells = [_strip_tags(td) for td in tds]
-        cells = [c for c in cells if c != ""]
-        if cells:
-            rows.append(cells)
-    return rows
-
-
-def _split_change(s: str) -> Tuple[str, str]:
-    s = (s or "").strip()
-    if not s:
-        return ("n/a", "n/a")
-    for sep in ["»", "→", "->", "=>"]:
-        if sep in s:
-            a, b = s.split(sep, 1)
-            return (a.strip(), b.strip())
-    return (s.strip(), s.strip())
-
-
-def parse_briefing_events(page_html: str, today: date, days: int, debug: int = 0) -> List[Dict[str, str]]:
-    """
-    Parse hosting.briefing.com upgrades/downgrades page tables.
-
-    Output keys:
-      symbol, date, grading_company, action,
-      previous_grade, new_grade, previous_pt, new_pt, section
-    """
-    updated = _parse_updated_date(page_html) or today
-    start_date = today - timedelta(days=max(0, days - 1))
-
-    # Page is a "today" page; if its updated date is outside the window, return nothing.
-    if updated < start_date or updated > today:
-        return []
-
-    sections = [
-        ("Upgrades", "upgrade"),
-        ("Downgrades", "downgrade"),
-        ("Coverage Initiated", "initiation"),
-        ("Coverage Reiterated/Price Tgt Changed", "reiterate"),
-    ]
-
-    out: List[Dict[str, str]] = []
-
-    for section_title, action in sections:
-        table_html = _find_section_table(page_html, section_title)
-        if not table_html:
-            continue
-
-        rows = _extract_table_rows(table_html)
-
-        for cells in rows:
-            # Expected cols: Company | Ticker | Brokerage Firm | Ratings Change | Price Target
-            company = cells[0] if len(cells) >= 1 else "n/a"
-            symbol = cells[1] if len(cells) >= 2 else "n/a"
-            firm = cells[2] if len(cells) >= 3 else "n/a"
-            rating_change = cells[3] if len(cells) >= 4 else ""
-            pt_change = cells[4] if len(cells) >= 5 else ""
-
-            prev_g, new_g = _split_change(rating_change) if rating_change else ("n/a", "n/a")
-            prev_pt, new_pt = _split_change(pt_change) if pt_change else ("n/a", "n/a")
-
-            out.append({
-                "symbol": symbol.upper().strip(),
-                "company": company,
-                "grading_company": firm,
-                "action": action,
-                "previous_grade": prev_g,
-                "new_grade": new_g,
-                "previous_pt": prev_pt,
-                "new_pt": new_pt,
-                "date": updated.isoformat(),
-                "section": section_title,
-            })
-
-    # Dedup identical rows (page sometimes repeats)
-    seen = set()
-    dedup: List[Dict[str, str]] = []
-    for r in out:
-        key = (
-            r["symbol"], r["grading_company"], r["action"],
-            r["previous_grade"], r["new_grade"],
-            r["previous_pt"], r["new_pt"],
-            r["date"], r["section"]
-        )
-        if key in seen:
-            continue
-        seen.add(key)
-        dedup.append(r)
-
-    return dedup
-
-def filter_events(events: List[AnalystEvent], tickers_set: set, start_d: date, end_d: date) -> List[AnalystEvent]:
-    out: List[AnalystEvent] = []
-    for e in events:
-        try:
-            d = datetime.strptime(e.event_date, "%Y-%m-%d").date()
-        except Exception:
-            continue
-        if d < start_d or d > end_d:
-            continue
-        if e.ticker not in tickers_set:
-            continue
-        out.append(e)
-    out.sort(key=lambda x: (x.event_date, x.ticker), reverse=True)
-    return out
-
-def format_markdown(events: List[AnalystEvent], start_d: date, end_d: date) -> str:
+def _format_md(ordered: Dict[str, List[AnalystEvent]], days: int, status_line: str) -> str:
     lines: List[str] = []
-    lines.append(f"## Elemzői frissítések (fel-/leminősítések) — {start_d.isoformat()} → {end_d.isoformat()}")
+    lines.append(f"## Elemzői feed (MarketBeat) – fel/lemínősítések + célár (utolsó {days} naptári nap)")
     lines.append("")
-    if not events:
+    lines.append(status_line)
+    lines.append("")
+
+    any_event = False
+    for t in ordered:
+        evs = ordered[t]
+        if not evs:
+            continue
+        any_event = True
+        lines.append(f"## {t}")
+        for e in evs:
+            if e.prev_rating == e.new_rating and e.new_rating != "n/a":
+                line = f"- {e.event_date} — {e.firm} — {e.action} | Ajánlás változatlan ({e.new_rating})"
+            else:
+                line = f"- {e.event_date} — {e.firm} — {e.action} | Ajánlás: {e.prev_rating} → {e.new_rating}"
+            if e.pt_text:
+                line += f" | Célár: {e.pt_text}"
+            lines.append(line)
+        lines.append("")
+
+    if not any_event:
         lines.append("_Nincs releváns elemzői esemény a megadott ablakban._")
         lines.append("")
-        return "\n".join(lines)
 
-    by_t: Dict[str, List[AnalystEvent]] = {}
-    for e in events:
-        by_t.setdefault(e.ticker, []).append(e)
+    return "\n".join(lines).rstrip() + "\n"
 
-    for t in sorted(by_t.keys()):
-        lines.append(f"**{t}**")
-        for r in sorted(by_t[t], key=lambda x: x.event_date, reverse=True):
-            date_s = r.event_date
-            firm = r.firm
-            action = r.action_hu
-            prev_g = r.previous_grade or "n/a"
-            new_g = r.new_grade or "n/a"
-
-            if prev_g == new_g and prev_g != "n/a":
-                lines.append(f"- {date_s} — {firm} — {action} | Ajánlás változatlan ({prev_g})")
-            elif prev_g != "n/a" or new_g != "n/a":
-                lines.append(f"- {date_s} — {firm} — {action} | Ajánlás: {prev_g} → {new_g}")
-            else:
-                lines.append(f"- {date_s} — {firm} — {action}")
-
-            if (r.previous_target and r.previous_target != "n/a") or (r.new_target and r.new_target != "n/a"):
-                lines.append(f"  - Célár: {r.previous_target} → {r.new_target}")
-        lines.append("")
-    return "\n".join(lines)
-
-def write_text(path: str, text: str) -> None:
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(text)
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--master", required=True, help="MASTER CSV path")
-    ap.add_argument("--days", type=int, default=4, help="Rolling window in calendar days (default: 4)")
-    ap.add_argument("--out-md", required=True, help="Output markdown path")
-    ap.add_argument("--out-json", default="", help="Optional output JSON path")
-    ap.add_argument("--debug", action="store_true", help="Verbose stderr logging")
+    ap.add_argument("--master", required=True)
+    ap.add_argument("--days", type=int, default=4)
+    ap.add_argument("--out-md", required=True)
+    ap.add_argument("--out-json", default="")
+    ap.add_argument("--debug", action="store_true")
     args = ap.parse_args()
 
-    today = date.today()
-    days = max(1, int(args.days))
-    start_d = today - timedelta(days=days - 1)
-    end_d = today
+    tickers = read_master_tickers(args.master)
+    ticker_set = set(tickers)
 
-    tickers = read_master_tickers(args.master, debug=args.debug)
-    tickers_set = set(tickers)
+    html_text = _fetch_html(BRIEFING_URL)
+    today_ref = _parse_updated_date(html_text, fallback_today=date.today())
+    start = today_ref - timedelta(days=max(args.days - 1, 0))
+    end = today_ref
 
-    if args.debug:
-        eprint(f"[window] {start_d.isoformat()} -> {end_d.isoformat()} (days={days})")
+    events_all = parse_briefing_events(html_text, today_ref=today_ref)
 
-    try:
-def fetch_briefing_html(timeout: int = 25) -> str:
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                      "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Cache-Control": "no-cache",
-        "Pragma": "no-cache",
-    }
-    req = urllib.request.Request(BRIEFING_URL, headers=headers, method="GET")
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = resp.read()
-    except urllib.error.HTTPError as e:
-        raise RuntimeError(f"Briefing HTTP error: {e.code}") from e
-    except urllib.error.URLError as e:
-        raise RuntimeError(f"Briefing URL error: {getattr(e, 'reason', e)}") from e
+    ordered: Dict[str, List[AnalystEvent]] = {t: [] for t in tickers}
+    ok = 0
+    for e in events_all:
+        if e.ticker in ticker_set:
+            ordered[e.ticker].append(e)
+            ok += 1
 
-    return data.decode("utf-8", errors="replace")
+    ordered2 = {t: ordered[t] for t in tickers if ordered[t]}
+
+    status_line = (
+        f"_forrás státusz: ok={ok}, nincs_adat={len(ticker_set) - len(ordered2)}, fail=0 | "
+        f"ablak: {start.isoformat()} → {end.isoformat()} | updated: {today_ref.isoformat()}_"
+    )
+
+    md = _format_md(ordered2, args.days, status_line)
+    with open(args.out_md, "w", encoding="utf-8") as f:
+        f.write(md)
+
+    if args.out_json:
+        payload = {
+            "version": "v0.2.2-briefing-stdlib-2026-02-19",
+            "source": "briefing",
+            "updated_date": today_ref.isoformat(),
+            "window": {"start": start.isoformat(), "end": end.isoformat(), "days": args.days},
+            "tickers_total": len(ticker_set),
+            "events_ok": ok,
+            "events": [asdict(e) for t in ordered2 for e in ordered2[t]],
+        }
+        with open(args.out_json, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+
+    return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
