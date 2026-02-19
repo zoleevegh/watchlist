@@ -51,11 +51,9 @@ from dataclasses import dataclass, asdict
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
-import requests
-from bs4 import BeautifulSoup
-
-
 import html
+import urllib.request
+import urllib.error
 BRIEFING_URL = "https://hosting.briefing.com/fidelity/Calendars/UpgradesDowngrades.htm"
 
 # ---- Hungarian mappings ------------------------------------------------------
@@ -233,110 +231,129 @@ def fetch_briefing_html(timeout: int = 25) -> str:
     r.raise_for_status()
     return r.text
 
-def parse_briefing_events(html: str, today: date, debug: bool = False) -> List[AnalystEvent]:
-    soup = BeautifulSoup(html, "html.parser")
-    tables = soup.find_all("table")
-    if debug:
-        eprint(f"[briefing] tables={len(tables)}")
+def _strip_tags(s: str) -> str:
+    if s is None:
+        return ""
+    s = re.sub(r"<[^>]+>", "", s)
+    s = html.unescape(s)
+    return " ".join(s.split()).strip()
 
-    events: List[AnalystEvent] = []
 
-    def table_headers(table) -> List[str]:
-        tr = table.find("tr")
-        if not tr:
-            return []
-        ths = tr.find_all("th")
-        if not ths:
-            return []
-        return [_norm_space(th.get_text(" ", strip=True)) for th in ths]
+def _parse_updated_date(page_html: str) -> Optional[date]:
+    # Example: "Updated: 19-Feb-26 07:50 ET"
+    m = re.search(r"Updated:\s*([0-9]{1,2}-[A-Za-z]{3}-[0-9]{2})", page_html)
+    if not m:
+        return None
+    ds = m.group(1)
+    try:
+        return datetime.strptime(ds, "%d-%b-%y").date()
+    except Exception:
+        return None
 
-    for table in tables:
-        headers = table_headers(table)
-        headers_l = [h.lower() for h in headers]
-        trs = table.find_all("tr")
-        if not trs or len(trs) < 2:
+
+def _find_section_table(page_html: str, section_title: str) -> Optional[str]:
+    pat = re.compile(rf"{re.escape(section_title)}[\s\S]*?(<table[\s\S]*?</table>)", re.IGNORECASE)
+    m = pat.search(page_html)
+    return m.group(1) if m else None
+
+
+def _extract_table_rows(table_html: str) -> List[List[str]]:
+    rows: List[List[str]] = []
+    for tr in re.findall(r"<tr[\s\S]*?</tr>", table_html, flags=re.IGNORECASE):
+        if re.search(r"<th", tr, flags=re.IGNORECASE):
+            continue
+        tds = re.findall(r"<td[\s\S]*?</td>", tr, flags=re.IGNORECASE)
+        if not tds:
+            continue
+        cells = [_strip_tags(td) for td in tds]
+        cells = [c for c in cells if c != ""]
+        if cells:
+            rows.append(cells)
+    return rows
+
+
+def _split_change(s: str) -> Tuple[str, str]:
+    s = (s or "").strip()
+    if not s:
+        return ("n/a", "n/a")
+    for sep in ["»", "→", "->", "=>"]:
+        if sep in s:
+            a, b = s.split(sep, 1)
+            return (a.strip(), b.strip())
+    return (s.strip(), s.strip())
+
+
+def parse_briefing_events(page_html: str, today: date, days: int, debug: int = 0) -> List[Dict[str, str]]:
+    """
+    Parse hosting.briefing.com upgrades/downgrades page tables.
+
+    Output keys:
+      symbol, date, grading_company, action,
+      previous_grade, new_grade, previous_pt, new_pt, section
+    """
+    updated = _parse_updated_date(page_html) or today
+    start_date = today - timedelta(days=max(0, days - 1))
+
+    # Page is a "today" page; if its updated date is outside the window, return nothing.
+    if updated < start_date or updated > today:
+        return []
+
+    sections = [
+        ("Upgrades", "upgrade"),
+        ("Downgrades", "downgrade"),
+        ("Coverage Initiated", "initiation"),
+        ("Coverage Reiterated/Price Tgt Changed", "reiterate"),
+    ]
+
+    out: List[Dict[str, str]] = []
+
+    for section_title, action in sections:
+        table_html = _find_section_table(page_html, section_title)
+        if not table_html:
             continue
 
-        colmap: Dict[str, int] = {}
-        if headers:
-            for idx, h in enumerate(headers_l):
-                if "date" in h:
-                    colmap["date"] = idx
-                elif "ticker" in h or "symbol" in h:
-                    colmap["ticker"] = idx
-                elif "company" in h:
-                    colmap["company"] = idx
-                elif "type" in h or "action" in h:
-                    colmap["type"] = idx
-                elif "firm" in h or "broker" in h or "research" in h:
-                    colmap["firm"] = idx
-                elif "from" in h and "rating" in h:
-                    colmap["from_rating"] = idx
-                elif ("to" in h and "rating" in h) or ("new" in h and "rating" in h):
-                    colmap["to_rating"] = idx
-                elif "from" in h and ("pt" in h or "target" in h):
-                    colmap["from_pt"] = idx
-                elif ("to" in h and ("pt" in h or "target" in h)) or ("new" in h and ("pt" in h or "target" in h)):
-                    colmap["to_pt"] = idx
+        rows = _extract_table_rows(table_html)
 
-        for tr in trs[1:]:
-            tds = tr.find_all(["td", "th"])
-            if not tds:
-                continue
-            cols = [_norm_space(td.get_text(" ", strip=True)) for td in tds]
-            if len(cols) <= 2:
-                continue
+        for cells in rows:
+            # Expected cols: Company | Ticker | Brokerage Firm | Ratings Change | Price Target
+            company = cells[0] if len(cells) >= 1 else "n/a"
+            symbol = cells[1] if len(cells) >= 2 else "n/a"
+            firm = cells[2] if len(cells) >= 3 else "n/a"
+            rating_change = cells[3] if len(cells) >= 4 else ""
+            pt_change = cells[4] if len(cells) >= 5 else ""
 
-            raw_date = cols[colmap["date"]] if "date" in colmap and colmap["date"] < len(cols) else ""
-            d = _parse_date_any(raw_date, today) or today
+            prev_g, new_g = _split_change(rating_change) if rating_change else ("n/a", "n/a")
+            prev_pt, new_pt = _split_change(pt_change) if pt_change else ("n/a", "n/a")
 
-            ticker = ""
-            if "ticker" in colmap and colmap["ticker"] < len(cols):
-                ticker = _ticker_norm(cols[colmap["ticker"]])
-            else:
-                m = re.search(r"\b[A-Z]{1,5}(?:\.[A-Z])?\b", " ".join(cols))
-                ticker = _ticker_norm(m.group(0)) if m else ""
+            out.append({
+                "symbol": symbol.upper().strip(),
+                "company": company,
+                "grading_company": firm,
+                "action": action,
+                "previous_grade": prev_g,
+                "new_grade": new_g,
+                "previous_pt": prev_pt,
+                "new_pt": new_pt,
+                "date": updated.isoformat(),
+                "section": section_title,
+            })
 
-            if ticker == "PKN.WA" or not _is_valid_ticker(ticker):
-                continue
+    # Dedup identical rows (page sometimes repeats)
+    seen = set()
+    dedup: List[Dict[str, str]] = []
+    for r in out:
+        key = (
+            r["symbol"], r["grading_company"], r["action"],
+            r["previous_grade"], r["new_grade"],
+            r["previous_pt"], r["new_pt"],
+            r["date"], r["section"]
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        dedup.append(r)
 
-            company = cols[colmap["company"]] if "company" in colmap and colmap["company"] < len(cols) else "n/a"
-            raw_type = cols[colmap["type"]] if "type" in colmap and colmap["type"] < len(cols) else ""
-            firm = cols[colmap["firm"]] if "firm" in colmap and colmap["firm"] < len(cols) else "n/a"
-
-            prev_rating = cols[colmap["from_rating"]] if "from_rating" in colmap and colmap["from_rating"] < len(cols) else ""
-            new_rating = cols[colmap["to_rating"]] if "to_rating" in colmap and colmap["to_rating"] < len(cols) else ""
-
-            prev_pt = cols[colmap["from_pt"]] if "from_pt" in colmap and colmap["from_pt"] < len(cols) else ""
-            new_pt = cols[colmap["to_pt"]] if "to_pt" in colmap and colmap["to_pt"] < len(cols) else ""
-
-            action_hu = TYPE_TO_ACTION.get(raw_type.strip().lower(), "")
-            if not action_hu:
-                action_hu = "Célár változás" if (prev_pt or new_pt) else "n/a"
-
-            ev = AnalystEvent(
-                event_date=d.isoformat(),
-                ticker=ticker,
-                company=company or "n/a",
-                action_hu=action_hu,
-                firm=firm or "n/a",
-                previous_grade=_hu_rating(prev_rating) if prev_rating else "n/a",
-                new_grade=_hu_rating(new_rating) if new_rating else "n/a",
-                previous_target=prev_pt or "n/a",
-                new_target=new_pt or "n/a",
-                raw_type=raw_type or "",
-            )
-            events.append(ev)
-
-    uniq: Dict[str, AnalystEvent] = {}
-    for e in events:
-        k = "|".join([e.event_date, e.ticker, e.firm, e.action_hu, e.previous_grade, e.new_grade, e.previous_target, e.new_target])
-        uniq[k] = e
-    out = list(uniq.values())
-    out.sort(key=lambda x: (x.event_date, x.ticker), reverse=True)
-    if debug:
-        eprint(f"[briefing] parsed={len(out)}")
-    return out
+    return dedup
 
 def filter_events(events: List[AnalystEvent], tickers_set: set, start_d: date, end_d: date) -> List[AnalystEvent]:
     out: List[AnalystEvent] = []
@@ -412,36 +429,25 @@ def main() -> int:
         eprint(f"[window] {start_d.isoformat()} -> {end_d.isoformat()} (days={days})")
 
     try:
-        html = fetch_briefing_html()
-    except Exception as ex:
-        md = "\n".join([
-            f"## Elemzői frissítések (fel-/leminősítések) — {start_d.isoformat()} → {end_d.isoformat()}",
-            "",
-            f"_Adat nem elérhető (forrás hiba): {type(ex).__name__}: {ex}_",
-            "",
-        ])
-        write_text(args.out_md, md)
-        if args.out_json:
-            write_text(args.out_json, json.dumps({"error": str(ex)}, ensure_ascii=False, indent=2))
-        return 0
+def fetch_briefing_html(timeout: int = 25) -> str:
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+    }
+    req = urllib.request.Request(BRIEFING_URL, headers=headers, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = resp.read()
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"Briefing HTTP error: {e.code}") from e
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"Briefing URL error: {getattr(e, 'reason', e)}") from e
 
-    events_all = parse_briefing_events(html, today=today, debug=args.debug)
-    events = filter_events(events_all, tickers_set=tickers_set, start_d=start_d, end_d=end_d)
-
-    md = format_markdown(events, start_d=start_d, end_d=end_d)
-    write_text(args.out_md, md)
-
-    if args.out_json:
-        payload = {
-            "version": "v0.2.0-briefing-4day-2026-02-19",
-            "window": {"start": start_d.isoformat(), "end": end_d.isoformat(), "days": days},
-            "events": [asdict(e) for e in events],
-        }
-        write_text(args.out_json, json.dumps(payload, ensure_ascii=False, indent=2))
-
-    if args.debug:
-        eprint(f"[out] md={args.out_md} events={len(events)}")
-    return 0
+    return data.decode("utf-8", errors="replace")
 
 
 if __name__ == "__main__":
