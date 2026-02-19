@@ -1,515 +1,445 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-analyst_marketbeat.py — v0.1.1-benzinga-scrape-2026-02-10
+analyst_marketbeat.py — v0.2.0-briefing-4day-2026-02-19
 
 PURPOSE
-- Benzinga analyst ratings "per ticker" scraper (public HTML) with cache.
-- Designed to be a drop-in replacement for the old MarketBeat analyst block generator in your PRICE ENGINE.
+- Analyst upgrades/downgrades block generator for your PRICE ENGINE.
+- Source: Briefing/Fidelity Upgrades & Downgrades calendar (static HTML table):
+    https://hosting.briefing.com/fidelity/Calendars/UpgradesDowngrades.htm
+
+WHY THIS
+- The prior free feeds (e.g., top-10 global endpoints) are not watchlist-usable.
+- Briefing page is a single, static HTML table (no JS pagination), so it is stable to fetch/parse.
+- One HTTP request per run (not per ticker) → avoids rate-limit disasters.
 
 WHAT IT DOES
-- Reads tickers from MASTER CSV (first column is assumed to include ticker symbols).
-- Fetches https://www.benzinga.com/quote/{TICKER}/analyst-ratings for each ticker (HTML).
-- Extracts the "Analyst Ratings" table rows (date, firm, action, rating change, price target change if present).
-- Filters rows to a rolling calendar window: today + previous (days-1) days (default: 4).
-- Writes:
-    - Markdown summary to --out-md
-    - JSON (optional) to --out-json
-- Uses a persistent cache file (default: reports/benzinga_events.json) to:
-    - avoid refetching within TTL
-    - retain recent events even if page rendering changes temporarily
+- Reads tickers from MASTER CSV (first column OR any column named like ticker/symbol).
+- Fetches the Briefing upgrades/downgrades table once.
+- Extracts rows (date, ticker, company, action/type, firm, old/new rating, old/new target if present).
+- Filters to a rolling calendar window: today + previous (days-1) days (default: 4).
+- Filters to your MASTER tickers (with basic normalization).
+- Writes a Markdown block to --out-md (and optional JSON to --out-json).
 
-IMPORTANT LIMITATIONS
-- This is HTML scraping. If Benzinga changes markup, the parser may need an update.
-- Many quote pages are server-rendered enough to scrape; if a specific ticker returns "Loading..." only,
-  that ticker will be marked as "adat nem elérhető".
+OUTPUT STYLE (HU)
+- Terminology is Hungarian:
+  * Upgrade → Felminősítés, Downgrade → Leminősítés, Initiation → Új ajánlás, Reiterated/Maintained → Ajánlás változatlan
+  * Buy → Vétel, Strong Buy → Erős vétel, Hold → Tartás, Neutral → Semleges, Sell → Eladás, etc.
+- If previous_grade == new_grade, prints ONLY the “Ajánlás változatlan (…)" line (as requested).
+- No "Forrás:" lines.
 
 CLI
   --master <csv>
   --days <int>             (default 4 = ma + előző 3 naptári nap)
   --out-md <path>
   --out-json <path>        (optional)
-  --cache <path>           (default reports/benzinga_events.json)
-  --cache-ttl-hours <int>  (default 24)
-  --sleep-ms <int>         (default 150) polite pacing
   --debug                  (more verbose output to stderr)
 
-OUTPUT STYLE (HU)
-- Action and rating terminology is translated to Hungarian.
-- Only one “Ajánlás változatlan (…)” line is printed if prev==new, per your latest rule.
-- "Forrás:" is NOT printed.
+NOTES
+- Briefing page is usually "today-focused". If the HTML row has no parsable date, we treat it as "today".
+- This script does not attempt any login/paywall bypass.
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
-import datetime as _dt
 import json
 import re
 import sys
-import time
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from dataclasses import dataclass, asdict
+from datetime import date, datetime, timedelta
+from typing import Any, Dict, List, Optional
 
 import requests
+from bs4 import BeautifulSoup
 
 
-# ----------------------------
-# HU terminology
-# ----------------------------
-_RATING_MAP = {
-    "Buy": "Vétel",
-    "Strong Buy": "Erős vétel",
-    "Hold": "Tartás",
-    "Sell": "Eladás",
-    "Strong Sell": "Erős eladás",
-    "Neutral": "Semleges",
-    "Outperform": "Felülteljesítés",
-    "Underperform": "Alulteljesítés",
-    "Overweight": "Felülsúlyozás",
-    "Underweight": "Alulsúlyozás",
-    "Equal-Weight": "Semleges súly",
-    "Equal Weight": "Semleges súly",
-    "Market Perform": "Piaci teljesítés",
-    "Peer Perform": "Szektorszintű",
-    "Sector Perform": "Szektorszintű",
+BRIEFING_URL = "https://hosting.briefing.com/fidelity/Calendars/UpgradesDowngrades.htm"
+
+# ---- Hungarian mappings ------------------------------------------------------
+
+RATING_MAP = {
+    "strong buy": "Erős vétel",
+    "buy": "Vétel",
+    "overweight": "Felülsúlyozás",
+    "outperform": "Piac feletti teljesítés",
+    "market outperform": "Piac feletti teljesítés",
+    "accumulate": "Felhalmozás",
+    "positive": "Pozitív",
+    "neutral": "Semleges",
+    "hold": "Tartás",
+    "equal weight": "Piaccal megegyező súly",
+    "market perform": "Piaccal megegyező teljesítés",
+    "sector perform": "Szektornak megfelelő teljesítés",
+    "underperform": "Piac alatti teljesítés",
+    "underweight": "Alulsúlyozás",
+    "sell": "Eladás",
+    "strong sell": "Erős eladás",
+    "reduce": "Csökkentés",
+    "negative": "Negatív",
 }
 
-_ACTION_MAP = {
-    "Upgraded": "felminősítés",
-    "Downgraded": "leminősítés",
-    "Initiated": "kezdeményezés",
-    "Reiterated": "megerősítés",
-    "Maintains": "megerősítés",
-    "Reiterates": "megerősítés",
-    "Maintained": "megerősítés",
-    "Resumed": "újraindítás",
-    "Set": "célár megadás",
-    "Raised": "célár emelés",
-    "Lowered": "célár csökkentés",
+ACTION_MAP = {
+    "upgrade": "Felminősítés",
+    "downgrade": "Leminősítés",
+    "initiated": "Új ajánlás",
+    "initiation": "Új ajánlás",
+    "reiterated": "Ajánlás változatlan",
+    "maintained": "Ajánlás változatlan",
+    "reinstated": "Visszaállítva",
+    "resumed": "Követés újraindítva",
+    "started": "Követés indítva",
+    "coverage initiated": "Követés indítva",
+    "coverage resumed": "Követés újraindítva",
+    "target raised": "Célár emelve",
+    "target lowered": "Célár csökkentve",
+    "pt raised": "Célár emelve",
+    "pt lowered": "Célár csökkentve",
 }
 
+TYPE_TO_ACTION = {
+    "upgrades": "Felminősítés",
+    "downgrades": "Leminősítés",
+    "initiations": "Új ajánlás",
+    "reiterations": "Ajánlás változatlan",
+    "re-iterations": "Ajánlás változatlan",
+    "target price changes": "Célár változás",
+    "target price change": "Célár változás",
+}
 
-def _hu_rating(s: str) -> str:
-    s = (s or "").strip()
-    return _RATING_MAP.get(s, s)
+# ---- Data model --------------------------------------------------------------
 
-
-def _hu_action(s: str) -> str:
-    s = (s or "").strip()
-    # Benzinga rows often have verbs like: "Reiterates", "Initiates", etc.
-    return _ACTION_MAP.get(s, s.lower() if s else "n/a")
-
-
-# ----------------------------
-# Models
-# ----------------------------
 @dataclass
-class Event:
-    symbol: str
-    date: str  # YYYY-MM-DD
+class AnalystEvent:
+    event_date: str  # YYYY-MM-DD
+    ticker: str
+    company: str
+    action_hu: str
     firm: str
-    action: str
-    prev_rating: str
-    new_rating: str
-    pt_change: str  # e.g. "$130 → $160" or "n/a"
-    raw: Dict[str, Any]
+    previous_grade: str
+    new_grade: str
+    previous_target: str
+    new_target: str
+    raw_type: str = ""
 
 
-# ----------------------------
-# Helpers
-# ----------------------------
-def _today_utc() -> _dt.date:
-    return _dt.datetime.utcnow().date()
+# ---- Helpers ----------------------------------------------------------------
 
+def eprint(*args: Any) -> None:
+    print(*args, file=sys.stderr)
 
-def _parse_date_mmddyyyy(s: str) -> Optional[str]:
-    s = (s or "").strip()
-    m = re.match(r"^(\d{2})/(\d{2})/(\d{4})$", s)
-    if not m:
+def _norm_space(s: str) -> str:
+    return re.sub(r"\s+", " ", (s or "").strip())
+
+def _hu_rating(r: str) -> str:
+    r0 = _norm_space(r).lower()
+    if not r0 or r0 in {"n/a", "na", "-"}:
+        return "n/a"
+    return RATING_MAP.get(r0, r.strip())
+
+def _ticker_norm(t: str) -> str:
+    t = (t or "").strip().upper().replace(" ", "")
+    return t
+
+def _is_valid_ticker(t: str) -> bool:
+    return bool(t) and bool(re.fullmatch(r"[A-Z0-9][A-Z0-9.\-]{0,9}", t))
+
+def _parse_date_any(s: str, today: date) -> Optional[date]:
+    s = _norm_space(s)
+    if not s:
         return None
-    mm, dd, yyyy = map(int, m.groups())
-    try:
-        d = _dt.date(yyyy, mm, dd)
-    except ValueError:
-        return None
-    return d.isoformat()
 
+    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y"):
+        try:
+            return datetime.strptime(s, fmt).date()
+        except Exception:
+            pass
 
-def _in_window(iso_date: str, start: _dt.date, end: _dt.date) -> bool:
-    try:
-        d = _dt.date.fromisoformat(iso_date)
-    except Exception:
-        return False
-    return start <= d <= end
+    m = re.fullmatch(r"(\d{1,2})/(\d{1,2})", s)
+    if m:
+        try:
+            return date(today.year, int(m.group(1)), int(m.group(2)))
+        except Exception:
+            return None
 
+    for fmt in ("%b %d, %Y", "%B %d, %Y", "%b %d", "%B %d"):
+        try:
+            d = datetime.strptime(s, fmt).date()
+            if fmt in ("%b %d", "%B %d"):
+                d = date(today.year, d.month, d.day)
+            return d
+        except Exception:
+            pass
 
-def _load_master_tickers(master_csv: Path) -> List[str]:
-    if not master_csv.exists():
-        raise FileNotFoundError(f"MASTER CSV not found: {master_csv}")
+    return None
+
+def read_master_tickers(csv_path: str, debug: bool = False) -> List[str]:
     tickers: List[str] = []
-    with master_csv.open("r", encoding="utf-8", newline="") as f:
-        reader = csv.reader(f)
-        for i, row in enumerate(reader):
-            if not row:
-                continue
-            t = (row[0] or "").strip()
-            if i == 0 and t.lower() in ("ticker", "symbol"):
-                continue
-            if not t:
-                continue
-            # Normalize: keep dots (e.g., BRK.B) as-is
-            tickers.append(t.upper())
-    # De-dup preserve order
+    with open(csv_path, "r", encoding="utf-8", newline="") as f:
+        sample = f.read(4096)
+        f.seek(0)
+        try:
+            dialect = csv.Sniffer().sniff(sample) if sample.strip() else csv.excel
+        except Exception:
+            dialect = csv.excel
+        reader = csv.reader(f, dialect)
+        rows = list(reader)
+
+    if not rows:
+        return tickers
+
+    header = [c.strip().lower() for c in rows[0]]
+    ticker_col_idx = None
+    for i, name in enumerate(header):
+        if name in {"ticker", "symbol", "tickers"}:
+            ticker_col_idx = i
+            break
+
+    start_row = 1 if ticker_col_idx is not None else 0
+    if ticker_col_idx is None:
+        ticker_col_idx = 0
+
+    for r in rows[start_row:]:
+        if not r or ticker_col_idx >= len(r):
+            continue
+        t = _ticker_norm(r[ticker_col_idx])
+        if t == "PKN.WA":
+            continue
+        if _is_valid_ticker(t):
+            tickers.append(t)
+
     seen = set()
-    out = []
+    out: List[str] = []
     for t in tickers:
         if t not in seen:
             seen.add(t)
             out.append(t)
+    if debug:
+        eprint(f"[master] tickers={len(out)}")
     return out
 
+def fetch_briefing_html(timeout: int = 25) -> str:
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+    }
+    r = requests.get(BRIEFING_URL, headers=headers, timeout=timeout)
+    r.raise_for_status()
+    return r.text
 
-def _read_json(path: Path) -> Dict[str, Any]:
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+def parse_briefing_events(html: str, today: date, debug: bool = False) -> List[AnalystEvent]:
+    soup = BeautifulSoup(html, "html.parser")
+    tables = soup.find_all("table")
+    if debug:
+        eprint(f"[briefing] tables={len(tables)}")
 
+    events: List[AnalystEvent] = []
 
-def _write_json(path: Path, obj: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
+    def table_headers(table) -> List[str]:
+        tr = table.find("tr")
+        if not tr:
+            return []
+        ths = tr.find_all("th")
+        if not ths:
+            return []
+        return [_norm_space(th.get_text(" ", strip=True)) for th in ths]
 
-
-def _requests_session() -> requests.Session:
-    s = requests.Session()
-    s.headers.update(
-        {
-            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/120.0 Safari/537.36",
-            "Accept-Language": "en-US,en;q=0.9,hu;q=0.8",
-        }
-    )
-    return s
-
-
-# ----------------------------
-# Benzinga HTML parsing
-# ----------------------------
-# We scrape rows from the "Analyst Ratings" table.
-# In practice, Benzinga quote pages usually contain a table with columns like:
-# Date | Action | Firm | Price Target Change | Previous/Current Rating
-#
-# The markup can shift; therefore we:
-# - first try to locate the table by the presence of multiple mm/dd/yyyy dates
-# - then parse each <tr> for cells
-#
-_DATE_RE = re.compile(r"\b\d{2}/\d{2}/\d{4}\b")
-_TAG_RE = re.compile(r"<[^>]+>")
-_WS_RE = re.compile(r"\s+")
-
-
-def _strip_html(s: str) -> str:
-    s = _TAG_RE.sub(" ", s)
-    s = s.replace("&nbsp;", " ").replace("&amp;", "&").replace("&#39;", "'").replace("&quot;", '"')
-    s = _WS_RE.sub(" ", s).strip()
-    return s
-
-
-def _extract_table_rows(html: str) -> List[List[str]]:
-    # Find all <tr>...</tr> blocks; then extract <td>...</td> / <th>...</th>
-    rows: List[List[str]] = []
-    for tr in re.findall(r"(?is)<tr[^>]*>(.*?)</tr>", html):
-        cells = re.findall(r"(?is)<t[dh][^>]*>(.*?)</t[dh]>", tr)
-        if not cells:
-            continue
-        txt_cells = [_strip_html(c) for c in cells]
-        # Heuristic: keep rows that contain a date
-        if any(_DATE_RE.search(c) for c in txt_cells):
-            rows.append(txt_cells)
-    return rows
-
-
-def _parse_events_from_rows(symbol: str, rows: List[List[str]], debug: bool = False) -> List[Event]:
-    events: List[Event] = []
-    for cells in rows:
-        # Try to locate a date in the row
-        date_cell = next((c for c in cells if _DATE_RE.search(c)), "")
-        m = _DATE_RE.search(date_cell)
-        if not m:
-            continue
-        iso = _parse_date_mmddyyyy(m.group(0))
-        if not iso:
+    for table in tables:
+        headers = table_headers(table)
+        headers_l = [h.lower() for h in headers]
+        trs = table.find_all("tr")
+        if not trs or len(trs) < 2:
             continue
 
-        # Best-effort mapping from row text:
-        # Common patterns:
-        # [Date, Company, Current Price, Upside/Down, Analyst, Price Target Change, Previous/Current Rating]
-        # or on quote pages:
-        # [Date, Action, Analyst/Firm, Price Target Change, Previous / Current Rating]
-        #
-        joined = " | ".join(cells)
+        colmap: Dict[str, int] = {}
+        if headers:
+            for idx, h in enumerate(headers_l):
+                if "date" in h:
+                    colmap["date"] = idx
+                elif "ticker" in h or "symbol" in h:
+                    colmap["ticker"] = idx
+                elif "company" in h:
+                    colmap["company"] = idx
+                elif "type" in h or "action" in h:
+                    colmap["type"] = idx
+                elif "firm" in h or "broker" in h or "research" in h:
+                    colmap["firm"] = idx
+                elif "from" in h and "rating" in h:
+                    colmap["from_rating"] = idx
+                elif ("to" in h and "rating" in h) or ("new" in h and "rating" in h):
+                    colmap["to_rating"] = idx
+                elif "from" in h and ("pt" in h or "target" in h):
+                    colmap["from_pt"] = idx
+                elif ("to" in h and ("pt" in h or "target" in h)) or ("new" in h and ("pt" in h or "target" in h)):
+                    colmap["to_pt"] = idx
 
-        # Action verb
-        action = "n/a"
-        for k in _ACTION_MAP.keys():
-            if re.search(rf"\b{k}\b", joined, flags=re.IGNORECASE):
-                action = k
-                break
-
-        # Firm: attempt to find a known firm cell (often one of the middle cells with letters)
-        firm = "n/a"
-        firm_candidates = [c for c in cells if c and c.lower() not in ("date", "action", "company")]
-        # pick the longest alpha-ish candidate excluding price/ratings
-        scored: List[Tuple[int, str]] = []
-        for c in firm_candidates:
-            if "$" in c or "%" in c:
+        for tr in trs[1:]:
+            tds = tr.find_all(["td", "th"])
+            if not tds:
                 continue
-            if "→" in c or "->" in c:
+            cols = [_norm_space(td.get_text(" ", strip=True)) for td in tds]
+            if len(cols) <= 2:
                 continue
-            if re.search(r"\b(buy|hold|sell|outperform|overweight|neutral|underperform|underweight)\b", c, re.I):
-                continue
-            score = sum(ch.isalpha() for ch in c)
-            scored.append((score, c))
-        if scored:
-            scored.sort(reverse=True)
-            firm = scored[0][1]
 
-        # Price target change cell (contains $ or arrow)
-        pt_change = "n/a"
-        pt_cell = next((c for c in cells if ("$" in c and ("→" in c or "->" in c)) or ("→" in c) or ("->" in c)), "")
-        if pt_cell:
-            pt_change = pt_cell.replace("->", "→").strip()
+            raw_date = cols[colmap["date"]] if "date" in colmap and colmap["date"] < len(cols) else ""
+            d = _parse_date_any(raw_date, today) or today
 
-        # Rating change: look for pattern "X → Y" within cells, or split by "→" / "->"
-        prev_rating = "n/a"
-        new_rating = "n/a"
-        rating_cell = next(
-            (
-                c
-                for c in cells
-                if re.search(r"\b(Buy|Hold|Sell|Neutral|Outperform|Underperform|Overweight|Underweight|Market Perform|Peer Perform|Equal Weight)\b", c, re.I)
-                and ("→" in c or "->" in c)
-            ),
-            "",
-        )
-        if rating_cell:
-            rating_cell = rating_cell.replace("->", "→")
-            parts = [p.strip() for p in rating_cell.split("→", 1)]
-            if len(parts) == 2:
-                prev_rating, new_rating = parts[0], parts[1]
-        else:
-            # sometimes rating is presented as "Previous / Current Rating" with slash
-            rating_cell2 = next((c for c in cells if "/" in c and re.search(r"\b(Buy|Hold|Sell|Neutral|Outperform|Overweight)\b", c, re.I)), "")
-            if rating_cell2:
-                parts = [p.strip() for p in rating_cell2.split("/", 1)]
-                if len(parts) == 2:
-                    prev_rating, new_rating = parts[0], parts[1]
-
-        ev = Event(
-            symbol=symbol,
-            date=iso,
-            firm=firm,
-            action=action,
-            prev_rating=prev_rating,
-            new_rating=new_rating,
-            pt_change=pt_change,
-            raw={"cells": cells},
-        )
-        events.append(ev)
-
-    # Dedup by (date, firm, action, prev, new, pt)
-    seen = set()
-    out: List[Event] = []
-    for e in events:
-        k = (e.symbol, e.date, e.firm, e.action, e.prev_rating, e.new_rating, e.pt_change)
-        if k in seen:
-            continue
-        seen.add(k)
-        out.append(e)
-    # Most recent first
-    out.sort(key=lambda x: x.date, reverse=True)
-    return out
-
-
-def _fetch_symbol_events(
-    sess: requests.Session,
-    symbol: str,
-    cache: Dict[str, Any],
-    cache_ttl_hours: int,
-    sleep_ms: int,
-    debug: bool,
-) -> Tuple[List[Event], bool, str]:
-    """
-    Returns (events, cache_hit, status)
-    status: "ok" | "no_data" | "http_<code>" | "error:<msg>"
-    """
-    now = int(time.time())
-    key = symbol.upper()
-    ttl = max(1, int(cache_ttl_hours)) * 3600
-
-    # Cache entry structure:
-    # cache[symbol] = {"ts": <epoch>, "events": [eventdict...], "status": "ok|..."}
-    entry = cache.get(key) or {}
-    if isinstance(entry, dict) and entry.get("ts") and (now - int(entry["ts"])) < ttl and entry.get("events"):
-        evs = [Event(**e) for e in entry["events"]]
-        return evs, True, entry.get("status") or "ok"
-
-    url = f"https://www.benzinga.com/quote/{key}/analyst-ratings"
-    try:
-        r = sess.get(url, timeout=25)
-        if sleep_ms > 0:
-            time.sleep(sleep_ms / 1000.0)
-        if r.status_code != 200:
-            cache[key] = {"ts": now, "events": [], "status": f"http_{r.status_code}"}
-            return [], False, f"http_{r.status_code}"
-        html = r.text or ""
-        # If page is heavily client-rendered for this ticker, table may be absent.
-        if len(_DATE_RE.findall(html)) < 1:
-            cache[key] = {"ts": now, "events": [], "status": "no_data"}
-            return [], False, "no_data"
-
-        rows = _extract_table_rows(html)
-        if not rows:
-            cache[key] = {"ts": now, "events": [], "status": "no_data"}
-            return [], False, "no_data"
-
-        evs = _parse_events_from_rows(key, rows, debug=debug)
-        cache[key] = {"ts": now, "events": [e.__dict__ for e in evs], "status": "ok"}
-        return evs, False, "ok"
-
-    except Exception as e:
-        cache[key] = {"ts": now, "events": [], "status": f"error:{type(e).__name__}"}
-        if debug:
-            print(f"[{key}] fetch error: {e}", file=sys.stderr)
-        return [], False, f"error:{type(e).__name__}"
-
-
-def _format_md(events_by_ticker: Dict[str, List[Event]], days: int, status_line: str) -> str:
-    md: List[str] = []
-    md.append(f"## Elemzői feed (Benzinga) – fel/leminősítések + célár (utolsó {days} naptári nap)")
-    md.append("")
-    md.append(status_line)
-    md.append("")
-
-    any_rows = 0
-    for t in sorted(events_by_ticker.keys()):
-        rows = events_by_ticker[t]
-        if not rows:
-            continue
-        md.append(f"## {t}")
-        for r in rows:
-            prev_g = _hu_rating(r.prev_rating) if r.prev_rating != "n/a" else "n/a"
-            new_g = _hu_rating(r.new_rating) if r.new_rating != "n/a" else "n/a"
-            action = _hu_action(r.action)
-            firm = r.firm or "n/a"
-            date = r.date or "n/a"
-
-            # Your requested style:
-            # - if rating unchanged: "Ajánlás változatlan (X)"
-            # - else: "Ajánlás: X → Y"
-            if prev_g != "n/a" and new_g != "n/a" and prev_g == new_g:
-                rating_part = f"Ajánlás változatlan ({new_g})"
-            elif prev_g != "n/a" and new_g != "n/a":
-                rating_part = f"Ajánlás: {prev_g} → {new_g}"
+            ticker = ""
+            if "ticker" in colmap and colmap["ticker"] < len(cols):
+                ticker = _ticker_norm(cols[colmap["ticker"]])
             else:
-                rating_part = "Ajánlás: n/a"
+                m = re.search(r"\b[A-Z]{1,5}(?:\.[A-Z])?\b", " ".join(cols))
+                ticker = _ticker_norm(m.group(0)) if m else ""
 
-            # price target part (optional)
-            pt_part = ""
-            if r.pt_change and r.pt_change != "n/a":
-                pt_part = f" | Célár: {r.pt_change}"
+            if ticker == "PKN.WA" or not _is_valid_ticker(ticker):
+                continue
 
-            md.append(f"- {date} – {firm} – {action} | {rating_part}{pt_part}")
-            any_rows += 1
-        md.append("")
+            company = cols[colmap["company"]] if "company" in colmap and colmap["company"] < len(cols) else "n/a"
+            raw_type = cols[colmap["type"]] if "type" in colmap and colmap["type"] < len(cols) else ""
+            firm = cols[colmap["firm"]] if "firm" in colmap and colmap["firm"] < len(cols) else "n/a"
 
-    if any_rows == 0:
-        md.append("_Nincs Benzinga esemény a megadott ablakban._")
-        md.append("")
-    return "\n".join(md).rstrip() + "\n"
+            prev_rating = cols[colmap["from_rating"]] if "from_rating" in colmap and colmap["from_rating"] < len(cols) else ""
+            new_rating = cols[colmap["to_rating"]] if "to_rating" in colmap and colmap["to_rating"] < len(cols) else ""
 
+            prev_pt = cols[colmap["from_pt"]] if "from_pt" in colmap and colmap["from_pt"] < len(cols) else ""
+            new_pt = cols[colmap["to_pt"]] if "to_pt" in colmap and colmap["to_pt"] < len(cols) else ""
+
+            action_hu = TYPE_TO_ACTION.get(raw_type.strip().lower(), "")
+            if not action_hu:
+                action_hu = "Célár változás" if (prev_pt or new_pt) else "n/a"
+
+            ev = AnalystEvent(
+                event_date=d.isoformat(),
+                ticker=ticker,
+                company=company or "n/a",
+                action_hu=action_hu,
+                firm=firm or "n/a",
+                previous_grade=_hu_rating(prev_rating) if prev_rating else "n/a",
+                new_grade=_hu_rating(new_rating) if new_rating else "n/a",
+                previous_target=prev_pt or "n/a",
+                new_target=new_pt or "n/a",
+                raw_type=raw_type or "",
+            )
+            events.append(ev)
+
+    uniq: Dict[str, AnalystEvent] = {}
+    for e in events:
+        k = "|".join([e.event_date, e.ticker, e.firm, e.action_hu, e.previous_grade, e.new_grade, e.previous_target, e.new_target])
+        uniq[k] = e
+    out = list(uniq.values())
+    out.sort(key=lambda x: (x.event_date, x.ticker), reverse=True)
+    if debug:
+        eprint(f"[briefing] parsed={len(out)}")
+    return out
+
+def filter_events(events: List[AnalystEvent], tickers_set: set, start_d: date, end_d: date) -> List[AnalystEvent]:
+    out: List[AnalystEvent] = []
+    for e in events:
+        try:
+            d = datetime.strptime(e.event_date, "%Y-%m-%d").date()
+        except Exception:
+            continue
+        if d < start_d or d > end_d:
+            continue
+        if e.ticker not in tickers_set:
+            continue
+        out.append(e)
+    out.sort(key=lambda x: (x.event_date, x.ticker), reverse=True)
+    return out
+
+def format_markdown(events: List[AnalystEvent], start_d: date, end_d: date) -> str:
+    lines: List[str] = []
+    lines.append(f"## Elemzői frissítések (fel-/leminősítések) — {start_d.isoformat()} → {end_d.isoformat()}")
+    lines.append("")
+    if not events:
+        lines.append("_Nincs releváns elemzői esemény a megadott ablakban._")
+        lines.append("")
+        return "\n".join(lines)
+
+    by_t: Dict[str, List[AnalystEvent]] = {}
+    for e in events:
+        by_t.setdefault(e.ticker, []).append(e)
+
+    for t in sorted(by_t.keys()):
+        lines.append(f"**{t}**")
+        for r in sorted(by_t[t], key=lambda x: x.event_date, reverse=True):
+            date_s = r.event_date
+            firm = r.firm
+            action = r.action_hu
+            prev_g = r.previous_grade or "n/a"
+            new_g = r.new_grade or "n/a"
+
+            if prev_g == new_g and prev_g != "n/a":
+                lines.append(f"- {date_s} — {firm} — {action} | Ajánlás változatlan ({prev_g})")
+            elif prev_g != "n/a" or new_g != "n/a":
+                lines.append(f"- {date_s} — {firm} — {action} | Ajánlás: {prev_g} → {new_g}")
+            else:
+                lines.append(f"- {date_s} — {firm} — {action}")
+
+            if (r.previous_target and r.previous_target != "n/a") or (r.new_target and r.new_target != "n/a"):
+                lines.append(f"  - Célár: {r.previous_target} → {r.new_target}")
+        lines.append("")
+    return "\n".join(lines)
+
+def write_text(path: str, text: str) -> None:
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text)
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--master", required=True, help="Path to MASTER CSV")
-    ap.add_argument("--days", type=int, default=4, help="Rolling calendar window in days (default 4)")
-    ap.add_argument("--out-md", default="reports/analyst_last2d.md", help="Markdown output path")
-    ap.add_argument("--out-json", default="", help="Optional JSON output path")
-    ap.add_argument("--cache", default="reports/benzinga_events.json", help="Cache file path")
-    ap.add_argument("--cache-ttl-hours", type=int, default=24, help="Cache TTL hours")
-    ap.add_argument("--sleep-ms", type=int, default=150, help="Sleep between requests (ms)")
-    ap.add_argument("--debug", action="store_true")
+    ap.add_argument("--master", required=True, help="MASTER CSV path")
+    ap.add_argument("--days", type=int, default=4, help="Rolling window in calendar days (default: 4)")
+    ap.add_argument("--out-md", required=True, help="Output markdown path")
+    ap.add_argument("--out-json", default="", help="Optional output JSON path")
+    ap.add_argument("--debug", action="store_true", help="Verbose stderr logging")
     args = ap.parse_args()
 
-    master = Path(args.master)
-    out_md = Path(args.out_md)
-    out_json = Path(args.out_json) if args.out_json else None
-    cache_path = Path(args.cache)
+    today = date.today()
+    days = max(1, int(args.days))
+    start_d = today - timedelta(days=days - 1)
+    end_d = today
 
-    tickers = _load_master_tickers(master)
+    tickers = read_master_tickers(args.master, debug=args.debug)
+    tickers_set = set(tickers)
 
-    cache = _read_json(cache_path)
-    if not isinstance(cache, dict):
-        cache = {}
+    if args.debug:
+        eprint(f"[window] {start_d.isoformat()} -> {end_d.isoformat()} (days={days})")
 
-    sess = _requests_session()
+    try:
+        html = fetch_briefing_html()
+    except Exception as ex:
+        md = "\n".join([
+            f"## Elemzői frissítések (fel-/leminősítések) — {start_d.isoformat()} → {end_d.isoformat()}",
+            "",
+            f"_Adat nem elérhető (forrás hiba): {type(ex).__name__}: {ex}_",
+            "",
+        ])
+        write_text(args.out_md, md)
+        if args.out_json:
+            write_text(args.out_json, json.dumps({"error": str(ex)}, ensure_ascii=False, indent=2))
+        return 0
 
-    end = _today_utc()
-    start = end - _dt.timedelta(days=max(1, int(args.days)) - 1)
+    events_all = parse_briefing_events(html, today=today, debug=args.debug)
+    events = filter_events(events_all, tickers_set=tickers_set, start_d=start_d, end_d=end_d)
 
-    events_by_ticker: Dict[str, List[Event]] = {}
-    ok = 0
-    fail = 0
-    cache_hits = 0
-    no_data = 0
+    md = format_markdown(events, start_d=start_d, end_d=end_d)
+    write_text(args.out_md, md)
 
-    for t in tickers:
-        evs, hit, status = _fetch_symbol_events(
-            sess, t, cache, cache_ttl_hours=args.cache_ttl_hours, sleep_ms=args.sleep_ms, debug=args.debug
-        )
-        if hit:
-            cache_hits += 1
-
-        if status == "ok":
-            ok += 1
-        elif status == "no_data":
-            no_data += 1
-        else:
-            fail += 1
-
-        # Filter by window
-        filtered = [e for e in evs if e.date and _in_window(e.date, start, end)]
-        if filtered:
-            events_by_ticker[t] = filtered
-
-    # Persist cache
-    _write_json(cache_path, cache)
-
-    status_line = (
-        f"_forrás státusz: ok={ok}, nincs_adat={no_data}, fail={fail}, cache_hit={cache_hits} | "
-        f"ablak: {start.isoformat()} → {end.isoformat()}_"
-    )
-
-    md = _format_md(events_by_ticker, int(args.days), status_line)
-    out_md.parent.mkdir(parents=True, exist_ok=True)
-    out_md.write_text(md, encoding="utf-8")
-
-    if out_json:
-        # Only windowed events go to json (keeps it small)
-        j = {
-            "window": {"start": start.isoformat(), "end": end.isoformat(), "days": int(args.days)},
-            "status": {"ok": ok, "no_data": no_data, "fail": fail, "cache_hit": cache_hits},
-            "events_by_ticker": {
-                t: [e.__dict__ for e in evs] for t, evs in events_by_ticker.items()
-            },
+    if args.out_json:
+        payload = {
+            "version": "v0.2.0-briefing-4day-2026-02-19",
+            "window": {"start": start_d.isoformat(), "end": end_d.isoformat(), "days": days},
+            "events": [asdict(e) for e in events],
         }
-        out_json.parent.mkdir(parents=True, exist_ok=True)
-        out_json.write_text(json.dumps(j, ensure_ascii=False, indent=2), encoding="utf-8")
+        write_text(args.out_json, json.dumps(payload, ensure_ascii=False, indent=2))
 
+    if args.debug:
+        eprint(f"[out] md={args.out_md} events={len(events)}")
     return 0
 
 
