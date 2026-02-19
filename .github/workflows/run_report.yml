@@ -1,7 +1,7 @@
-# Ima (v1.0.21): bocsáss meg uram, ha megint mellényúltam;
+# Ima (v1.0.16): bocsáss meg uram, ha megint mellényúltam;
 # adj türelmet és tiszta logot, hogy csak az igazat írjam le.
-# Verzió: v1.0.21-run_report-add-requests-dep-2026-02-17
-# run_report.yml — v1.0.21-2026-02-17
+# Verzió: v1.0.16-run_report-add-bs4-2026-02-19
+# run_report.yml — v1.0.16-2026-02-19
 
 name: Run Report — PRICE ENGINE
 
@@ -23,15 +23,15 @@ name: Run Report — PRICE ENGINE
         description: "MASTER CSV URL (optional). Leave empty to use default."
         required: false
         default: ""
-      debug:
-        description: "Debug (0/1) — Analyst debug dump"
-        required: false
-        default: "0"
-        type: choice
-        options:
-          - "0"
-          - "1"
 
+debug:
+  description: "Debug (0/1) — MarketBeat HTML dump"
+  required: false
+  default: "0"
+  type: choice
+  options:
+    - "0"
+    - "1"
 jobs:
   run:
     runs-on: ubuntu-latest
@@ -74,9 +74,6 @@ jobs:
             reports/marketbeat_last_success.md
             reports/analyst_last2d.md
             reports/analyst_last2d.json
-            reports/fmp_grades_events.json
-            reports/fmp_pt_events.json
-            reports/fmp_cache.json
           # Always save a fresh cache each run (unique key), but restore the latest prior one via restore-keys.
           key: marketbeat-seen-v1-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
           restore-keys: |
@@ -100,10 +97,11 @@ jobs:
           export REPORT="${REPORT}"
           set -euo pipefail
           python -m pip install --upgrade pip
-          pip install requests
           if [ -f requirements.txt ]; then
             pip install -r requirements.txt
           fi
+          # Analyst feed (Briefing / HTML) parser dependency
+          pip install beautifulsoup4 lxml
 
       - name: Run PRICE ENGINE (#1) + build stable nocache link
         shell: bash
@@ -204,27 +202,18 @@ jobs:
             EXTRA=""
             if [ "${DEBUG}" = "1" ]; then EXTRA="--debug"; fi
             if [ -f "reports/master.csv" ]; then
-              python "${ANALYST}" --master "reports/master.csv" --days 4 --out-md "reports/analyst_last2d.md" --out-json "reports/analyst_last2d.json" ${EXTRA} 2> "reports/analyst_stderr.log"
+              python "${ANALYST}" --master "reports/master.csv" --days 2 --out-md "reports/analyst_last2d.md" --out-json "reports/analyst_last2d.json" ${EXTRA}
               RC_A=$?
-              if [ "${RC_A}" -ne 0 ]; then
-                echo "ANALYST_ERROR_TAIL:" | tee -a reports/runner.log
-                tail -n 80 "reports/analyst_stderr.log" | tee -a reports/runner.log
-              fi
             else
-              python "${ANALYST}" --master "${MASTER_URL}" --days 4 --out-md "reports/analyst_last2d.md" --out-json "reports/analyst_last2d.json" ${EXTRA} 2> "reports/analyst_stderr.log"
+              python "${ANALYST}" --master "${MASTER_URL}" --days 2 --out-md "reports/analyst_last2d.md" --out-json "reports/analyst_last2d.json" ${EXTRA}
               RC_A=$?
-              if [ "${RC_A}" -ne 0 ]; then
-                echo "ANALYST_ERROR_TAIL:" | tee -a reports/runner.log
-                tail -n 80 "reports/analyst_stderr.log" | tee -a reports/runner.log
-              fi
             fi
           else
             RC_A=2
           fi
           set -e
-          echo "ANALYST_EXIT=${RC_A}" | tee -a reports/runner.log
           if [ "${REPORT}" = "1" ] && ( [ "${RC_A}" -ne 0 ] || [ ! -f "reports/analyst_last2d.md" ] ); then
-            python -c "from pathlib import Path; Path('reports').mkdir(parents=True, exist_ok=True); Path('reports/analyst_last2d.md').write_text('# Elemzői feed (FMP) – utolsó 4 naptári nap\n\n_N/A._\n', encoding='utf-8')"
+            python -c "from pathlib import Path; Path('reports').mkdir(parents=True, exist_ok=True); Path('reports/analyst_last2d.md').write_text('# Elemzői feed (MarketBeat) – utolsó 2 naptári nap\n\n_N/A._\n', encoding='utf-8')"
             echo "ANALYST_EXIT=${RC_A}" | tee -a reports/runner.log
           fi
 
@@ -293,7 +282,7 @@ jobs:
               e = "N/A"
           
           injected = (
-              "\n\n## Elemzői feed (MarketBeat) — fel/leminősítések + célár (utolsó 4 naptári nap)\n\n"
+              "\n\n## Elemzői feed (MarketBeat) — fel/leminősítések + célár (utolsó 2 naptári nap)\n\n"
               + a
               + "\n\n## Earnings — következő 7 nap\n\n"
               + e
@@ -319,32 +308,6 @@ jobs:
           :
           :
           :
-
-      - name: Patch SellRef deltas into report (#1)
-        if: ${{ env.REPORT == '1' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          SCRIPT=""
-          if [ -f "scripts/eladasiar.py" ]; then
-          echo "ELADASIAR_VERSION=$(python3 scripts/eladasiar.py --version 2>/dev/null || echo unknown)"
-            SCRIPT="scripts/eladasiar.py"
-          elif [ -f "eladasiar.py" ]; then
-          echo "ELADASIAR_VERSION=$(python3 eladasiar.py --version 2>/dev/null || echo unknown)"
-            SCRIPT="eladasiar.py"
-          fi
-
-          if [ -z "${SCRIPT}" ]; then
-            echo "SellRef patch: eladasiar.py not found - skip."
-            exit 0
-          fi
-
-          if [ -f "reports/master.csv" ]; then
-            python3 "${SCRIPT}" --master "reports/master.csv" --report "${OUT_MD}" || true
-          else
-            # Fallback: patch script can read MASTER from URL too
-            python3 "${SCRIPT}" --master "${MASTER_URL:-}" --report "${OUT_MD}" || true
-          fi
 
       - name: Validate report (soft)
         if: always()
