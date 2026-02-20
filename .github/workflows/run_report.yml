@@ -72,8 +72,8 @@ jobs:
             reports/briefing_cache.json
             reports/marketbeat_last_success.json
             reports/marketbeat_last_success.md
-            reports/analyst_last2d.md
-            reports/analyst_last2d.json
+            reports/analyst_last4d.md
+            reports/analyst_last4d.json
             reports/fmp_grades_events.json
             reports/fmp_pt_events.json
             reports/fmp_cache.json
@@ -197,21 +197,21 @@ jobs:
             echo "RUNNER_EXIT=${RC}" | tee -a reports/runner.log
           fi
 
-          # Run analyst feed (soft) -> reports/analyst_last2d.md / reports/analyst_last2d.json
+          # Run analyst feed (soft) -> reports/analyst_last4d.md / reports/analyst_last4d.json
           RC_A=0
           set +e
           if [ "${REPORT}" = "1" ] && [ -n "${ANALYST}" ]; then
             EXTRA=""
             if [ "${DEBUG}" = "1" ]; then EXTRA="--debug"; fi
             if [ -f "reports/master.csv" ]; then
-              python "${ANALYST}" --master "reports/master.csv" --days 4 --out-md "reports/analyst_last2d.md" --out-json "reports/analyst_last2d.json" ${EXTRA} 2> "reports/analyst_stderr.log"
+              python "${ANALYST}" --master "reports/master.csv" --days 4 --out-md "reports/analyst_last4d.md" --out-json "reports/analyst_last4d.json" ${EXTRA} 2> "reports/analyst_stderr.log"
               RC_A=$?
               if [ "${RC_A}" -ne 0 ]; then
                 echo "ANALYST_ERROR_TAIL:" | tee -a reports/runner.log
                 tail -n 80 "reports/analyst_stderr.log" | tee -a reports/runner.log
               fi
             else
-              python "${ANALYST}" --master "${MASTER_URL}" --days 4 --out-md "reports/analyst_last2d.md" --out-json "reports/analyst_last2d.json" ${EXTRA} 2> "reports/analyst_stderr.log"
+              python "${ANALYST}" --master "${MASTER_URL}" --days 4 --out-md "reports/analyst_last4d.md" --out-json "reports/analyst_last4d.json" ${EXTRA} 2> "reports/analyst_stderr.log"
               RC_A=$?
               if [ "${RC_A}" -ne 0 ]; then
                 echo "ANALYST_ERROR_TAIL:" | tee -a reports/runner.log
@@ -223,8 +223,8 @@ jobs:
           fi
           set -e
           echo "ANALYST_EXIT=${RC_A}" | tee -a reports/runner.log
-          if [ "${REPORT}" = "1" ] && ( [ "${RC_A}" -ne 0 ] || [ ! -f "reports/analyst_last2d.md" ] ); then
-            python -c "from pathlib import Path; Path('reports').mkdir(parents=True, exist_ok=True); Path('reports/analyst_last2d.md').write_text('# Elemzői feed (FMP) – utolsó 4 naptári nap\n\n_N/A._\n', encoding='utf-8')"
+          if [ "${REPORT}" = "1" ] && ( [ "${RC_A}" -ne 0 ] || [ ! -f "reports/analyst_last4d.md" ] ); then
+            python -c "from pathlib import Path; Path('reports').mkdir(parents=True, exist_ok=True); Path('reports/analyst_last4d.md').write_text('_N/A._\n', encoding='utf-8')"
             echo "ANALYST_EXIT=${RC_A}" | tee -a reports/runner.log
           fi
 
@@ -254,7 +254,7 @@ jobs:
           from pathlib import Path
           
           out_md = Path(os.environ.get("OUT_MD", ""))
-          analyst_md = Path("reports/analyst_last2d.md")
+          analyst_md = Path("reports/analyst_last4d.md")
           earnings_md = Path("reports/earnings_next7d.md")
           
           def strip_leading_meta(text: str) -> str:
