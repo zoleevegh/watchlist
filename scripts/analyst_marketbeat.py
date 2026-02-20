@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # analyst_marketbeat.py
-# Version: v0.4.0-briefing-cache-4day-coverage
+# Version: v0.4.1-briefing-cache-coveragecheck
 
 import os
 import re
@@ -119,7 +119,15 @@ def main():
 
     window_dates = build_window_dates(WINDOW_DAYS)
     missing = [d for d in window_dates if d not in cache]
-    coverage_status = "TELJES" if not missing else f"HIÁNYOS – missing: {missing}"
+    got_days = sum(1 for d in window_dates if d in cache)
+    need_days = len(window_dates)
+    coverage_status = "TELJES" if not missing else f"HIÁNYOS – van={got_days}/{need_days} nap (hiányzik: {missing})"
+    coverage_note = ""
+    # Ha a kért ablak több nap, de csak 1 napnyi adat van a cache-ben, akkor
+    # a forrás (Briefing) pillanatképe önmagában nem ad historikus adatot.
+    # Ilyenkor több napon át kell futtatni, hogy a cache felépüljön.
+    if need_days > 1 and got_days < 2:
+        coverage_note = "_Megjegyzés: a forrás oldala historikusan nem lapozható; az előző napokat csak a perzisztens cache tudja felépíteni több napi futásból._"
 
     window_events = []
     for d in window_dates:
@@ -132,6 +140,8 @@ def main():
     window_events = dedupe(window_events)
 
     print(f"_forrás státusz: updated={updated_date} | ablak: {window_dates[-1]} -> {window_dates[0]} | lefedettség: {coverage_status}_")
+    if coverage_note:
+        print(coverage_note)
     print()
 
     if not window_events:
