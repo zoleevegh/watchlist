@@ -1,11 +1,11 @@
-# Ima (v1.0.25): bocsáss meg uram, ha megint mellényúltam;
+# Ima (v1.0.26): bocsáss meg uram, ha megint mellényúltam;
 # adj türelmet és tiszta logot, hogy csak az igazat írjam le.
-# Verzió: v1.0.25-run_report-add-bs4-requests-2026-02-19
-# run_report.yml — v1.0.25-2026-02-19
+# Verzió: v1.0.26-run_report-add-bs4-requests-2026-02-19
+# run_report.yml — v1.0.26-2026-02-19
 
 name: Run Report — PRICE ENGINE
 
-# run_report.yml — v1.0.25-2026-02-19
+# run_report.yml — v1.0.26-2026-02-19
 
 "on":
   workflow_dispatch:
@@ -64,12 +64,12 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Restore/Save MarketBeat seen cache (first-seen dates)
+      - name: Restore/Save Briefing analyst cache (historical)
         if: ${{ env.REPORT == '1' }}
         uses: actions/cache@v4
         with:
           path: |
-            reports/marketbeat_seen.json
+            reports/briefing_cache.json
             reports/marketbeat_last_success.json
             reports/marketbeat_last_success.md
             reports/analyst_last2d.md
@@ -78,19 +78,19 @@ jobs:
             reports/fmp_pt_events.json
             reports/fmp_cache.json
           # Always save a fresh cache each run (unique key), but restore the latest prior one via restore-keys.
-          key: marketbeat-seen-v1-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
+          key: briefing-cache-v1-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
           restore-keys: |
-            marketbeat-seen-v1-${{ runner.os }}-${{ github.ref_name }}-
-            marketbeat-seen-v1-${{ runner.os }}-
+            briefing-cache-v1-${{ runner.os }}-${{ github.ref_name }}-
+            briefing-cache-v1-${{ runner.os }}-
 
-      - name: Ensure MarketBeat seen state file exists
+      - name: Ensure Briefing cache file exists
         if: ${{ env.REPORT == '1' }}
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p reports
-          if [ ! -f reports/marketbeat_seen.json ]; then
-            echo '{}' > reports/marketbeat_seen.json
+          if [ ! -f reports/briefing_cache.json ]; then
+            echo '{}' > reports/briefing_cache.json
           fi
 
 
@@ -293,7 +293,7 @@ jobs:
               e = "N/A"
           
           injected = (
-              "\n\n## Elemzői feed (MarketBeat) — fel/leminősítések + célár (utolsó 4 naptári nap)\n\n"
+              "\n\n## Elemzői feed (Briefing) — fel/leminősítések + célár (utolsó 4 naptári nap)\n\n"
               + a
               + "\n\n## Earnings — következő 7 nap\n\n"
               + e
