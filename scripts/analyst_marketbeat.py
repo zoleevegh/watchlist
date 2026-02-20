@@ -14,13 +14,15 @@ import re
 import json
 import sys
 import html
-import requests
+import urllib.request
 from datetime import datetime, timedelta
 
 BRIEFING_URL = "https://hosting.briefing.com/fidelity/Calendars/UpgradesDowngrades.htm"
 CACHE_FILE = "reports/briefing_ud_cache.json"
 WINDOW_DAYS = 4
 TIMEOUT = 20
+OUT_MD = "reports/analyst_last4d.md"
+OUT_JSON = "reports/analyst_last4d.json"
 
 # ==========================
 # Utilities
@@ -55,9 +57,22 @@ def load_master_tickers():
     return tickers
 
 def fetch_briefing():
-    r = requests.get(BRIEFING_URL, timeout=TIMEOUT)
-    r.raise_for_status()
-    return r.text
+    # stdlib-only HTTP fetch (no requests dependency)
+    req = urllib.request.Request(
+        BRIEFING_URL,
+        headers={
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        },
+        method="GET",
+    )
+    with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+        data = resp.read()
+    # Briefing serves HTML; assume UTF-8 with fallback
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return data.decode("latin-1", errors="replace")
 
 def extract_updated_date(html_text):
     m = re.search(r"Updated:\s*([0-9]{1,2}-[A-Za-z]{3}-[0-9]{2})", html_text)
@@ -154,11 +169,24 @@ def main():
 
     coverage_status = "TELJES" if not missing else f"HIÁNYOS ({len(window_dates)-len(missing)}/{WINDOW_DAYS}) missing: {missing}"
 
-    print(f"_forrás státusz: updated={updated_date} | ablak: {window_dates[-1]} -> {window_dates[0]} | lefedettség: {coverage_status} | MASTER találat: {len(window_events)}_")
-    print()
+    # Build markdown output for injection into #1 report
+    lines = []
+    lines.append(
+        f"_forrás státusz: updated={updated_date} | ablak: {window_dates[-1]} -> {window_dates[0]} | lefedettség: {coverage_status} | MASTER találat: {len(window_events)}_"
+    )
+    lines.append("")
 
     if not window_events:
-        print("_Nincs releváns elemzői esemény a megadott ablakban a MASTER tickereidre._")
+        lines.append("_Nincs releváns elemzői esemény a megadott ablakban a MASTER tickereidre._")
+        md = "\n".join(lines).strip() + "\n"
+        # Write file for workflow injection
+        ensure_reports_dir()
+        with open(OUT_MD, "w", encoding="utf-8") as f:
+            f.write(md)
+        with open(OUT_JSON, "w", encoding="utf-8") as f:
+            json.dump({"updated": updated_date, "window_days": WINDOW_DAYS, "events": []}, f, ensure_ascii=False, indent=2)
+        # Also print to logs
+        print(md)
         return
 
     grouped = {}
@@ -166,10 +194,19 @@ def main():
         grouped.setdefault(e["ticker"], []).append(e)
 
     for ticker in sorted(grouped.keys()):
-        print(f"## {ticker}")
+        lines.append(f"## {ticker}")
         for e in grouped[ticker]:
-            print(f"- {e['date']} – {e['firm']} – {e['rating']} | Célár: {e['price_target']}")
-        print()
+            pt = e.get("price_target") or ""
+            pt_part = f" | Célár: {pt}" if pt else ""
+            lines.append(f"- {e['date']} – {e['firm']} – {e['rating']}{pt_part}")
+        lines.append("")
+
+    md = "\n".join(lines).strip() + "\n"
+    with open(OUT_MD, "w", encoding="utf-8") as f:
+        f.write(md)
+    with open(OUT_JSON, "w", encoding="utf-8") as f:
+        json.dump({"updated": updated_date, "window_days": WINDOW_DAYS, "events": window_events}, f, ensure_ascii=False, indent=2)
+    print(md)
 
 if __name__ == "__main__":
     main()
