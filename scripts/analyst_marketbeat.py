@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 # analyst_marketbeat.py
-# Version: v0.4.4-anchor-fix
+# Version: v0.4.3-master-strict-robust-table
+#
+# Fixes:
+# - Robust full-table parsing (no fragile section regex)
+# - Guaranteed TMUS capture
+# - MASTER + watchlist filter (master.csv)
+# - 4-day cache window
+# - Coverage reporting
 
 import os
 import re
@@ -16,6 +23,10 @@ WINDOW_DAYS = 4
 TIMEOUT = 20
 OUT_MD = "reports/analyst_last4d.md"
 OUT_JSON = "reports/analyst_last4d.json"
+
+# ==========================
+# Utilities
+# ==========================
 
 def ensure_reports_dir():
     os.makedirs("reports", exist_ok=True)
@@ -46,16 +57,18 @@ def load_master_tickers():
     return tickers
 
 def fetch_briefing():
+    # stdlib-only HTTP fetch (no requests dependency)
     req = urllib.request.Request(
         BRIEFING_URL,
         headers={
-            "User-Agent": "Mozilla/5.0",
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         },
         method="GET",
     )
     with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
         data = resp.read()
+    # Briefing serves HTML; assume UTF-8 with fallback
     try:
         return data.decode("utf-8")
     except UnicodeDecodeError:
@@ -110,11 +123,16 @@ def dedupe(events):
         unique.append(e)
     return unique
 
-def build_window_dates(anchor_ymd, days):
-    anchor = datetime.strptime(anchor_ymd, "%Y-%m-%d").date()
-    return [(anchor - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days)]
+def build_window_dates(days):
+    today = datetime.utcnow().date()
+    return [(today - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days)]
+
+# ==========================
+# Main
+# ==========================
 
 def main():
+
     ensure_reports_dir()
     cache = load_cache()
     master = load_master_tickers()
@@ -135,7 +153,7 @@ def main():
 
     save_cache(cache)
 
-    window_dates = build_window_dates(updated_date, WINDOW_DAYS)
+    window_dates = build_window_dates(WINDOW_DAYS)
     missing = [d for d in window_dates if d not in cache]
 
     window_events = []
@@ -151,6 +169,7 @@ def main():
 
     coverage_status = "TELJES" if not missing else f"HIÁNYOS ({len(window_dates)-len(missing)}/{WINDOW_DAYS}) missing: {missing}"
 
+    # Build markdown output for injection into #1 report
     lines = []
     lines.append(
         f"_forrás státusz: updated={updated_date} | ablak: {window_dates[-1]} -> {window_dates[0]} | lefedettség: {coverage_status} | MASTER találat: {len(window_events)}_"
@@ -160,10 +179,13 @@ def main():
     if not window_events:
         lines.append("_Nincs releváns elemzői esemény a megadott ablakban a MASTER tickereidre._")
         md = "\n".join(lines).strip() + "\n"
+        # Write file for workflow injection
+        ensure_reports_dir()
         with open(OUT_MD, "w", encoding="utf-8") as f:
             f.write(md)
         with open(OUT_JSON, "w", encoding="utf-8") as f:
             json.dump({"updated": updated_date, "window_days": WINDOW_DAYS, "events": []}, f, ensure_ascii=False, indent=2)
+        # Also print to logs
         print(md)
         return
 
@@ -184,7 +206,6 @@ def main():
         f.write(md)
     with open(OUT_JSON, "w", encoding="utf-8") as f:
         json.dump({"updated": updated_date, "window_days": WINDOW_DAYS, "events": window_events}, f, ensure_ascii=False, indent=2)
-
     print(md)
 
 if __name__ == "__main__":
