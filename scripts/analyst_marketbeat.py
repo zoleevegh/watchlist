@@ -33,10 +33,18 @@ RATING_MAP = {
 def translate_rating(text):
     if not text:
         return text
-    for eng, hu in RATING_MAP.items():
-        text = text.replace(eng, hu)
-    text = text.replace("»", "→")
-    return text
+
+    text = text.strip()
+
+    # Ha minősítés-változás (pl. Buy » Hold)
+    if "»" in text:
+        left, right = [x.strip() for x in text.split("»", 1)]
+        left_hu = RATING_MAP.get(left, left)
+        right_hu = RATING_MAP.get(right, right)
+        return f"{left_hu} → {right_hu}"
+
+    # Egyszerű minősítés
+    return RATING_MAP.get(text, text)
 
 def ensure_reports_dir():
     os.makedirs("reports", exist_ok=True)
