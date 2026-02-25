@@ -34,14 +34,20 @@ def translate_rating(text):
     if not text:
         return text
 
-    text = text.strip()
+    # HTML entity dekódolás + whitespace normalizálás
+    text = html.unescape(text)
+    text = " ".join(text.split())
 
-    # Ha minősítés-változás (pl. Buy » Hold)
-    if "»" in text:
-        left, right = [x.strip() for x in text.split("»", 1)]
+    # Lehetséges nyíl formák normalizálása
+    text = text.replace("»", "->").replace("→", "->")
+
+    if "->" in text:
+        left, right = [x.strip() for x in text.split("->", 1)]
         left_hu = RATING_MAP.get(left, left)
         right_hu = RATING_MAP.get(right, right)
         return f"{left_hu} → {right_hu}"
+
+    return RATING_MAP.get(text.strip(), text.strip())
 
     # Egyszerű minősítés
     return RATING_MAP.get(text, text)
