@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # analyst_marketbeat.py
-# Version: v0.4.4-anchor-fix
+# Verzió: v0.4.5-hu-local
 
 import os
 import re
@@ -16,6 +16,27 @@ WINDOW_DAYS = 4
 TIMEOUT = 20
 OUT_MD = "reports/analyst_last4d.md"
 OUT_JSON = "reports/analyst_last4d.json"
+
+RATING_MAP = {
+    "Strong Buy": "Erős vétel",
+    "Buy": "Vétel",
+    "Overweight": "Felülsúlyozás",
+    "Outperform": "Felülteljesítő",
+    "Hold": "Tartás",
+    "Equal Weight": "Piaci súly",
+    "Market Perform": "Piaci teljesítő",
+    "Underweight": "Alulsúlyozás",
+    "Sell": "Eladás",
+    "Neutral": "Semleges"
+}
+
+def translate_rating(text):
+    if not text:
+        return text
+    for eng, hu in RATING_MAP.items():
+        text = text.replace(eng, hu)
+    text = text.replace("»", "→")
+    return text
 
 def ensure_reports_dir():
     os.makedirs("reports", exist_ok=True)
@@ -48,18 +69,12 @@ def load_master_tickers():
 def fetch_briefing():
     req = urllib.request.Request(
         BRIEFING_URL,
-        headers={
-            "User-Agent": "Mozilla/5.0",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        },
+        headers={"User-Agent": "Mozilla/5.0"},
         method="GET",
     )
     with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
         data = resp.read()
-    try:
-        return data.decode("utf-8")
-    except UnicodeDecodeError:
-        return data.decode("latin-1", errors="replace")
+    return data.decode("utf-8", errors="replace")
 
 def extract_updated_date(html_text):
     m = re.search(r"Updated:\s*([0-9]{1,2}-[A-Za-z]{3}-[0-9]{2})", html_text)
@@ -80,10 +95,9 @@ def parse_all_tables(html_text):
         if len(cols) < 4:
             continue
 
-        company = strip_tags(cols[0])
         ticker = strip_tags(cols[1]).upper()
         firm = strip_tags(cols[2])
-        rating = strip_tags(cols[3])
+        rating = translate_rating(strip_tags(cols[3]))
         pt = strip_tags(cols[4]) if len(cols) > 4 else ""
 
         if not ticker or len(ticker) > 6:
@@ -91,7 +105,6 @@ def parse_all_tables(html_text):
 
         events.append({
             "ticker": ticker,
-            "company": company,
             "firm": firm,
             "rating": rating,
             "price_target": pt
@@ -123,16 +136,12 @@ def main():
     updated_date = extract_updated_date(html_text)
 
     if not updated_date:
-        print("ERROR: Updated date not found")
+        print("HIBA: Nem található frissítési dátum")
         sys.exit(1)
 
     today_events = dedupe(parse_all_tables(html_text))
 
-    cache[updated_date] = {
-        "updated": updated_date,
-        "events": today_events
-    }
-
+    cache[updated_date] = {"updated": updated_date, "events": today_events}
     save_cache(cache)
 
     window_dates = build_window_dates(updated_date, WINDOW_DAYS)
@@ -149,16 +158,16 @@ def main():
 
     window_events = dedupe(window_events)
 
-    coverage_status = "TELJES" if not missing else f"HIÁNYOS ({len(window_dates)-len(missing)}/{WINDOW_DAYS}) missing: {missing}"
+    coverage_status = "TELJES" if not missing else f"HIÁNYOS ({len(window_dates)-len(missing)}/{WINDOW_DAYS}) hiányzik: {missing}"
 
     lines = []
     lines.append(
-        f"_forrás státusz: updated={updated_date} | ablak: {window_dates[-1]} -> {window_dates[0]} | lefedettség: {coverage_status} | MASTER találat: {len(window_events)}_"
+        f"_Forrás: {updated_date} | Időablak: {window_dates[-1]} → {window_dates[0]} | Lefedettség: {coverage_status} | Találatok: {len(window_events)}_"
     )
     lines.append("")
 
     if not window_events:
-        lines.append("_Nincs releváns elemzői esemény a megadott ablakban a MASTER tickereidre._")
+        lines.append("_Nincs releváns elemzői esemény a kiválasztott időablakban._")
         md = "\n".join(lines).strip() + "\n"
         with open(OUT_MD, "w", encoding="utf-8") as f:
             f.write(md)
