@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# report_runner.py — v4.6.10-price-engine-sellref-snapshot-2026-02-17
+# report_runner.py — v4.6.11-price-engine-overnight-column-2026-03-02
 #
 # FIX / CÉL:
 # - Stabil #1 riport: AH elöl, PM utána, külön blokkban: Pozíciók (Darabszam>0), majd Watchlist.
@@ -52,6 +52,7 @@ def _budapest_windows(now_epoch: int, last_regular_market_time: int | None = Non
 
     #1 spec (local):
       AH: last close day 22:00 -> next day 02:00
+      ON: today 02:00 -> today 10:00 ("Éjszaka" / overnight extended)
       PM: today 10:00 -> today 15:30 (only if already started)
     """
     try:
@@ -83,6 +84,11 @@ def _budapest_windows(now_epoch: int, last_regular_market_time: int | None = Non
     ah_start_local = loc_dt(close_day, 22, 0)
     ah_end_local   = loc_dt(close_day + datetime.timedelta(days=1), 2, 0)
 
+    # ON (overnight): today 02:00 -> today 10:00 (local)
+    # This captures the thin-liquidity extended session that Yahoo UI often labels as "Éjszaka".
+    on_start_local = loc_dt(today, 2, 0)
+    on_end_local   = loc_dt(today, 10, 0)
+
     # PM: today 10:00 -> 15:30 (local)
     pm_start_local = loc_dt(today, 10, 0)
     pm_end_local   = loc_dt(today, 15, 30)
@@ -90,12 +96,14 @@ def _budapest_windows(now_epoch: int, last_regular_market_time: int | None = Non
     # Convert to UTC epoch seconds
     ah_start = int(ah_start_local.astimezone(datetime.timezone.utc).timestamp())
     ah_end   = int(ah_end_local.astimezone(datetime.timezone.utc).timestamp())
+    on_start = int(on_start_local.astimezone(datetime.timezone.utc).timestamp())
+    on_end   = int(on_end_local.astimezone(datetime.timezone.utc).timestamp())
     pm_start = int(pm_start_local.astimezone(datetime.timezone.utc).timestamp())
     pm_end   = int(pm_end_local.astimezone(datetime.timezone.utc).timestamp())
 
-    return (pm_start, pm_end, ah_start, ah_end, now_local.isoformat(), close_day.isoformat())
+    return (pm_start, pm_end, on_start, on_end, ah_start, ah_end, now_local.isoformat(), close_day.isoformat())
 
-VERSION="v4.6.10-price-engine-sellref-snapshot-2026-02-17"
+VERSION="v4.6.11-price-engine-overnight-column-2026-03-02"
 
 
 def pct(a, b):
@@ -261,9 +269,9 @@ def _last_close_in_window(timestamps: List[int], closes: List[Any], start: int, 
     return last
 
 
-def chart_prices(t: str, now_epoch: int) -> Tuple[Optional[float], Optional[float], Optional[float], Dict[str, Any]]:
+def chart_prices(t: str, now_epoch: int) -> Tuple[Optional[float], Optional[float], Optional[float], Optional[float], Dict[str, Any]]:
     """
-    Returns: (prev_close, pre_price, post_price, debug)
+    Returns: (prev_close, pre_price, on_price, post_price, debug)
     """
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{t}?interval=1m&range=2d&includePrePost=true"
     j = http_json(url)
@@ -273,55 +281,15 @@ def chart_prices(t: str, now_epoch: int) -> Tuple[Optional[float], Optional[floa
     res0 = res[0]
     meta = res0.get("meta", {}) or {}
 
-    # Meta extended-hours fields (more stable than sparse extended-hours candles)
-    post_meta_price = meta.get("postMarketPrice")
-    post_meta_time = meta.get("postMarketTime")
-    if post_meta_price is not None and post_meta_time is not None:
-        try:
-            post_meta_time = int(post_meta_time)
-            post_meta_price = float(post_meta_price)
-            debug["post_meta_time"] = post_meta_time
-            debug["post_meta_price"] = post_meta_price
-        except Exception:
-            post_meta_time = None
-            post_meta_price = None
-    else:
-        post_meta_time = None
-        post_meta_price = None
-
-
-    # Base close for AH/PM %: prefer regularMarketPrice when market is closed; fallback to previousClose.
-    prev = meta.get("regularMarketPrice") or meta.get("previousClose") or meta.get("regularMarketPreviousClose")
-
-    wpre = _tp(meta, "pre")
-    wpost = _tp(meta, "post")
-    wreg = _tp(meta, "regular")
-
-    pre_start, pre_end = (wpre if wpre else (None, None))
-    post_start, post_end = (wpost if wpost else (None, None))
-    reg_start, reg_end = (wreg if wreg else (None, None))
-
-    ts = res0.get("timestamp") or []
-    ind = (res0.get("indicators") or {}).get("quote") or []
-    closes = []
-    if ind and isinstance(ind, list) and ind[0].get("close") is not None:
-        closes = ind[0].get("close") or []
-
-    debug = {
-        "now": now_epoch,
-        "pre_start": pre_start, "pre_end": pre_end,
-        "post_start": post_start, "post_end": post_end,
-        "reg_start": reg_start, "reg_end": reg_end,
-        "pre_source": None, "post_source": None,
-        "base_prev": prev,
-    }
     # --- Fixed windows (Europe/Budapest) ---
     last_rmt = meta.get("regularMarketTime")
-    pm_start, pm_end, ah_start, ah_end, now_local_iso, close_day_iso = _budapest_windows(now_epoch, last_rmt)
+    pm_start, pm_end, on_start, on_end, ah_start, ah_end, now_local_iso, close_day_iso = _budapest_windows(now_epoch, last_rmt)
     debug["close_day_local"] = close_day_iso
     debug["now_local"] = now_local_iso
     debug["pre_start"] = pm_start
     debug["pre_end"] = pm_end
+    debug["on_start"] = on_start
+    debug["on_end"] = on_end
     debug["post_start"] = ah_start
     debug["post_end"] = ah_end
 
@@ -338,7 +306,21 @@ def chart_prices(t: str, now_epoch: int) -> Tuple[Optional[float], Optional[floa
             pre = None
             debug["pre_source"] = "none_fixed"
 
-    # AH: compute previous session after-hours window (local); prefer meta.postMarketPrice if it belongs to this window.
+    
+    # ON (overnight): take last close inside ON window if available; if window is in the future -> n/a
+    if now_epoch < on_start:
+        on = None
+        debug["on_source"] = "future_window"
+    else:
+        inf_on = _last_close_in_window(ts, closes, on_start, on_end) if (ts and closes) else None
+        if inf_on is not None:
+            on = inf_on
+            debug["on_source"] = "infer_fixed"
+        else:
+            on = None
+            debug["on_source"] = "none_fixed"
+
+# AH: compute previous session after-hours window (local); prefer meta.postMarketPrice if it belongs to this window.
     inf = _last_close_in_window(ts, closes, ah_start, ah_end) if (ts and closes) else None
     if inf is not None:
         post = inf
@@ -362,7 +344,7 @@ def chart_prices(t: str, now_epoch: int) -> Tuple[Optional[float], Optional[floa
     except Exception:
         pass
 
-    return _to_float(prev), _to_float(pre), _to_float(post), debug
+    return _to_float(prev), _to_float(pre), _to_float(on), _to_float(post), debug
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--master", default="reports/master.csv")
@@ -382,6 +364,7 @@ def main() -> int:
 
     dbg_counts = {
         "pre_meta": 0, "pre_infer": 0, "pre_gated": 0, "pre_none": 0,
+        "on_infer": 0, "on_gated": 0, "on_none": 0,
         "post_meta": 0, "post_infer": 0, "post_carry": 0, "post_gated": 0, "post_none": 0,
         "errors": 0,
     }
@@ -394,20 +377,25 @@ def main() -> int:
 
     def handle_one(t: str):
         nonlocal sample_dbg
-        prev, pre, post, dbg = chart_prices(t, now_epoch)
+        prev, pre, on, post, dbg = chart_prices(t, now_epoch)
         pm = pct(pre, prev)
+        onp = pct(on, prev)
         ah = pct(post, prev)
 
         price_snapshot[t] = {
             "prev_close": prev,
             "pm_price": pre,
+            "on_price": on,
             "ah_price": post,
             # keep a minimal trace for debugging / future extensions
             "meta": {
                 "pre_source": dbg.get("pre_source"),
+                "on_source": dbg.get("on_source"),
                 "post_source": dbg.get("post_source"),
                 "pre_start": dbg.get("pre_start"),
                 "pre_end": dbg.get("pre_end"),
+                "on_start": dbg.get("on_start"),
+                "on_end": dbg.get("on_end"),
                 "post_start": dbg.get("post_start"),
                 "post_end": dbg.get("post_end"),
             },
@@ -422,6 +410,15 @@ def main() -> int:
             dbg_counts["pre_gated"] += 1
         else:
             dbg_counts["pre_none"] += 1
+        osrc = dbg.get("on_source")
+        if osrc in ("infer", "infer_fixed"):
+            dbg_counts["on_infer"] += 1
+        elif osrc in ("gated_outside_window", "future_window"):
+            dbg_counts["on_gated"] += 1
+        else:
+            dbg_counts["on_none"] += 1
+
+
 
         qs = dbg.get("post_source")
         if qs == "meta":
@@ -436,27 +433,27 @@ def main() -> int:
             dbg_counts["post_none"] += 1
 
         if len(sample_dbg) < 10:
-            sample_dbg.append((t, dbg, pm, ah))
+            sample_dbg.append((t, dbg, pm, onp, ah))
 
-        return pm, ah, dbg
+        return pm, onp, ah, dbg
 
     for r in positions:
         t = r["ticker"]
         try:
-            pm, ah, dbg = handle_one(t)
-            out_rows_pos.append((t, ah, pm))
+            pm, onp, ah, dbg = handle_one(t)
+            out_rows_pos.append((t, ah, onp, pm))
         except Exception:
             dbg_counts["errors"] += 1
-            out_rows_pos.append((t, None, None))
+            out_rows_pos.append((t, None, None, None))
 
     for r in watchlist:
         t = r["ticker"]
         try:
-            pm, ah, dbg = handle_one(t)
-            out_rows_wl.append((t, ah, pm))
+            pm, onp, ah, dbg = handle_one(t)
+            out_rows_wl.append((t, ah, onp, pm))
         except Exception:
             dbg_counts["errors"] += 1
-            out_rows_wl.append((t, None, None))
+            out_rows_wl.append((t, None, None, None))
 
     # sorting (WEBBIBLIA request): value-desc, using PM if available, else AH.
     # - Primary: PM when not n/a, otherwise AH
@@ -464,9 +461,10 @@ def main() -> int:
     # - n/a rows go to the bottom
 
     def _k(row):
-        _, ah, pm = row
-        primary = pm if pm is not None else ah
-        secondary = ah if pm is not None else pm
+        _, ah, onp, pm = row
+        # Sorting preference: PM first, then ON, then AH (by absolute magnitude)
+        primary = pm if pm is not None else (onp if onp is not None else ah)
+        secondary = onp if pm is not None else (ah if onp is not None else pm)
         if primary is None:
             return (0, -1e9, -1e9)
         return (1, float(primary), float(secondary) if secondary is not None else -1e9)
@@ -475,7 +473,7 @@ def main() -> int:
     out_rows_wl.sort(key=_k, reverse=True)
 
     # Determine if we have any data at all
-    any_data = any((ah is not None or pm is not None) for _, ah, pm in (out_rows_pos + out_rows_wl))
+    any_data = any((ah is not None or onp is not None or pm is not None) for _, ah, onp, pm in (out_rows_pos + out_rows_wl))
 
     # ---- Header interval (global) ----
     # Anchor the displayed interval to the last real US close using a liquid proxy (SPY),
@@ -483,7 +481,7 @@ def main() -> int:
     interval_start = None
     interval_end = None
     try:
-        _p, _pre, _post, _dbg = chart_prices("SPY", now_epoch)
+        _p, _pre, _on, _post, _dbg = chart_prices("SPY", now_epoch)
         now_iso = _dbg.get("now_local_iso") or _dbg.get("now_local") or _dbg.get("now_local_isoformat")
         close_day = _dbg.get("close_day_local") or _dbg.get("close_day")
         if now_iso and close_day:
@@ -507,12 +505,12 @@ def main() -> int:
         write_header(f, interval_start, interval_end)
 
         f.write("## Pozíciók\n\n")
-        for t, ah, pm in out_rows_pos:
-            f.write(f"- {t} — AH {fmt(ah)} | PM {fmt(pm)}\n")
+        for t, ah, onp, pm in out_rows_pos:
+            f.write(f"- {t} — AH {fmt(ah)} | ON {fmt(onp)} | PM {fmt(pm)}\n")
 
         f.write("\n## Watchlist\n\n")
-        for t, ah, pm in out_rows_wl:
-            f.write(f"- {t} — AH {fmt(ah)} | PM {fmt(pm)}\n")
+        for t, ah, onp, pm in out_rows_wl:
+            f.write(f"- {t} — AH {fmt(ah)} | ON {fmt(onp)} | PM {fmt(pm)}\n")
     
         # Debug csak akkor, ha teljesen üres
         if (not any_data) or args.debug:
