@@ -24,6 +24,9 @@ import time
 import datetime
 from typing import Any, Dict, Tuple, Optional, List
 
+# Verzió-szabály: bármely fájl módosításakor a verziószámot folytatólagosan kell növelni, kihagyás nélkül.
+VERSION = "v4.6.12-price-engine-am-column-2026-03-02"
+
 def write_header(f, interval_start: str, interval_end: str):
     try:
         from zoneinfo import ZoneInfo
