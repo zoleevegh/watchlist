@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# report_runner.py — v4.6.12-price-engine-am-column-2026-03-02
+# report_runner.py — v4.6.13-price-engine-am-column-hotfix-2026-03-02
 #
 # FIX / CÉL:
 # - Stabil #1 riport: AM elöl, PM utána, külön blokkban: Pozíciók (Darabszam>0), majd Watchlist.
@@ -25,7 +25,7 @@ import datetime
 from typing import Any, Dict, Tuple, Optional, List
 
 # Verzió-szabály: bármely fájl módosításakor a verziószámot folytatólagosan kell növelni, kihagyás nélkül.
-VERSION = "v4.6.12-price-engine-am-column-2026-03-02"
+VERSION = "v4.6.13-price-engine-am-column-hotfix-2026-03-02"
 
 def write_header(f, interval_start: str, interval_end: str):
     try:
@@ -338,7 +338,7 @@ def main() -> int:
         "post_meta": 0, "post_infer": 0, "post_carry": 0, "post_gated": 0, "post_none": 0,
         "errors": 0,
     }
-    sample_dbg = []
+    sample_dbg: List[Tuple[str, Dict[str, Any], Optional[float], Optional[float]]] = []
 
     # Snapshot for post-processing (SellRef patch): store the actual session prices
     # already derived from Yahoo chart during the runner, so the patch step does not
@@ -358,10 +358,12 @@ def main() -> int:
             "am_price": am_price,
         }
 
-        if sample_dbg is None:
-            sample_dbg = {"ticker": t, **dbg}
+        # Keep a small sample for debugging output (first 10 tickers).
+        if len(sample_dbg) < 10:
+            sample_dbg.append((t, dbg, am, pm))
 
         return pm, am, dbg
+
 
 
     for r in positions:
@@ -432,11 +434,11 @@ def main() -> int:
 
         f.write("## Pozíciók\n\n")
         for t, am, pm in out_rows_pos:
-            f.write(f"- {t} — AM {fmt(ah)} | PM {fmt(pm)}\n")
+            f.write(f"- {t} — AM {fmt(am)} | PM {fmt(pm)}\n")
 
         f.write("\n## Watchlist\n\n")
         for t, am, pm in out_rows_wl:
-            f.write(f"- {t} — AM {fmt(ah)} | PM {fmt(pm)}\n")
+            f.write(f"- {t} — AM {fmt(am)} | PM {fmt(pm)}\n")
     
         # Debug csak akkor, ha teljesen üres
         if (not any_data) or args.debug:
