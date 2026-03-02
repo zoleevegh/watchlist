@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# report_runner.py — v4.6.15-price-engine-closebase-amcap-2026-03-02
+# report_runner.py — v4.6.16-price-engine-amlabel-windownote-2026-03-02
 #
 # FIX / CÉL:
 # - Stabil #1 riport: AM elöl, PM utána, külön blokkban: Pozíciók (Darabszam>0), majd Watchlist.
@@ -25,7 +25,7 @@ import datetime
 from typing import Any, Dict, Tuple, Optional, List
 
 # Verzió-szabály: bármely fájl módosításakor a verziószámot folytatólagosan kell növelni, kihagyás nélkül.
-VERSION = "v4.6.15-price-engine-closebase-amcap-2026-03-02"
+VERSION = "v4.6.16-price-engine-amlabel-windownote-2026-03-02"
 
 def write_header(f, interval_start: str, interval_end: str):
     try:
@@ -38,6 +38,8 @@ def write_header(f, interval_start: str, interval_end: str):
     header = (
         "# #1 — Premarket check (PRICE ENGINE)\n\n"
         f"Verzió: {VERSION} | Futás ideje: {run_time}\n"
+        "Bázis: előző hivatalos záróár (Previous Close)\n"
+        "Ablakok: AM 22:00–10:00 CET/CEST (rögzítve 10:00-kor) | PM 10:00–15:30 CET/CEST\n"
         f"Időintervallum (ellenőrzés): {interval_start} – {interval_end}\n\n"
     )
     f.write(header)
@@ -352,7 +354,8 @@ def main() -> int:
 
         # Keep a small sample for debugging output (first 10 tickers).
         if len(sample_dbg) < 10:
-            sample_dbg.append((t, dbg, am, pm))
+            # store as (ticker, debug, pm, am) to avoid name confusion in the report
+            sample_dbg.append((t, dbg, pm, am))
 
         return pm, am, dbg
 
@@ -424,13 +427,20 @@ def main() -> int:
     with open(args.out, "w", encoding="utf-8", newline="\n") as f:
         write_header(f, interval_start, interval_end)
 
+        # Label: 10:00 után az AM egy "befagyasztott" érték (22:00->10:00), hogy ne keveredjen a PM-mel.
+        try:
+            pm_start, pm_end, am_start, am_end, _now_local_iso, _close_day_iso = _budapest_windows(now_epoch)
+            am_label = "AM" if now_epoch < pm_start else "AM(10:00-ig)"
+        except Exception:
+            am_label = "AM"
+
         f.write("## Pozíciók\n\n")
         for t, am, pm in out_rows_pos:
-            f.write(f"- {t} — AM {fmt(am)} | PM {fmt(pm)}\n")
+            f.write(f"- {t} — {am_label} {fmt(am)} | PM {fmt(pm)}\n")
 
         f.write("\n## Watchlist\n\n")
         for t, am, pm in out_rows_wl:
-            f.write(f"- {t} — AM {fmt(am)} | PM {fmt(pm)}\n")
+            f.write(f"- {t} — {am_label} {fmt(am)} | PM {fmt(pm)}\n")
     
         # Debug csak akkor, ha teljesen üres
         if (not any_data) or args.debug:
@@ -439,10 +449,10 @@ def main() -> int:
             for k in ["pre_meta","pre_infer","pre_gated","pre_none","post_meta","post_infer","post_carry","post_gated","post_none","errors"]:
                 f.write(f"- {k}: {dbg_counts[k]}\n")
             f.write("\n### Debug sample (first 10 tickers)\n")
-            for t, dbg, pm, ah in sample_dbg:
+            for t, dbg, pm_val, am_val in sample_dbg:
                 f.write(
-                    f"- {t}: AM {fmt(am)} (post_source={dbg.get('post_source')}, post_start={dbg.get('post_start')}, post_end={dbg.get('post_end')}) | "
-                    f"PM {fmt(pm)} (pre_source={dbg.get('pre_source')}, pre_start={dbg.get('pre_start')}, pre_end={dbg.get('pre_end')})\n"
+                    f"- {t}: {am_label} {fmt(am_val)} (post_source={dbg.get('post_source')}, post_start={dbg.get('post_start')}, post_end={dbg.get('post_end')}) | "
+                    f"PM {fmt(pm_val)} (pre_source={dbg.get('pre_source')}, pre_start={dbg.get('pre_start')}, pre_end={dbg.get('pre_end')})\n"
                 )
 
     # Write snapshot alongside the report for SellRef patching.
