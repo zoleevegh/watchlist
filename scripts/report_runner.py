@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# report_runner.py — v4.6.13-price-engine-am-column-hotfix-2026-03-02
+# report_runner.py — v4.6.14-price-engine-am-pm-windowfix-2026-03-02
 #
 # FIX / CÉL:
 # - Stabil #1 riport: AM elöl, PM utána, külön blokkban: Pozíciók (Darabszam>0), majd Watchlist.
@@ -25,7 +25,7 @@ import datetime
 from typing import Any, Dict, Tuple, Optional, List
 
 # Verzió-szabály: bármely fájl módosításakor a verziószámot folytatólagosan kell növelni, kihagyás nélkül.
-VERSION = "v4.6.13-price-engine-am-column-hotfix-2026-03-02"
+VERSION = "v4.6.14-price-engine-am-pm-windowfix-2026-03-02"
 
 def write_header(f, interval_start: str, interval_end: str):
     try:
@@ -48,41 +48,33 @@ def write_header(f, interval_start: str, interval_end: str):
 def _budapest_windows(now_epoch: int, last_regular_market_time: int | None = None):
     """Return fixed report windows in UTC epoch seconds for Europe/Budapest.
 
-    Anchor logic:
-      - Use the *last regular market time* (epoch) from Yahoo meta when available.
-        This makes Monday morning (or holiday) runs anchor to the last real close (e.g. Friday),
-        instead of using calendar 'yesterday'.
+    #1 spec (local, Budapest time):
+      AM: yesterday 22:00 -> today 10:00   (extended session BEFORE premarket)
+      PM: today 10:00 -> today 15:30      (premarket; only if already started)
 
-    #1 spec (local):
-      AM: close-day 22:00 -> today 10:00  (after-hours + overnight, i.e. extended session BEFORE premarket)
-      PM: today 10:00 -> today 15:30     (premarket; only if already started)
+    IMPORTANT:
+      - Window boundaries must be anchored to *calendar time* (Budapest), not to the last regular
+        market close timestamp. Otherwise Monday/holiday runs incorrectly anchor PM to Friday.
+      - We still use Yahoo's last regular close timestamp elsewhere to pick the correct *prev close*,
+        but NOT to define today's PM window.
     """
     try:
         from zoneinfo import ZoneInfo  # py3.9+
         tz = ZoneInfo("Europe/Budapest")
     except Exception:
-        tz = datetime.timezone(datetime.timedelta(hours=1))  # fallback (winter CET)
+        tz = datetime.timezone(datetime.timedelta(hours=1))  # best-effort CET fallback
 
     now_utc = datetime.datetime.fromtimestamp(now_epoch, tz=datetime.timezone.utc)
     now_local = now_utc.astimezone(tz)
 
-    # Determine "close day" in local terms
-    if last_regular_market_time is not None:
-        try:
-            close_local = datetime.datetime.fromtimestamp(int(last_regular_market_time), tz=datetime.timezone.utc).astimezone(tz)
-            close_day = close_local.date()
-        except Exception:
-            close_day = (now_local - datetime.timedelta(days=1)).date()
-    else:
-        close_day = (now_local - datetime.timedelta(days=1)).date()
+    today = now_local.date()
+    yesterday = today - datetime.timedelta(days=1)
 
-    # AM window: close day 22:00 -> next day 10:00
-    am_start_local = datetime.datetime.combine(close_day, datetime.time(22, 0), tzinfo=tz)
-    am_end_local = datetime.datetime.combine(close_day + datetime.timedelta(days=1), datetime.time(10, 0), tzinfo=tz)
+    am_start_local = datetime.datetime.combine(yesterday, datetime.time(22, 0), tzinfo=tz)
+    am_end_local = datetime.datetime.combine(today, datetime.time(10, 0), tzinfo=tz)
 
-    # PM window: today 10:00 -> today 15:30 (same as close_day+1)
     pm_start_local = am_end_local
-    pm_end_local = datetime.datetime.combine(close_day + datetime.timedelta(days=1), datetime.time(15, 30), tzinfo=tz)
+    pm_end_local = datetime.datetime.combine(today, datetime.time(15, 30), tzinfo=tz)
 
     am_start = int(am_start_local.astimezone(datetime.timezone.utc).timestamp())
     am_end = int(am_end_local.astimezone(datetime.timezone.utc).timestamp())
