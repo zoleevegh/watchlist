@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# report_runner.py — v4.6.14-price-engine-am-pm-windowfix-2026-03-02
+# report_runner.py — v4.6.15-price-engine-closebase-amcap-2026-03-02
 #
 # FIX / CÉL:
 # - Stabil #1 riport: AM elöl, PM utána, külön blokkban: Pozíciók (Darabszam>0), majd Watchlist.
@@ -25,7 +25,7 @@ import datetime
 from typing import Any, Dict, Tuple, Optional, List
 
 # Verzió-szabály: bármely fájl módosításakor a verziószámot folytatólagosan kell növelni, kihagyás nélkül.
-VERSION = "v4.6.14-price-engine-am-pm-windowfix-2026-03-02"
+VERSION = "v4.6.15-price-engine-closebase-amcap-2026-03-02"
 
 def write_header(f, interval_start: str, interval_end: str):
     try:
