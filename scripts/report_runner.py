@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# report_runner.py — v4.6.16-price-engine-amlabel-windownote-2026-03-02
+# report_runner.py — v4.6.17-price-engine-pm-quotev7-amcap-2026-03-02
 #
 # FIX / CÉL:
 # - Stabil #1 riport: AM elöl, PM utána, külön blokkban: Pozíciók (Darabszam>0), majd Watchlist.
@@ -25,7 +25,7 @@ import datetime
 from typing import Any, Dict, Tuple, Optional, List
 
 # Verzió-szabály: bármely fájl módosításakor a verziószámot folytatólagosan kell növelni, kihagyás nélkül.
-VERSION = "v4.6.16-price-engine-amlabel-windownote-2026-03-02"
+VERSION = "v4.6.17-price-engine-pm-quotev7-amcap-2026-03-02"
 
 def write_header(f, interval_start: str, interval_end: str):
     try:
@@ -250,7 +250,7 @@ def _last_close_in_window(timestamps: List[int], closes: List[Any], start: int, 
     return last
 
 
-def chart_prices(t: str, now_epoch: int) -> Tuple[Optional[float], Optional[float], Optional[float], Dict[str, Any]]:
+def chart_prices(t: str, now_epoch: int, quote: Optional[Dict[str, Any]] = None) -> Tuple[Optional[float], Optional[float], Optional[float], Dict[str, Any]]:
     """Compute #1 session prices for a ticker using Yahoo chart v8 (includePrePost=true).
 
     Returns: (prev_close, pm_price, am_price, debug)
@@ -269,10 +269,17 @@ def chart_prices(t: str, now_epoch: int) -> Tuple[Optional[float], Optional[floa
     res0 = res[0]
     meta = res0.get("meta", {}) or {}
 
-    # Prefer official close as base
+    # Prefer official close as base (Previous Close)
     prev = meta.get("regularMarketPreviousClose")
     if prev is None:
         prev = meta.get("previousClose")
+    # If v7 quote provides a better previous close, prefer it
+    if quote:
+        q_prev = quote.get("regularMarketPreviousClose")
+        if q_prev is None:
+            q_prev = quote.get("previousClose")
+        if q_prev not in (None, "", 0):
+            prev = q_prev
     prev = float(prev) if prev not in (None, "", 0) else None
 
     timestamps = res0.get("timestamp") or []
@@ -300,14 +307,29 @@ def chart_prices(t: str, now_epoch: int) -> Tuple[Optional[float], Optional[floa
         am = _last_close_in_window(timestamps, closes, am_start, am_window_end) if (timestamps and closes) else None
         debug["am_source"] = "infer_chart" if am is not None else "none_chart"
 
-    # PM (only when started)
+    # PM (only when started) — prefer Yahoo v7 quote preMarketPrice (matches UI better)
     if now_epoch < pm_start:
         pm = None
         debug["pm_source"] = "future_window"
     else:
         pm_window_end = min(now_epoch, pm_end)
-        pm = _last_close_in_window(timestamps, closes, pm_start, pm_window_end) if (timestamps and closes) else None
-        debug["pm_source"] = "infer_chart" if pm is not None else "none_chart"
+        pm = None
+        if quote:
+            q_pmp = quote.get("preMarketPrice")
+            q_pmt = quote.get("preMarketTime")
+            # Only accept if the quote is actually a premarket quote inside the PM window.
+            if q_pmp not in (None, "", 0) and q_pmt:
+                try:
+                    q_pmt_i = int(q_pmt)
+                except Exception:
+                    q_pmt_i = None
+                if q_pmt_i is not None and pm_start <= q_pmt_i <= pm_window_end:
+                    pm = float(q_pmp)
+                    debug["pm_source"] = "quote_v7"
+                    debug["pm_time"] = q_pmt_i
+        if pm is None:
+            pm = _last_close_in_window(timestamps, closes, pm_start, pm_window_end) if (timestamps and closes) else None
+            debug["pm_source"] = "infer_chart" if pm is not None else "none_chart"
 
     return prev, pm, am, debug
 def main() -> int:
@@ -320,6 +342,14 @@ def main() -> int:
     now_epoch = int(time.time())
 
     master_rows = load_master_rows(args.master)
+
+    # Batch Yahoo v7 quote lookup (for live preMarketPrice)
+    tickers_all = [r['ticker'] for r in master_rows]
+    quote_map = {}
+    try:
+        quote_map = yahoo_quote_batch(tickers_all + ['SPY'])
+    except Exception:
+        quote_map = {}
     positions = [r for r in master_rows if (r.get("qty") is not None and r["qty"] > 0)]
     watchlist = [r for r in master_rows if r not in positions]
 
@@ -341,7 +371,7 @@ def main() -> int:
 
     def handle_one(t: str):
         nonlocal sample_dbg
-        prev, pm_price, am_price, dbg = chart_prices(t, now_epoch)
+        prev, pm_price, am_price, dbg = chart_prices(t, now_epoch, quote_map.get(t))
 
         pm = pct(pm_price, prev)
         am = pct(am_price, prev)
@@ -404,7 +434,7 @@ def main() -> int:
     interval_start = None
     interval_end = None
     try:
-        _p, _pre, _post, _dbg = chart_prices("SPY", now_epoch)
+        _p, _pre, _post, _dbg = chart_prices("SPY", now_epoch, quote_map.get("SPY"))
         now_iso = _dbg.get("now_local_iso") or _dbg.get("now_local") or _dbg.get("now_local_isoformat")
         close_day = _dbg.get("close_day_local") or _dbg.get("close_day")
         if now_iso and close_day:
@@ -451,8 +481,8 @@ def main() -> int:
             f.write("\n### Debug sample (first 10 tickers)\n")
             for t, dbg, pm_val, am_val in sample_dbg:
                 f.write(
-                    f"- {t}: {am_label} {fmt(am_val)} (post_source={dbg.get('post_source')}, post_start={dbg.get('post_start')}, post_end={dbg.get('post_end')}) | "
-                    f"PM {fmt(pm_val)} (pre_source={dbg.get('pre_source')}, pre_start={dbg.get('pre_start')}, pre_end={dbg.get('pre_end')})\n"
+                    f"- {t}: {am_label} {fmt(am_val)} (am_source={dbg.get('am_source')}, am_start={dbg.get('am_start')}, am_end={dbg.get('am_end')}) | "
+                    f"PM {fmt(pm_val)} (pm_source={dbg.get('pm_source')}, pm_start={dbg.get('pm_start')}, pm_end={dbg.get('pm_end')})\n"
                 )
 
     # Write snapshot alongside the report for SellRef patching.
