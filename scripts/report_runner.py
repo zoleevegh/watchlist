@@ -35,6 +35,7 @@ def write_header(f, interval_start: str, interval_end: str):
     header = (
         "# #1 — Premarket check (PRICE ENGINE)\n\n"
         f"Verzió: {VERSION} | Futás ideje: {run_time}\n"
+        "Bázis: előző hivatalos záróár (Previous Close)\n"
         f"Időintervallum (ellenőrzés): {interval_start} – {interval_end}\n\n"
     )
     f.write(header)
@@ -43,59 +44,78 @@ def write_header(f, interval_start: str, interval_end: str):
 
 
 def _budapest_windows(now_epoch: int, last_regular_market_time: int | None = None):
-    """Return fixed report windows in UTC epoch seconds for Europe/Budapest.
+    """Return #1 report windows in UTC epoch seconds, derived from New York session times.
 
-    Anchor logic:
-      - Use the *last regular market time* (epoch) from Yahoo meta when available.
-        This makes Monday morning (or holiday) runs anchor to the last real close (e.g. Friday),
-        instead of using calendar 'yesterday'.
+    Why this exists:
+      - When the U.S. is already on DST but Europe/Budapest is not yet (or vice versa),
+        fixed 22:00/10:00 local windows drift by one hour.
+      - Therefore the report windows must be anchored to America/New_York session times,
+        then converted to Europe/Budapest.
 
-    #1 spec (local):
-      AH: last close day 22:00 -> next day 02:00
-      PM: today 10:00 -> today 15:30 (only if already started)
+    #1 spec (session-based):
+      AM: previous regular close (16:00 NY) -> current premarket start (04:00 NY)
+      PM: current premarket start (04:00 NY) -> regular open (09:30 NY)
     """
     try:
         from zoneinfo import ZoneInfo  # py3.9+
-        tz = ZoneInfo("Europe/Budapest")
+        tz_local = ZoneInfo("Europe/Budapest")
+        tz_ny = ZoneInfo("America/New_York")
     except Exception:
-        tz = datetime.timezone(datetime.timedelta(hours=1))  # fallback (winter CET)
+        tz_local = datetime.timezone(datetime.timedelta(hours=1))
+        tz_ny = datetime.timezone(datetime.timedelta(hours=-5))
 
     now_utc = datetime.datetime.fromtimestamp(now_epoch, tz=datetime.timezone.utc)
-    now_local = now_utc.astimezone(tz)
+    now_local = now_utc.astimezone(tz_local)
+    now_ny = now_utc.astimezone(tz_ny)
 
-    # Determine "close day" in local terms
-    close_day = None
+    # Anchor to the last real U.S. regular market timestamp when available.
+    # This keeps Monday/holiday runs tied to the correct prior close session.
+    close_day_ny = None
     if last_regular_market_time is not None:
         try:
-            close_local = datetime.datetime.fromtimestamp(int(last_regular_market_time), tz=datetime.timezone.utc).astimezone(tz)
-            close_day = close_local.date()
+            close_day_ny = datetime.datetime.fromtimestamp(int(last_regular_market_time), tz=datetime.timezone.utc).astimezone(tz_ny).date()
         except Exception:
-            close_day = None
-    if close_day is None:
-        close_day = (now_local.date() - datetime.timedelta(days=1))  # fallback
+            close_day_ny = None
+    if close_day_ny is None:
+        # Best effort fallback: if we are before today's U.S. premarket, use yesterday in NY.
+        close_day_ny = now_ny.date() - datetime.timedelta(days=1)
 
-    today = now_local.date()
+    pm_day_ny = close_day_ny + datetime.timedelta(days=1)
 
-    def loc_dt(day, hh, mm):
-        return datetime.datetime(day.year, day.month, day.day, hh, mm, tzinfo=tz)
+    def ny_dt(day, hh, mm):
+        return datetime.datetime(day.year, day.month, day.day, hh, mm, tzinfo=tz_ny)
 
-    # AH: close_day 22:00 -> next day 02:00 (local)
-    ah_start_local = loc_dt(close_day, 22, 0)
-    ah_end_local   = loc_dt(close_day + datetime.timedelta(days=1), 2, 0)
+    # Session-based U.S. windows
+    am_start_ny = ny_dt(close_day_ny, 16, 0)
+    am_end_ny = ny_dt(pm_day_ny, 4, 0)
+    pm_start_ny = ny_dt(pm_day_ny, 4, 0)
+    pm_end_ny = ny_dt(pm_day_ny, 9, 30)
 
-    # PM: today 10:00 -> 15:30 (local)
-    pm_start_local = loc_dt(today, 10, 0)
-    pm_end_local   = loc_dt(today, 15, 30)
+    # Convert to local timezone for display/debug, then to UTC epoch for comparisons
+    am_start_local = am_start_ny.astimezone(tz_local)
+    am_end_local = am_end_ny.astimezone(tz_local)
+    pm_start_local = pm_start_ny.astimezone(tz_local)
+    pm_end_local = pm_end_ny.astimezone(tz_local)
 
-    # Convert to UTC epoch seconds
-    ah_start = int(ah_start_local.astimezone(datetime.timezone.utc).timestamp())
-    ah_end   = int(ah_end_local.astimezone(datetime.timezone.utc).timestamp())
+    ah_start = int(am_start_local.astimezone(datetime.timezone.utc).timestamp())
+    ah_end = int(am_end_local.astimezone(datetime.timezone.utc).timestamp())
     pm_start = int(pm_start_local.astimezone(datetime.timezone.utc).timestamp())
-    pm_end   = int(pm_end_local.astimezone(datetime.timezone.utc).timestamp())
+    pm_end = int(pm_end_local.astimezone(datetime.timezone.utc).timestamp())
 
-    return (pm_start, pm_end, ah_start, ah_end, now_local.isoformat(), close_day.isoformat())
+    return (
+        pm_start,
+        pm_end,
+        ah_start,
+        ah_end,
+        now_local.isoformat(),
+        close_day_ny.isoformat(),
+        am_start_local.isoformat(),
+        am_end_local.isoformat(),
+        pm_start_local.isoformat(),
+        pm_end_local.isoformat(),
+    )
 
-VERSION="v4.6.10-price-engine-sellref-snapshot-2026-02-17"
+VERSION="v4.6.20-price-engine-usdst-windowfix-2026-03-16"
 
 
 def pct(a, b):
@@ -317,13 +337,17 @@ def chart_prices(t: str, now_epoch: int) -> Tuple[Optional[float], Optional[floa
     }
     # --- Fixed windows (Europe/Budapest) ---
     last_rmt = meta.get("regularMarketTime")
-    pm_start, pm_end, ah_start, ah_end, now_local_iso, close_day_iso = _budapest_windows(now_epoch, last_rmt)
+    pm_start, pm_end, ah_start, ah_end, now_local_iso, close_day_iso, am_start_local_iso, am_end_local_iso, pm_start_local_iso, pm_end_local_iso = _budapest_windows(now_epoch, last_rmt)
     debug["close_day_local"] = close_day_iso
     debug["now_local"] = now_local_iso
     debug["pre_start"] = pm_start
     debug["pre_end"] = pm_end
     debug["post_start"] = ah_start
     debug["post_end"] = ah_end
+    debug["am_start_local"] = am_start_local_iso
+    debug["am_end_local"] = am_end_local_iso
+    debug["pm_start_local"] = pm_start_local_iso
+    debug["pm_end_local"] = pm_end_local_iso
 
     # PM: take last close inside PM window if available; if window is in the future -> n/a
     if now_epoch < pm_start:
@@ -486,8 +510,9 @@ def main() -> int:
         _p, _pre, _post, _dbg = chart_prices("SPY", now_epoch)
         now_iso = _dbg.get("now_local_iso") or _dbg.get("now_local") or _dbg.get("now_local_isoformat")
         close_day = _dbg.get("close_day_local") or _dbg.get("close_day")
-        if now_iso and close_day:
-            interval_start = f"{close_day} 22:00"
+        am_start_local = _dbg.get("am_start_local")
+        if now_iso and am_start_local:
+            interval_start = f"{am_start_local[:10]} {am_start_local[11:16]}"
             hhmm = now_iso.split("T")[1][:5] if "T" in now_iso else now_iso[11:16]
             interval_end = f"{now_iso[:10]} {hhmm}"
     except Exception:
