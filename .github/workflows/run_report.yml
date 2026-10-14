@@ -1,11 +1,11 @@
 # Ima (v1.0.26): bocsáss meg uram, ha megint mellényúltam;
 # adj türelmet és tiszta logot, hogy csak az igazat írjam le.
-# Verzió: v1.0.28-run_report-am-column-2026-03-02
-# run_report.yml — v1.0.28-2026-03-02
+# Verzió: v1.0.29-run_report-am-column-2026-03-02
+# run_report.yml — v1.0.29-2026-03-02
 
 name: Run Report — PRICE ENGINE
 
-# run_report.yml — v1.0.28-2026-03-02
+# run_report.yml — v1.0.29-2026-03-02
 
 "on":
   workflow_dispatch:
@@ -386,6 +386,16 @@ jobs:
               qty_keys = ("darabszam", "qty", "quantity", "shares")
               if not headers.intersection(("ticker", "symbol")) or not headers.intersection(qty_keys):
                   raise ValueError("MASTER: missing ticker or quantity column")
+              movements = {}
+              for match in re.finditer(r"^-\s+(\S+)\s+[—–-]\s+AH\s+(\S+)\s*\|\s*PM\s+(\S+)", text, flags=re.M):
+                  movements[match[1]] = (match[2], match[3])
+              # Reprocessing an already enriched report preserves its observed values.
+              for line in text.splitlines():
+                  parts = [p.strip() for p in line.strip("|").split("|")]
+                  if line.startswith("|") and len(parts) == 6 and parts[0] not in ("Ticker", "---"):
+                      if all(v == "n/a" or re.fullmatch(r"[+-]?\d+(?:\.\d+)?%", v) for v in parts[-2:]):
+                          movements.setdefault(parts[0], tuple(parts[-2:]))
+              premarket = text.startswith("# #1") or bool(movements)
               lines = [
                   "## Pozíciók — állományadatok",
                   "",
@@ -394,6 +404,10 @@ jobs:
                   "| Ticker | Darabszám | Bekerülési ár ($/db) | Bróker |",
                   "|---|---:|---:|---|",
               ]
+              if premarket:
+                  lines[-2] = "| Ticker | Darabszám | Bekerülési ár ($/db) | Bróker | AH | PM |"
+                  lines[-1] = "|---|---:|---:|---|---:|---:|"
+              position_lines = []
               count = 0
               for raw in reader:
                   row = {key(k): v for k, v in raw.items() if k is not None}
@@ -410,12 +424,20 @@ jobs:
                       continue
                   cost = pick(("bekerulesi ar ($/db)", "bekerulesi ar", "bekerulesi ar ($)", "average cost", "avg cost"))
                   broker = pick(("broker",))
-                  lines.append("| " + " | ".join((cell(ticker), format(qty, "f"), cell(cost), cell(broker))) + " |")
+                  values = (cell(ticker), format(qty, "f"), cell(cost), cell(broker))
+                  if premarket:
+                      values += movements.get(ticker, ("n/a", "n/a"))
+                  position_lines.append((ticker, "| " + " | ".join(values) + " |"))
                   count += 1
+              order = {ticker: index for index, ticker in enumerate(movements)}
+              position_lines.sort(key=lambda item: order.get(item[0], len(order)))
+              lines.extend(line for _, line in position_lines)
               if not count:
-                  lines.append("| Nincs pozitív darabszámú pozíció | — | — | — |")
+                  lines.append("Nincs pozitív darabszámú pozíció.")
               begin, end = "<!-- position-details:start -->", "<!-- position-details:end -->"
               text = re.sub(re.escape(begin) + r".*?" + re.escape(end) + r"\n*", "", text, flags=re.S)
+              if premarket:
+                  text = re.sub(r"^## Pozíciók\s*\n.*?(?=^## |\Z)", "", text, flags=re.M | re.S)
               block = begin + "\n" + "\n".join(lines) + "\n" + end + "\n\n"
               match = re.search(r"^## ", text, flags=re.M)
               index = match.start() if match else len(text)
