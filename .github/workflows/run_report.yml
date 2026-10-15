@@ -1,11 +1,11 @@
 # Ima (v1.0.26): bocsáss meg uram, ha megint mellényúltam;
 # adj türelmet és tiszta logot, hogy csak az igazat írjam le.
-# Verzió: v1.0.30-run_report-am-column-2026-03-02
-# run_report.yml — v1.0.30-2026-03-02
+# Verzió: v1.0.31-run_report-am-column-2026-03-02
+# run_report.yml — v1.0.31-2026-03-02
 
 name: Run Report — PRICE ENGINE
 
-# run_report.yml — v1.0.30-2026-03-02
+# run_report.yml — v1.0.31-2026-03-02
 
 "on":
   workflow_dispatch:
@@ -390,11 +390,15 @@ jobs:
               for match in re.finditer(r"^-\s+(\S+)\s+[—–-]\s+AH\s+(\S+)\s*\|\s*PM\s+(\S+)", text, flags=re.M):
                   movements[match[1]] = (match[2], match[3])
               # Reprocessing an already enriched report preserves its observed values.
+              table_header = []
               for line in text.splitlines():
                   parts = [p.strip() for p in line.strip("|").split("|")]
-                  if line.startswith("|") and len(parts) == 6 and parts[0] not in ("Ticker", "---"):
-                      if all(v == "n/a" or re.fullmatch(r"[+-]?\d+(?:\.\d+)?%", v) for v in parts[-2:]):
-                          movements.setdefault(parts[0], tuple(parts[-2:]))
+                  if line.startswith("|") and parts[0] == "Ticker":
+                      table_header = parts
+                  elif line.startswith("|") and len(parts) == len(table_header) and "AH" in table_header and "PM" in table_header:
+                      pair = (parts[table_header.index("AH")], parts[table_header.index("PM")])
+                      if all(v == "n/a" or re.fullmatch(r"[+-]?\d+(?:\.\d+)?%", v) for v in pair):
+                          movements.setdefault(parts[0], pair)
               premarket = text.startswith("# #1") or bool(movements)
               lines = [
                   "## Pozíciók — állományadatok",
@@ -405,8 +409,8 @@ jobs:
                   "|---|---:|---:|---|",
               ]
               if premarket:
-                  lines[-2] = "| Ticker | Darabszám | Bekerülési ár ($/db) | Bróker | AH | PM |"
-                  lines[-1] = "|---|---:|---:|---|---:|---:|"
+                  lines[-2] = "| Ticker | AH | PM | Darabszám | Bekerülési ár ($/db) | Bróker |"
+                  lines[-1] = "|---|---:|---:|---:|---:|---|"
               position_lines = []
               count = 0
               for raw in reader:
@@ -426,7 +430,7 @@ jobs:
                   broker = pick(("broker",))
                   values = (cell(ticker), format(qty, "f"), cell(cost), cell(broker))
                   if premarket:
-                      values += movements.get(ticker, ("n/a", "n/a"))
+                      values = (values[0],) + movements.get(ticker, ("n/a", "n/a")) + values[1:]
                   position_lines.append((ticker, "| " + " | ".join(values) + " |"))
                   count += 1
               order = {ticker: index for index, ticker in enumerate(movements)}
@@ -440,14 +444,35 @@ jobs:
               widths = [max(3, *(len(row[col]) for j, row in enumerate(table) if j != 1)) for col in range(len(table[0]))]
               for row_index, line_index in enumerate(table_indices):
                   if row_index == 1:
-                      cells = [("-" * (width - 1) + ":") if col in (1, 2, 4, 5) else "-" * width for col, width in enumerate(widths)]
+                      cells = [("-" * (width - 1) + ":") if col in ((1, 2, 3, 4) if premarket else (1, 2)) else "-" * width for col, width in enumerate(widths)]
                   else:
-                      cells = [value.rjust(widths[col]) if col in (1, 2, 4, 5) else value.ljust(widths[col]) for col, value in enumerate(table[row_index])]
+                      cells = [value.rjust(widths[col]) if col in ((1, 2, 3, 4) if premarket else (1, 2)) else value.ljust(widths[col]) for col, value in enumerate(table[row_index])]
                   lines[line_index] = "| " + " | ".join(cells) + " |"
               begin, end = "<!-- position-details:start -->", "<!-- position-details:end -->"
               text = re.sub(re.escape(begin) + r".*?" + re.escape(end) + r"\n*", "", text, flags=re.S)
               if premarket:
                   text = re.sub(r"^## Pozíciók\s*\n.*?(?=^## |\Z)", "", text, flags=re.M | re.S)
+              # Convert only AH/PM bullet rows inside Watchlist; keep all SellRef text.
+              def watchlist_table(match):
+                  section = match[0]
+                  rows = []
+                  pattern = r"^-\s+(\S+)\s+[—–-]\s+AH\s+(\S+)\s*\|\s*PM\s+(\S+)(?:\s*\|\s*(.*))?$"
+                  for line in section.splitlines()[1:]:
+                      item = re.match(pattern, line)
+                      if item:
+                          rows.append([item[1], item[2], item[3], item[4] or "—"])
+                      elif line.strip():
+                          # Already a table or unexpected content: preserve rather than discard.
+                          return section
+                  if not rows:
+                      return section
+                  header = ["Ticker", "AH", "PM", "Eladási referencia / aktuális ár"]
+                  widths = [max(len(header[c]), *(len(row[c]) for row in rows)) for c in range(4)]
+                  def render(row):
+                      return "| " + " | ".join(value.rjust(widths[c]) if c in (1, 2) else value.ljust(widths[c]) for c, value in enumerate(row)) + " |"
+                  separator = ["-" * (w - 1) + ":" if c in (1, 2) else "-" * w for c, w in enumerate(widths)]
+                  return section.splitlines()[0] + "\n\n" + "\n".join([render(header), render(separator)] + [render(row) for row in rows]) + "\n\n"
+              text = re.sub(r"^## Watchlist[^\n]*\n.*?(?=^## |\Z)", watchlist_table, text, flags=re.M | re.S)
               block = begin + "\n" + "\n".join(lines) + "\n" + end + "\n\n"
               match = re.search(r"^## ", text, flags=re.M)
               index = match.start() if match else len(text)
