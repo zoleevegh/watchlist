@@ -1,0 +1,2 @@
+# v1.0.0 — US trading calendar (holidays, early closes, DST)
+exchange-calendars==4.13.2
